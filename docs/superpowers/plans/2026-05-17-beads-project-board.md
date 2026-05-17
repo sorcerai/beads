@@ -17,7 +17,7 @@
 - MCP: `cd integrations/beads-mcp && uv run pytest`.
 
 **Grounded facts (do not re-derive):**
-- `internal/types.Issue`: `ID string`, `Title string`, `Status types.Status`, `Priority int`, `Assignee string`, `UpdatedAt time.Time`, `Labels []string`, `Parent *string` (computed parent from parent-child dependency).
+- `internal/types.Issue`: `ID string`, `Title string`, `Status types.Status`, `Priority int`, `Assignee string`, `UpdatedAt time.Time`, `Labels []string`. **There is NO `Parent` field on `Issue`.** Parent/child is a parent-child *dependency edge*: `store.GetAllDependencyRecords(ctx) (map[string][]*types.Dependency, error)` keyed by child issue ID; a record with `Type == types.DepParentChild` has `DependsOnID` = the parent (first match wins; mirrors the canonical parent compute in `internal/types/types.go`). `types.Dependency{IssueID, DependsOnID, Type}`.
 - `internal/types.BuiltInStatusCategory(Status) StatusCategory` → `CategoryActive` (open), `CategoryWIP` (in_progress/blocked/hooked), `CategoryDone` (closed), `CategoryFrozen` (deferred/pinned), `CategoryUnspecified` (default). Constants: `types.CategoryActive`, `types.CategoryWIP`, `types.CategoryDone`, `types.CategoryFrozen`, `types.CategoryUnspecified`.
 - `storage.DoltStorage` interface includes `SearchIssues(ctx context.Context, query string, filter types.IssueFilter) ([]*types.Issue, error)`.
 - `types.IssueFilter` fields used here: `Statuses []types.Status`, `Labels []string`, `LabelsAny []string`, `ParentID *string`, `Limit int`.
@@ -179,11 +179,23 @@ git commit -m "feat(rollup): canonical status->column mapping"
 
 ## Task 2: Rollup compute (`internal/rollup/rollup.go`)
 
+> **CORRECTION (data model):** `types.Issue` has **no** `Parent` field. Parent/child
+> is a **parent-child dependency edge** (Decision 004). Canonical derivation
+> (mirrors `internal/types/types.go` ReadyItem/IssueDetails parent computation
+> and `issueops.GetAllDependencyRecordsInTx`): `GetAllDependencyRecords` returns
+> `map[childIssueID][]*types.Dependency`; for an issue, the **first** record with
+> `Type == types.DepParentChild` gives `parentID = dep.DependsOnID` (first match
+> wins, no sorting — match beads exactly). The rollup therefore depends on a
+> narrow read interface of **two** bulk methods (`SearchIssues` +
+> `GetAllDependencyRecords` = 2 queries total, no N+1 over epics — spec C2/C3
+> intact). Epic rows = parentless issues (do **not** special-case `TypeEpic`;
+> noted as a future styling enhancement only).
+
 **Files:**
 - Create: `internal/rollup/rollup.go`
 - Test: `internal/rollup/rollup_test.go`
 
-Implements: project grouping by `project:<slug>` label (first lexicographic wins + diagnostic), epic assembly via `Issue.Parent`, **computed** epic column (done only if own category done AND all children done; closed-with-non-done-child → in_progress + conflict), visited-set traversal for cycles/orphans, always-emit "Unassigned", phantom-project bucket, `generated_at`.
+Implements: project grouping by `project:<slug>` label (first lexicographic wins + diagnostic), epic assembly via the parent-child dependency map, **computed** epic column (done only if own category done AND all children done; closed-with-non-done-child → in_progress + conflict), visited-set traversal for cycles/orphans, always-emit "Unassigned", `generated_at`.
 
 - [ ] **Step 1: Write the failing test**
 
@@ -200,23 +212,43 @@ import (
 	"github.com/steveyegge/beads/internal/types"
 )
 
-// fakeSource is an in-memory IssueSource for tests (no Dolt).
-type fakeSource struct{ issues []*types.Issue }
+// fakeSource is an in-memory IssueSource for tests (no Dolt). deps is keyed by
+// child issue ID, mirroring storage.GetAllDependencyRecords.
+type fakeSource struct {
+	issues []*types.Issue
+	deps   map[string][]*types.Dependency
+}
 
 func (f *fakeSource) SearchIssues(_ context.Context, _ string, _ types.IssueFilter) ([]*types.Issue, error) {
 	return f.issues, nil
 }
 
-func iss(id, title string, st types.Status, parent *string, labels ...string) *types.Issue {
-	return &types.Issue{ID: id, Title: title, Status: st, Parent: parent, Labels: labels, UpdatedAt: time.Unix(0, 0)}
+func (f *fakeSource) GetAllDependencyRecords(_ context.Context) (map[string][]*types.Dependency, error) {
+	if f.deps == nil {
+		return map[string][]*types.Dependency{}, nil
+	}
+	return f.deps, nil
+}
+
+func iss(id, title string, st types.Status, labels ...string) *types.Issue {
+	return &types.Issue{ID: id, Title: title, Status: st, Labels: labels, UpdatedAt: time.Unix(0, 0)}
+}
+
+// pc registers a parent-child edge: child's record points at parent via DependsOnID.
+func pc(deps map[string][]*types.Dependency, child, parent string) {
+	deps[child] = append(deps[child], &types.Dependency{
+		IssueID: child, DependsOnID: parent, Type: types.DepParentChild,
+	})
 }
 
 func TestCompute_GroupsByProjectLabel(t *testing.T) {
+	deps := map[string][]*types.Dependency{}
+	pc(deps, "a-2", "a-1")
 	src := &fakeSource{issues: []*types.Issue{
-		iss("a-1", "epic A", types.StatusOpen, nil, "project:alpha"),
-		iss("a-2", "child", types.StatusInProgress, ptr("a-1"), "project:alpha"),
-		iss("u-1", "loose", types.StatusOpen, nil),
-	}}
+		iss("a-1", "epic A", types.StatusOpen, "project:alpha"),
+		iss("a-2", "child", types.StatusInProgress, "project:alpha"),
+		iss("u-1", "loose", types.StatusOpen),
+	}, deps: deps}
 	r, err := Compute(context.Background(), src, Options{})
 	if err != nil {
 		t.Fatalf("Compute: %v", err)
@@ -224,16 +256,21 @@ func TestCompute_GroupsByProjectLabel(t *testing.T) {
 	if got := projectBySlug(r, "alpha"); got == nil || len(got.Epics) != 1 {
 		t.Fatalf("expected 1 epic in alpha, got %#v", got)
 	}
+	if len(projectBySlug(r, "alpha").Epics[0].Children) != 1 {
+		t.Fatalf("epic a-1 should have 1 child")
+	}
 	if projectBySlug(r, "Unassigned") == nil {
 		t.Fatalf("Unassigned bucket must always be emitted")
 	}
 }
 
 func TestCompute_EpicComputedColumn_ConflictWhenChildOpen(t *testing.T) {
+	deps := map[string][]*types.Dependency{}
+	pc(deps, "c-1", "e-1")
 	src := &fakeSource{issues: []*types.Issue{
-		iss("e-1", "epic", types.StatusClosed, nil, "project:p"),
-		iss("c-1", "child still open", types.StatusOpen, ptr("e-1"), "project:p"),
-	}}
+		iss("e-1", "epic", types.StatusClosed, "project:p"),
+		iss("c-1", "child still open", types.StatusOpen, "project:p"),
+	}, deps: deps}
 	r, _ := Compute(context.Background(), src, Options{})
 	e := projectBySlug(r, "p").Epics[0]
 	if e.Column != ColumnInProgress || !e.Conflict {
@@ -243,7 +280,7 @@ func TestCompute_EpicComputedColumn_ConflictWhenChildOpen(t *testing.T) {
 
 func TestCompute_MultiProjectLabel_FirstLexicographicWinsWithDiagnostic(t *testing.T) {
 	src := &fakeSource{issues: []*types.Issue{
-		iss("x-1", "two projects", types.StatusOpen, nil, "project:zeta", "project:alpha"),
+		iss("x-1", "two projects", types.StatusOpen, "project:zeta", "project:alpha"),
 	}}
 	r, _ := Compute(context.Background(), src, Options{})
 	if projectBySlug(r, "alpha") == nil {
@@ -255,10 +292,13 @@ func TestCompute_MultiProjectLabel_FirstLexicographicWinsWithDiagnostic(t *testi
 }
 
 func TestCompute_CycleEmitsDiagnosticNoHang(t *testing.T) {
+	deps := map[string][]*types.Dependency{}
+	pc(deps, "n-1", "n-2")
+	pc(deps, "n-2", "n-1")
 	src := &fakeSource{issues: []*types.Issue{
-		iss("n-1", "n1", types.StatusOpen, ptr("n-2"), "project:p"),
-		iss("n-2", "n2", types.StatusOpen, ptr("n-1"), "project:p"),
-	}}
+		iss("n-1", "n1", types.StatusOpen, "project:p"),
+		iss("n-2", "n2", types.StatusOpen, "project:p"),
+	}, deps: deps}
 	done := make(chan struct{})
 	go func() { _, _ = Compute(context.Background(), src, Options{}); close(done) }()
 	select {
@@ -273,7 +313,6 @@ func TestCompute_CycleEmitsDiagnosticNoHang(t *testing.T) {
 }
 
 // helpers
-func ptr(s string) *string { return &s }
 func projectBySlug(r *Rollup, slug string) *Project {
 	for i := range r.Projects {
 		if r.Projects[i].Slug == slug {
@@ -316,16 +355,18 @@ import (
 const projectLabelPrefix = "project:"
 
 // IssueSource is the narrow read interface rollup depends on. Satisfied by
-// storage.DoltStorage. Keeps rollup free of raw SQL / *sql.DB (spec C3).
+// storage.DoltStorage. Two bulk reads only — keeps rollup free of raw SQL /
+// *sql.DB and avoids N+1 over epics (spec C2/C3).
 type IssueSource interface {
 	SearchIssues(ctx context.Context, query string, filter types.IssueFilter) ([]*types.Issue, error)
+	GetAllDependencyRecords(ctx context.Context) (map[string][]*types.Dependency, error)
 }
 
 // Options bounds the rollup (spec C2: pagination/caps are mandatory).
 type Options struct {
-	Project          string                            // optional: scope to one slug
-	Limit            int                               // 0 => DefaultLimit
-	CustomCategories map[string]types.StatusCategory   // status name -> category
+	Project          string                          // optional: scope to one slug
+	Limit            int                             // 0 => DefaultLimit
+	CustomCategories map[string]types.StatusCategory // status name -> category
 }
 
 const DefaultLimit = 2000
@@ -350,11 +391,11 @@ type Epic struct {
 type Project struct {
 	Slug  string `json:"slug"`
 	Epics []Epic `json:"epics"`
-	Loose []Card `json:"loose"` // project-labeled, no epic parent
+	Loose []Card `json:"loose"` // project-labeled, parentless non-epic edge cases
 }
 
 type Diagnostic struct {
-	Kind    string `json:"kind"` // multi_project | invalid_graph | phantom_project
+	Kind    string `json:"kind"` // multi_project | invalid_graph
 	IssueID string `json:"issue_id,omitempty"`
 	Detail  string `json:"detail,omitempty"`
 }
@@ -389,6 +430,22 @@ func projectSlug(i *types.Issue) (slug string, multi bool) {
 	return slugs[0], len(slugs) > 1
 }
 
+// buildParentMap derives child -> parent from parent-child dependency edges.
+// Mirrors beads' canonical parent computation: first parent-child record wins
+// (no sorting). allDeps is keyed by child issue ID; the parent is DependsOnID.
+func buildParentMap(allDeps map[string][]*types.Dependency) map[string]string {
+	parentOf := make(map[string]string, len(allDeps))
+	for childID, deps := range allDeps {
+		for _, d := range deps {
+			if d.Type == types.DepParentChild {
+				parentOf[childID] = d.DependsOnID
+				break
+			}
+		}
+	}
+	return parentOf
+}
+
 func Compute(ctx context.Context, src IssueSource, opts Options) (*Rollup, error) {
 	limit := opts.Limit
 	if limit <= 0 {
@@ -402,14 +459,14 @@ func Compute(ctx context.Context, src IssueSource, opts Options) (*Rollup, error
 	if err != nil {
 		return nil, err
 	}
+	allDeps, err := src.GetAllDependencyRecords(ctx)
+	if err != nil {
+		return nil, err
+	}
+	parentOf := buildParentMap(allDeps)
 
 	r := &Rollup{GeneratedAt: time.Now().UTC()}
-	byID := make(map[string]*types.Issue, len(issues))
-	for _, i := range issues {
-		byID[i.ID] = i
-	}
 
-	// Group issues by winning project slug.
 	type pgroup struct {
 		epicsByID map[string]*Epic
 		order     []string
@@ -429,18 +486,21 @@ func Compute(ctx context.Context, src IssueSource, opts Options) (*Rollup, error
 		ensure(opts.Project)
 	}
 
-	// detectCycle walks parents with a visited set; true if a cycle/orphan loop.
-	detectCycle := func(start *types.Issue) bool {
+	// detectCycle walks the parent chain with a visited set; true on a cycle.
+	detectCycle := func(startID string) bool {
 		seen := map[string]bool{}
-		cur := start
-		for cur != nil && cur.Parent != nil {
-			if seen[cur.ID] {
+		cur := startID
+		for {
+			p, ok := parentOf[cur]
+			if !ok {
+				return false
+			}
+			if seen[cur] {
 				return true
 			}
-			seen[cur.ID] = true
-			cur = byID[*cur.Parent]
+			seen[cur] = true
+			cur = p
 		}
-		return false
 	}
 
 	cycleReported := false
@@ -450,16 +510,16 @@ func Compute(ctx context.Context, src IssueSource, opts Options) (*Rollup, error
 			r.Diagnostics = append(r.Diagnostics, Diagnostic{Kind: "multi_project", IssueID: i.ID})
 		}
 		g := ensure(slug)
-		if detectCycle(i) {
+		if detectCycle(i.ID) {
 			if !cycleReported {
 				r.Diagnostics = append(r.Diagnostics, Diagnostic{Kind: "invalid_graph", Detail: "parent cycle or orphan loop"})
 				cycleReported = true
 			}
 			continue // do not place cyclic nodes (avoids miscount/hang)
 		}
-		card := toCard(i, opts.CustomCategories)
-		if i.Parent == nil {
-			// Treat parentless issues as epics (epic = parent issue).
+		if _, hasParent := parentOf[i.ID]; !hasParent {
+			// Parentless issue => epic row.
+			card := toCard(i, opts.CustomCategories)
 			e := g.epicsByID[i.ID]
 			if e == nil {
 				e = &Epic{Issue: card}
@@ -472,13 +532,14 @@ func Compute(ctx context.Context, src IssueSource, opts Options) (*Rollup, error
 	}
 	// Attach children to epics; collect loose.
 	for _, i := range issues {
-		if i.Parent == nil || detectCycle(i) {
+		parentID, hasParent := parentOf[i.ID]
+		if !hasParent || detectCycle(i.ID) {
 			continue
 		}
 		slug, _ := projectSlug(i)
 		g := ensure(slug)
 		card := toCard(i, opts.CustomCategories)
-		if e := g.epicsByID[*i.Parent]; e != nil {
+		if e := g.epicsByID[parentID]; e != nil {
 			e.Children = append(e.Children, card)
 		} else {
 			g.loose = append(g.loose, card)
@@ -524,16 +585,19 @@ func Compute(ctx context.Context, src IssueSource, opts Options) (*Rollup, error
 - [ ] **Step 4: Run test to verify it passes**
 
 Run: `go test ./internal/rollup/ -v`
-Expected: PASS (all Task 1 + Task 2 tests).
+Expected: PASS (all Task 1 + Task 2 tests, ≥8 total).
 
-- [ ] **Step 5: Commit**
+- [ ] **Step 5: Vet**
+
+Run: `go vet ./internal/rollup/`
+Expected: clean.
+
+- [ ] **Step 6: Commit**
 
 ```bash
 git add internal/rollup/rollup.go internal/rollup/rollup_test.go
 git commit -m "feat(rollup): compute project/epic/column rollup with diagnostics"
 ```
-
----
 
 ## Task 3: `bd board` CLI command (`cmd/bd/board.go`)
 
