@@ -48,7 +48,7 @@ type Epic struct {
 type Project struct {
 	Slug  string `json:"slug"`
 	Epics []Epic `json:"epics"`
-	Loose []Card `json:"loose"` // project-labeled, parentless non-epic edge cases
+	Loose []Card `json:"loose"` // child whose parent epic is absent from this project group
 }
 
 type Diagnostic struct {
@@ -160,6 +160,9 @@ func Compute(ctx context.Context, src IssueSource, opts Options) (*Rollup, error
 		}
 	}
 
+	// One invalid_graph diagnostic per run by design: it signals "the graph has
+	// a parent cycle"; enumerating every cyclic node is noise for a read-only
+	// board. All cyclic nodes are excluded from placement regardless.
 	cycleReported := false
 	for _, i := range issues {
 		slug, multi := projectSlug(i)

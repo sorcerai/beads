@@ -108,6 +108,41 @@ func TestCompute_CycleEmitsDiagnosticNoHang(t *testing.T) {
 	}
 }
 
+func TestCompute_ZeroChildEpicUsesOwnColumn(t *testing.T) {
+	src := &fakeSource{issues: []*types.Issue{
+		iss("e-1", "lone open epic", types.StatusInProgress, "project:p"),
+		iss("e-2", "lone closed epic", types.StatusClosed, "project:p"),
+	}}
+	r, _ := Compute(context.Background(), src, Options{})
+	p := projectBySlug(r, "p")
+	byID := map[string]Epic{}
+	for _, e := range p.Epics {
+		byID[e.Issue.ID] = e
+	}
+	if e := byID["e-1"]; e.Column != ColumnInProgress || e.Conflict {
+		t.Fatalf("childless open epic: got column=%q conflict=%v, want in_progress, no conflict", e.Column, e.Conflict)
+	}
+	if e := byID["e-2"]; e.Column != ColumnDone || e.Conflict {
+		t.Fatalf("childless closed epic: got column=%q conflict=%v, want done, no conflict", e.Column, e.Conflict)
+	}
+}
+
+func TestCompute_ChildWithMissingParentEpicGoesLoose(t *testing.T) {
+	deps := map[string][]*types.Dependency{}
+	pc(deps, "c-1", "absent-epic") // parent not in the issue set
+	src := &fakeSource{issues: []*types.Issue{
+		iss("c-1", "orphaned child", types.StatusOpen, "project:p"),
+	}, deps: deps}
+	r, _ := Compute(context.Background(), src, Options{})
+	p := projectBySlug(r, "p")
+	if len(p.Epics) != 0 {
+		t.Fatalf("expected no epics, got %d", len(p.Epics))
+	}
+	if len(p.Loose) != 1 || p.Loose[0].ID != "c-1" {
+		t.Fatalf("expected c-1 in Loose, got %#v", p.Loose)
+	}
+}
+
 // helpers
 func projectBySlug(r *Rollup, slug string) *Project {
 	for i := range r.Projects {
