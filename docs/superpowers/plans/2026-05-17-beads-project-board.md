@@ -765,12 +765,12 @@ git commit -m "feat(cli): bd board rollup command (--json/--project/--limit)"
 
 Implements spec C4 (singleflight + TTL + context deadline + stdout cap + bounded concurrency), C7 (last-good + stale banner). The web process holds **no DB credentials**: it execs `bd board --json` (resolved via `os.Executable()`).
 
-**Mandatory: `serve-board` must NOT open the DB store.** Most `bd` commands open `store` in the root `PersistentPreRun`. Locate the existing "command skips store init" mechanism and apply it to `serve-board`.
+**Mandatory: `serve-board` must NOT open the DB store.** The root `PersistentPreRun` lives in **`cmd/bd/main.go`** (there is no `root.go`). It opens the Dolt store unless the command is in a `noDbCommands := []string{...}` slice (~line 712, containing `"completion"`, `"help"`, `"version"`, `"setup"`, …). A top-level command whose name is in that slice gets `skipsStoreInit = true`. The web process must hold no DB credentials, so `serve-board` MUST be added to `noDbCommands`.
 
-- [ ] **Step 1: Find the no-store-command mechanism**
+- [ ] **Step 1: Confirm the no-store mechanism**
 
-Run: `grep -n "PersistentPreRun\|cmd.Name()\|skipStore\|noStore\|\"version\"\|\"completion\"" cmd/bd/root.go | head -30`
-Expected: a `PersistentPreRunE`/`PersistentPreRun` on `rootCmd` that opens the store, with an allowlist/switch exempting commands like `version`/`completion`/`help`. Record the exact exemption mechanism (e.g. a `switch cmd.Name()` or a set). You will add `"serve-board"` to that exemption in Step 4.
+Run: `grep -n "noDbCommands := \[\]string" cmd/bd/main.go` and read the slice.
+Expected: a `noDbCommands` string slice in `cmd/bd/main.go`'s root `PersistentPreRun`. You will add `"serve-board"` to it in Step 4. (Command name is `serve-board` from `Use: "serve-board"`; it is top-level so `slices.Contains(noDbCommands, "serve-board") && !isSubcommand` ⇒ store init skipped.)
 
 - [ ] **Step 2: Write the failing test**
 
@@ -1004,7 +1004,7 @@ func init() {
 }
 ```
 
-Then apply the no-store exemption found in Step 1: add `"serve-board"` to that exemption set/switch in `cmd/bd/root.go` so the web process never opens the Dolt store. (Concrete: in the `PersistentPreRun` store-open guard, add `serve-board` alongside the existing `version`/`completion` exemption — match whatever form it uses: a `case "serve-board":` in the switch, or appending to the exempt set.)
+Then apply the no-store exemption: in **`cmd/bd/main.go`**, add the string `"serve-board"` to the `noDbCommands := []string{...}` slice (place it tidily near `"setup"`/`"quickstart"`; `slices.Contains` is order-independent so exact position is not load-bearing). This makes the long-lived web process never open the Dolt store (it execs `bd board --json` for data instead).
 
 - [ ] **Step 5: Run tests to verify they pass**
 
@@ -1013,15 +1013,15 @@ Expected: PASS (singleflight collapse + last-good).
 
 - [ ] **Step 6: Verify serve-board does not open the store**
 
-Run: `grep -n "serve-board" cmd/bd/root.go`
-Expected: `serve-board` appears in the store-open exemption (added in Step 4).
-Run: `make build && ./bin/bd serve-board 2>&1 | head -1`
-Expected: error `--addr is required ...` (NOT a DB connection error — proves no store open).
+Run: `grep -n "serve-board" cmd/bd/main.go`
+Expected: `"serve-board"` appears in the `noDbCommands` slice (added in Step 4).
+Run: `make build && ./bd serve-board 2>&1 | head -1`
+Expected: error `--addr is required ...` (NOT a DB connection error — proves no store open). Binary is `./bd` (not `./bin/bd`).
 
 - [ ] **Step 7: Commit**
 
 ```bash
-git add cmd/bd/serve_board.go cmd/bd/serve_board_test.go cmd/bd/root.go
+git add cmd/bd/serve_board.go cmd/bd/serve_board_test.go cmd/bd/main.go
 git commit -m "feat(web): bd serve-board (singleflight+TTL+last-good, no DB creds)"
 ```
 
