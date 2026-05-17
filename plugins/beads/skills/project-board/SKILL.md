@@ -42,7 +42,7 @@ mutating issues (use the `beads` skill for that). This board is read-only.
       "epics": [
         { "issue": {"id","title","status","column","priority","assignee","updated_at"},
           "column": "todo|in_progress|done|deferred|fallback",
-          "conflict": false,
+          "conflict": false,            // true = closed epic with non-done children (flag this first)
           "children": [ { ...card... } ] } ],
       "loose": [ { ...card... } ] } ],
   "diagnostics": [ {"kind":"multi_project|invalid_graph","issue_id","detail"} ]
