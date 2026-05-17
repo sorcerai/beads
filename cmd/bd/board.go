@@ -33,7 +33,10 @@ consumed by the web dashboard and the MCP tool.`,
 	},
 }
 
-// buildBoardOptions is unit-testable without a store.
+// buildBoardOptions is unit-testable without a store. The cursor arg is a
+// reserved pagination slot (rollup.Options has no cursor field yet).
+// TODO: populate rollup.Options.CustomCategories from the store so custom
+// statuses map to their declared column instead of the fallback column.
 func buildBoardOptions(project string, limit int, _ string) rollup.Options {
 	return rollup.Options{Project: project, Limit: limit}
 }
@@ -41,7 +44,7 @@ func buildBoardOptions(project string, limit int, _ string) rollup.Options {
 func renderBoardText(r *rollup.Rollup) {
 	fmt.Printf("Board @ %s\n", r.GeneratedAt.Format("2006-01-02 15:04:05 UTC"))
 	for _, p := range r.Projects {
-		fmt.Printf("\n## %s  (%d epics, %d loose)\n", p.Slug, len(p.Epics), len(p.Loose))
+		fmt.Printf("\n## %s  (%d epics, %d without an epic)\n", p.Slug, len(p.Epics), len(p.Loose))
 		for _, e := range p.Epics {
 			flag := ""
 			if e.Conflict {
