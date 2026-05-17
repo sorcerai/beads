@@ -1,11 +1,15 @@
 package main
 
 import (
+	"bytes"
 	"context"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/steveyegge/beads/internal/rollup"
 )
 
 func TestBoardCache_SingleflightCollapsesConcurrent(t *testing.T) {
@@ -71,5 +75,82 @@ func TestBoardCache_GoodTimestampIsFetchTimeNotNow(t *testing.T) {
 	}
 	if time.Since(bc.goodTimestamp()) < 40*time.Millisecond {
 		t.Fatal("goodTimestamp should reflect the older fetch, not the recent failed attempt")
+	}
+}
+
+func TestBuildPage_PlacementAndSegs(t *testing.T) {
+	r := &rollup.Rollup{
+		GeneratedAt: time.Now().Add(-90 * time.Minute),
+		Projects: []rollup.Project{
+			{
+				Slug: "alpha",
+				Epics: []rollup.Epic{{
+					Issue:    rollup.Card{ID: "a-1", Title: "ship board", Status: "closed", Column: rollup.ColumnInProgress, Priority: 1},
+					Column:   rollup.ColumnInProgress,
+					Conflict: true,
+					Children: []rollup.Card{
+						{ID: "c1", Column: rollup.ColumnDone}, {ID: "c2", Column: rollup.ColumnDone},
+						{ID: "c3", Column: rollup.ColumnTodo},
+					},
+				}},
+				Loose: []rollup.Card{{ID: "l-1", Title: "stray", Status: "open", Column: rollup.ColumnTodo, Priority: 0}},
+			},
+			{Slug: "Unassigned"},
+		},
+		Diagnostics: []rollup.Diagnostic{{Kind: "multi_project", IssueID: "x-9"}},
+	}
+	p := buildPage(r, false, "2026-01-01T00:00:00Z", 30)
+
+	if p.Empty || len(p.Projects) != 2 || p.DiagCount != 1 {
+		t.Fatalf("page shape wrong: %#v", p)
+	}
+	alpha := p.Projects[0]
+	if alpha.Slug != "alpha" || len(alpha.Lanes) != 5 {
+		t.Fatalf("alpha lanes: %#v", alpha)
+	}
+	laneByKey := map[string]vmLane{}
+	for _, l := range alpha.Lanes {
+		laneByKey[l.Key] = l
+	}
+	ip := laneByKey["in_progress"]
+	if ip.Count != 1 || !ip.Cards[0].IsEpic || !ip.Cards[0].Conflict {
+		t.Fatalf("epic should be in in_progress with conflict: %#v", ip)
+	}
+	if ip.Cards[0].ChildTotal != 3 || len(ip.Cards[0].Segs) != 2 { // done(2)+todo(1) => 2 segments
+		t.Fatalf("epic child segs wrong: %#v", ip.Cards[0])
+	}
+	if td := laneByKey["todo"]; td.Count != 1 || td.Cards[0].IsEpic {
+		t.Fatalf("loose card should be a non-epic in todo: %#v", td)
+	}
+}
+
+func TestBoardTemplate_RendersAndEscapes(t *testing.T) {
+	r := &rollup.Rollup{
+		GeneratedAt: time.Now(),
+		Projects: []rollup.Project{{
+			Slug: "alpha",
+			Epics: []rollup.Epic{{
+				Issue:    rollup.Card{ID: "a-1", Title: "<script>alert(1)</script>", Status: "open", Column: rollup.ColumnTodo},
+				Column:   rollup.ColumnTodo,
+				Conflict: true,
+				Children: []rollup.Card{{ID: "k", Column: rollup.ColumnDone}},
+			}},
+		}},
+	}
+	var buf bytes.Buffer
+	if err := boardPageTmpl.Execute(&buf, buildPage(r, true, "2026-01-01T00:00:00Z", 30)); err != nil {
+		t.Fatalf("template execute: %v", err)
+	}
+	out := buf.String()
+	for _, want := range []string{"Project Board", "alpha", "closed · open children", "Stale", "auto-refresh 30s"} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("rendered page missing %q", want)
+		}
+	}
+	if strings.Contains(out, "<script>alert(1)</script>") {
+		t.Fatal("XSS: issue title was not HTML-escaped in the rendered board")
+	}
+	if !strings.Contains(out, "&lt;script&gt;") {
+		t.Fatal("expected the malicious title to appear HTML-escaped")
 	}
 }
