@@ -822,3 +822,26 @@ async def test_board_returns_parsed_json(bd_client, monkeypatch):
     result = await bd_client.board()
     assert result["projects"] == []
     assert "generated_at" in result
+
+
+@pytest.mark.asyncio
+async def test_board_passes_project_and_limit_args(bd_client, monkeypatch):
+    seen: list[str] = []
+
+    async def fake_run_command(*args, cwd=None):
+        seen.extend(args)
+        return {"projects": []}
+
+    monkeypatch.setattr(bd_client, "_run_command", fake_run_command)
+    await bd_client.board(project="alpha", limit=5)
+    assert seen == ["board", "--project", "alpha", "--limit", "5"]
+
+
+@pytest.mark.asyncio
+async def test_board_non_dict_response_raises(bd_client, monkeypatch):
+    async def fake_run_command(*args, cwd=None):
+        return ["not", "a", "dict"]
+
+    monkeypatch.setattr(bd_client, "_run_command", fake_run_command)
+    with pytest.raises(BdCommandError):
+        await bd_client.board()

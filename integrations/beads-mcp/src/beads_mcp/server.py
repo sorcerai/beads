@@ -1246,7 +1246,7 @@ async def board(
     workspace_root: str | None = None,
     project: str | None = None,
     limit: int | None = None,
-) -> dict:
+) -> dict[str, Any]:
     """Get the project board rollup."""
     return await beads_board(project=project, limit=limit)
 
