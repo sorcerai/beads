@@ -810,3 +810,15 @@ async def test_detect_pollution_clean_adds_flags(bd_client):
     with patch.object(bd_client, "_run_command", new=AsyncMock(return_value={})) as run:
         await bd_client.detect_pollution(clean=True)
     run.assert_awaited_once_with("doctor", "--check=pollution", "--clean", "--yes")
+
+
+@pytest.mark.asyncio
+async def test_board_returns_parsed_json(bd_client, monkeypatch):
+    async def fake_run_command(*args, cwd=None):
+        assert args[0] == "board"
+        return {"projects": [], "diagnostics": [], "generated_at": "2026-05-17T00:00:00Z"}
+
+    monkeypatch.setattr(bd_client, "_run_command", fake_run_command)
+    result = await bd_client.board()
+    assert result["projects"] == []
+    assert "generated_at" in result

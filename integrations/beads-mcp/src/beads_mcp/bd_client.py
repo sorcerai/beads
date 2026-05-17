@@ -152,6 +152,11 @@ class BdClientBase(ABC):
         pass
 
     @abstractmethod
+    async def board(self, project: str | None = None, limit: int | None = None) -> dict[str, Any]:
+        """Get the project board rollup (projects -> epics -> columns)."""
+        pass
+
+    @abstractmethod
     async def blocked(self, params: BlockedParams | None = None) -> list[BlockedIssue]:
         """Get blocked issues."""
         pass
@@ -715,6 +720,22 @@ class BdCliClient(BdClientBase):
             raise BdCommandError("Invalid response for stats")
 
         return Stats.model_validate(data)
+
+    async def board(self, project: str | None = None, limit: int | None = None) -> dict[str, Any]:
+        """Get the project board rollup.
+
+        Returns the parsed `bd board --json` payload (projects, diagnostics,
+        generated_at). Mirrors stats(): _run_command appends --json itself.
+        """
+        args: list[str] = ["board"]
+        if project:
+            args += ["--project", project]
+        if limit:
+            args += ["--limit", str(limit)]
+        data = await self._run_command(*args)
+        if not isinstance(data, dict):
+            raise BdCommandError("Invalid response for board")
+        return data
 
     async def blocked(self, params: BlockedParams | None = None) -> list[BlockedIssue]:
         """Get blocked issues.
