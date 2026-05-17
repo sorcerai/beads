@@ -1,21 +1,34 @@
 [Unit]
 Description=Beads Project Board (read-only, tailnet only)
 After=network-online.target tailscaled.service dolt-sql-server.service
-Wants=network-online.target
-Requires=dolt-sql-server.service
+# Wants (not Requires): a running board must survive a dolt-sql-server
+# restart/outage and keep serving last-good with the stale banner (spec C7).
+# Requires= would propagate dolt's deactivation and kill the board, which
+# directly defeats C7. Cold-start still gates on Dolt via ExecStartPre (C5).
+Wants=network-online.target dolt-sql-server.service
+# Cap restart hammering on the shared box if the start gate keeps failing.
+StartLimitIntervalSec=60
+StartLimitBurst=3
 
 [Service]
 User=admin
 WorkingDirectory=/home/admin/beads-workspace
 EnvironmentFile=/home/admin/beads-client.env
-# C5: do not start until the tailnet IP is up AND Dolt answers a SQL ping.
-ExecStartPre=/bin/sh -c 'ip addr show | grep -q 100.85.126.95 || (echo "tailnet IP missing" >&2; exit 1)'
+# C5: a (re)start does not proceed until the tailnet IP is up AND Dolt
+# answers a SQL ping. (A board that is already running is unaffected by
+# this gate and keeps serving last-good through Dolt blips — see C7.)
+ExecStartPre=/bin/sh -c 'ip addr show | grep -qF 100.85.126.95 || (echo "tailnet IP missing" >&2; exit 1)'
 ExecStartPre=/bin/sh -c '/usr/local/bin/dolt --host 100.85.126.95 --port 3307 --user "$BEADS_DOLT_SERVER_USER" --password "$BEADS_DOLT_PASSWORD" --no-tls sql -q "SELECT 1" >/dev/null 2>&1 || (echo "dolt ping failed" >&2; exit 1)'
 ExecStart=/usr/local/bin/bd serve-board --addr 100.85.126.95:8099 --refresh 30 --cache-ttl 20 --exec-timeout 10
 Restart=always
 RestartSec=5
-# C6: bound footprint on the shared box (co-exist with the live stack).
-MemoryMax=192M
+# A single OOM stops the unit instead of entering a SIGKILL/restart loop
+# that would hammer the shared host (co-exists with the live trading stack).
+OOMPolicy=stop
+# C6: bound footprint on the shared box. 384M (not 192M) leaves headroom
+# for the Go server PLUS a forked `bd board` doing a Dolt query and the
+# buffered JSON, so light concurrency does not OOM-loop.
+MemoryMax=384M
 CPUQuota=25%
 TasksMax=64
 Nice=10

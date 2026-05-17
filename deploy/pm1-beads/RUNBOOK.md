@@ -77,9 +77,11 @@ pm1 `/` ran ~92% full; the hog is reclaimable Docker build cache/images
 ## Project board (read-only web)
 
 - **Unit:** `bd-board.service` (this dir). Binds **only** `100.85.126.95:8099`.
-  Holds NO DB credentials: it execs `bd board --json` behind a
-  singleflight+TTL cache. cgroup-bounded (C6) to co-exist with the live
-  stack. Read-only Dolt user (reuses `BEADS_DOLT_SERVER_USER` from
+  The long-lived `serve-board` process holds NO DB credentials: it execs
+  `bd board --json` behind a singleflight+TTL cache. (Credentials live in
+  `beads-client.env` and are inherited by the short-lived child `bd board`
+  invocations only.) cgroup-bounded (C6) to co-exist with the live stack.
+  Read-only Dolt user (reuses `BEADS_DOLT_SERVER_USER` from
   `beads-client.env`; ensure that user has SELECT-only grants).
 - **Install:** copy `bd` to `/usr/local/bin/bd`, copy the unit to
   `/etc/systemd/system/`, `sudo systemctl daemon-reload`,
@@ -87,8 +89,12 @@ pm1 `/` ran ~92% full; the hog is reclaimable Docker build cache/images
 - **View:** from a tailnet client, open `http://100.85.126.95:8099`.
 - **Status/logs:** `systemctl status bd-board.service`,
   `journalctl -u bd-board.service -n 100 --no-pager`.
-- **It will not start** until the tailnet IP is present and Dolt answers a
-  SQL ping (ExecStartPre, C5). On Dolt/Tailscale outage the page renders
-  last-good with a "stale — backend error" banner (C7).
+- **Cold start** is gated: the unit will not (re)start until the tailnet IP
+  is present and Dolt answers a SQL ping (ExecStartPre, C5). **A board that
+  is already running** is NOT killed when `dolt-sql-server` restarts or
+  Dolt/Tailscale blips (the unit uses `Wants=`, not `Requires=`) — it keeps
+  serving the last good rollup with a "stale — backend error" banner (C7).
+  So: restarting Dolt does not dark the board; only a board that is *down*
+  during a Dolt outage stays down until Dolt is back.
 - **Read-only grant check:** the board's SQL user must be SELECT-only.
   Verify: `SHOW GRANTS FOR '<board user>'@'%';` shows no INSERT/UPDATE/DELETE.
