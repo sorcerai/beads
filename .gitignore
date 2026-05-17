@@ -142,3 +142,7 @@ bd_test
 
 # Beads / Dolt files (added by bd init)
 .beads/proxieddb/
+
+# Multi-agent skill wiring (npx skills) — local install state
+.claude/skills/
+skills-lock.json
