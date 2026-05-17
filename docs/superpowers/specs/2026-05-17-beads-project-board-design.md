@@ -204,12 +204,33 @@ requirements**. Each gets a real test, not a "be careful":
 
 ## Explicit design targets (so the storm-calculus is auditable)
 
-> **≤ ~5 concurrent viewers · refresh cadence ≥ 15s · cache TTL ≤ refresh
-> interval · single shared `beads_workspace` DB on tailnet-bound Dolt.**
+There are **two independent load paths** with **different guards**. C4's
+singleflight cache lives in `bd serve-board` and protects the **web path
+only** — it does *not* collapse direct `bd board --json` invocations.
 
-If these change, C4's guard math must be re-derived and the in-process
-escalation path (Approach 2) reconsidered. Stated here so a future maintainer
-can audit whether the guarantees still hold.
+**Path A — web dashboard:**
+> ≤ ~5 concurrent viewers · refresh cadence ≥ 15s · cache TTL ≤ refresh
+> interval. Singleflight (C4) collapses N viewers to ≤1 subprocess per TTL
+> window.
+
+**Path B — agents via CLI/MCP:**
+> ≤ ~5 concurrent `bd board --json` invocations, each a **short-lived,
+> single-pass, bounded read** that opens RO storage, runs the C2 bulk query
+> (scoped with `--project` / `--limit` where possible), serializes, and
+> exits. No singleflight here — safety comes from processes being
+> short-lived + the bounded query + a **small per-process connection pool**
+> (the single-pass rollup needs few connections; do not inherit a large
+> default pool). N independent short invocations ≠ the long-lived
+> per-refresh-per-viewer storm codex flagged for Path A.
+
+**reverie does not connect to beads** and is not a load source — it is a
+separate memory system, out of this design entirely.
+
+Single shared `beads_workspace` DB on tailnet-bound Dolt. If Path A targets
+change, C4's guard math must be re-derived and the in-process escalation
+path (Approach 2) reconsidered. If Path B concurrency materially exceeds ~5,
+re-evaluate whether the agent path needs its own rate limit. Stated here so a
+future maintainer can audit whether the guarantees still hold.
 
 ## Testing strategy
 
