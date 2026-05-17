@@ -99,7 +99,7 @@ func TestBuildPage_PlacementAndSegs(t *testing.T) {
 		},
 		Diagnostics: []rollup.Diagnostic{{Kind: "multi_project", IssueID: "x-9"}},
 	}
-	p := buildPage(r, false, "2026-01-01T00:00:00Z", 30)
+	p := buildPage(r, false, "2026-01-01T00:00:00Z", 30, "")
 
 	if p.Empty || len(p.Projects) != 2 || p.DiagCount != 1 {
 		t.Fatalf("page shape wrong: %#v", p)
@@ -124,6 +124,28 @@ func TestBuildPage_PlacementAndSegs(t *testing.T) {
 	}
 }
 
+func TestBuildPage_ProjectSwitcher(t *testing.T) {
+	r := &rollup.Rollup{Projects: []rollup.Project{
+		{Slug: "alpha", Loose: []rollup.Card{{ID: "a", Column: rollup.ColumnTodo}}},
+		{Slug: "Unassigned", Loose: []rollup.Card{{ID: "u", Column: rollup.ColumnTodo}}},
+	}}
+	all := buildPage(r, false, "", 30, "")
+	if len(all.AllSlugs) != 2 || all.Selected != "" || len(all.Projects) != 2 {
+		t.Fatalf("unfiltered: %#v", all)
+	}
+	sel := buildPage(r, false, "", 30, "alpha")
+	if sel.Selected != "alpha" || len(sel.Projects) != 1 || sel.Projects[0].Slug != "alpha" {
+		t.Fatalf("filtered to alpha wrong: %#v", sel)
+	}
+	if len(sel.AllSlugs) != 2 {
+		t.Fatalf("switcher must still list ALL slugs when filtered: %#v", sel.AllSlugs)
+	}
+	bogus := buildPage(r, false, "", 30, "does-not-exist")
+	if bogus.Selected != "" || len(bogus.Projects) != 2 {
+		t.Fatalf("unknown project must fall back to all: %#v", bogus)
+	}
+}
+
 func TestBoardTemplate_RendersAndEscapes(t *testing.T) {
 	r := &rollup.Rollup{
 		GeneratedAt: time.Now(),
@@ -138,7 +160,7 @@ func TestBoardTemplate_RendersAndEscapes(t *testing.T) {
 		}},
 	}
 	var buf bytes.Buffer
-	if err := boardPageTmpl.Execute(&buf, buildPage(r, true, "2026-01-01T00:00:00Z", 30)); err != nil {
+	if err := boardPageTmpl.Execute(&buf, buildPage(r, true, "2026-01-01T00:00:00Z", 30, "")); err != nil {
 		t.Fatalf("template execute: %v", err)
 	}
 	out := buf.String()

@@ -151,6 +151,8 @@ type vmProject struct {
 }
 type vmPage struct {
 	Projects                       []vmProject
+	AllSlugs                       []string // every project slug (for the switcher)
+	Selected                       string   // "" = all projects
 	Diagnostics                    []rollup.Diagnostic
 	GeneratedAtAbs, GeneratedAtRel string
 	Stale                          bool
@@ -225,9 +227,9 @@ func childSegs(children []rollup.Card) (int, []vmSeg) {
 	return total, segs
 }
 
-func buildPage(r *rollup.Rollup, stale bool, goodAt string, refresh int) vmPage {
+func buildPage(r *rollup.Rollup, stale bool, goodAt string, refresh int, selected string) vmPage {
 	p := vmPage{
-		Stale: stale, GoodAt: goodAt, Refresh: refresh,
+		Stale: stale, GoodAt: goodAt, Refresh: refresh, Selected: selected,
 		Diagnostics: r.Diagnostics, DiagCount: len(r.Diagnostics),
 	}
 	if r.GeneratedAt.IsZero() {
@@ -246,8 +248,25 @@ func buildPage(r *rollup.Rollup, stale bool, goodAt string, refresh int) vmPage 
 		}
 		return vc
 	}
+	for _, proj := range r.Projects {
+		p.AllSlugs = append(p.AllSlugs, proj.Slug)
+	}
+	known := false
+	for _, s := range p.AllSlugs {
+		if s == selected {
+			known = true
+			break
+		}
+	}
+	if !known {
+		selected = "" // unknown/blank => show all
+		p.Selected = ""
+	}
 	total := 0
 	for _, proj := range r.Projects {
+		if selected != "" && proj.Slug != selected {
+			continue // single-cache fetch; filter the parsed rollup (no extra Dolt)
+		}
 		vp := vmProject{Slug: proj.Slug, Epics: len(proj.Epics), Loose: len(proj.Loose)}
 		byCol := map[rollup.Column][]vmCard{}
 		for _, e := range proj.Epics {
@@ -321,6 +340,19 @@ body::after{background:radial-gradient(900px 700px at 50% 120%,rgba(139,149,232,
 .brand .ey{font-size:10px;font-weight:600;letter-spacing:.22em;color:var(--ink-2);text-transform:uppercase}
 .meta{display:flex;align-items:center;gap:14px;font-size:12px;color:var(--ink-2)}
 .meta .abs{color:var(--ink-3)}
+.switch{position:relative;display:flex;align-items:center}
+.switch::after{content:"";position:absolute;right:14px;top:50%;width:6px;height:6px;
+  border-right:1.5px solid var(--ink-2);border-bottom:1.5px solid var(--ink-2);
+  transform:translateY(-65%) rotate(45deg);pointer-events:none}
+.switch select{
+  appearance:none;-webkit-appearance:none;font:inherit;font-size:12px;font-weight:560;
+  color:var(--ink);background:rgba(255,255,255,.045);border:1px solid var(--hair);
+  border-radius:9999px;padding:8px 34px 8px 15px;cursor:pointer;letter-spacing:-.005em;
+  transition:border-color .45s var(--ease),background .45s var(--ease);max-width:240px;
+  text-overflow:ellipsis}
+.switch select:hover{border-color:rgba(255,255,255,.16);background:rgba(255,255,255,.07)}
+.switch select:focus-visible{outline:2px solid rgba(139,149,232,.5);outline-offset:1px}
+.switch select option{background:#0c0d11;color:var(--ink)}
 .dot-live{width:6px;height:6px;border-radius:50%;background:var(--done);box-shadow:0 0 0 4px rgba(63,185,80,.15);display:inline-block}
 .pill-stale{
   display:inline-flex;align-items:center;gap:7px;font-size:11px;font-weight:560;
@@ -430,6 +462,12 @@ body::after{background:radial-gradient(900px 700px at 50% 120%,rgba(139,149,232,
 <body>
 <div class="rail"><div class="wrap"><div class="rail-in">
   <div class="brand"><span class="ey">Beads</span><span class="sep">/</span><b>Project Board</b></div>
+  {{if .AllSlugs}}<form class="switch" method="get" action="/">
+    <select name="project" aria-label="Filter by project" onchange="this.form.submit()">
+      <option value=""{{if eq .Selected ""}} selected{{end}}>All projects</option>
+      {{range .AllSlugs}}<option value="{{.}}"{{if eq . $.Selected}} selected{{end}}>{{.}}</option>{{end}}
+    </select>
+  </form>{{end}}
   <div class="meta">
     {{if .Stale}}<span class="pill-stale">● Stale — last good {{.GoodAt}}</span>
     {{else}}<span><span class="dot-live"></span> &nbsp;live</span>{{end}}
@@ -519,7 +557,7 @@ func serveBoard(addr string, refreshSec int, ttl, timeout time.Duration) error {
 			http.Error(w, "board payload parse error: "+jerr.Error(), http.StatusBadGateway)
 			return
 		}
-		page := buildPage(&rl, stale, cache.goodTimestamp().UTC().Format(time.RFC3339), refreshSec)
+		page := buildPage(&rl, stale, cache.goodTimestamp().UTC().Format(time.RFC3339), refreshSec, r.URL.Query().Get("project"))
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
 		if terr := boardPageTmpl.Execute(w, page); terr != nil {
 			// headers/body may be partially written; nothing safe left to do
