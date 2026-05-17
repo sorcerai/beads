@@ -77,16 +77,34 @@ pm1 `/` ran ~92% full; the hog is reclaimable Docker build cache/images
 ## Project board (read-only web)
 
 - **Unit:** `bd-board.service` (this dir). Binds **only** `100.85.126.95:8099`.
-  The long-lived `serve-board` process holds NO DB credentials: it execs
-  `bd board --json` behind a singleflight+TTL cache. (Credentials live in
-  `beads-client.env` and are inherited by the short-lived child `bd board`
-  invocations only.) cgroup-bounded (C6) to co-exist with the live stack.
-  Read-only Dolt user (reuses `BEADS_DOLT_SERVER_USER` from
-  `beads-client.env`; ensure that user has SELECT-only grants).
-- **Install:** copy `bd` to `/usr/local/bin/bd`, copy the unit to
-  `/etc/systemd/system/`, `sudo systemctl daemon-reload`,
-  `sudo systemctl enable --now bd-board.service`.
-- **View:** from a tailnet client, open `http://100.85.126.95:8099`.
+  The long-lived `serve-board` process execs `bd board --json` behind a
+  singleflight+TTL cache. The child `bd board` is a **server-mode bd client**:
+  it resolves the shared DB via `~/beads-workspace/.beads` and the
+  `BEADS_DOLT_*` env. cgroup-bounded (C6) to co-exist with the live stack.
+  Currently reuses the `beads` Dolt user; **follow-up:** create a SELECT-only
+  Dolt user and point `beads-board.env` at it (the board only reads).
+- **Install (verified 2026-05-17 on pm1, x86_64; binary must be a
+  cross-compiled static linux/amd64 build — `CGO_ENABLED=0 GOOS=linux
+  GOARCH=amd64 go build -tags gms_pure_go ./cmd/bd`, NOT the macOS `make
+  build` output):**
+  1. `scp bd-linux ~/bd-board-deploy/bd`; `sudo install -m0755
+     ~/bd-board-deploy/bd /usr/local/bin/bd`.
+  2. **systemd env file** (systemd `EnvironmentFile` rejects shell `export `):
+     `sed 's/^export //' ~/beads-client.env > ~/beads-board.env && chmod 600
+     ~/beads-board.env`.
+  3. **Server-mode workspace** (one-time; connects to the EXISTING shared DB,
+     non-destructive): `mkdir -p ~/beads-workspace && cd ~/beads-workspace &&
+     bd init --server --server-host 100.85.126.95 --server-port 3307
+     --server-user beads --database beads_workspace`.
+  4. `sudo install -m0644 bd-board.service /etc/systemd/system/`;
+     `sudo systemctl daemon-reload`;
+     `sudo systemctl enable --now bd-board.service`.
+  Unit prerequisites: `WorkingDirectory=/home/admin/beads-workspace` (step 3),
+  `EnvironmentFile=/home/admin/beads-board.env` (step 2),
+  `ReadWritePaths=/home/admin/beads-workspace` (bd client runtime writes
+  under the strict sandbox).
+- **View:** from a tailnet client, open `http://100.85.126.95:8099`
+  (**LIVE since 2026-05-17**). `/healthz` → `ok`.
 - **Status/logs:** `systemctl status bd-board.service`,
   `journalctl -u bd-board.service -n 100 --no-pager`.
 - **Cold start** is gated: the unit will not (re)start until the tailnet IP

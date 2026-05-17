@@ -12,8 +12,16 @@ StartLimitBurst=3
 
 [Service]
 User=admin
+# pm1 must be a server-mode bd client: a one-time
+#   mkdir ~/beads-workspace && cd ~/beads-workspace && \
+#   bd init --server --server-host 100.85.126.95 --server-port 3307 \
+#     --server-user beads --database beads_workspace
+# creates this dir + its .beads metadata (connects to the EXISTING shared
+# DB; non-destructive). `bd board` resolves the remote DB via this .beads.
 WorkingDirectory=/home/admin/beads-workspace
-EnvironmentFile=/home/admin/beads-client.env
+# systemd EnvironmentFile needs plain KEY=value (NO shell `export `). This is
+# beads-client.env with `export ` stripped: sed 's/^export //' ... mode 600.
+EnvironmentFile=/home/admin/beads-board.env
 # C5: a (re)start does not proceed until the tailnet IP is up AND Dolt
 # answers a SQL ping. (A board that is already running is unaffected by
 # this gate and keeps serving last-good through Dolt blips — see C7.)
@@ -34,10 +42,13 @@ TasksMax=64
 Nice=10
 IOSchedulingClass=idle
 LimitNOFILE=4096
-# Defense in depth: this service is read-only.
+# Defense in depth: filesystem read-only EXCEPT the server-mode client
+# workspace, where bd maintains runtime .beads state (locks, proxy dir,
+# local_version, jsonl). Without this carve-out the strict sandbox blocks
+# bd board's normal client writes.
 ProtectSystem=strict
 ProtectHome=read-only
-ReadWritePaths=
+ReadWritePaths=/home/admin/beads-workspace
 NoNewPrivileges=true
 
 [Install]
