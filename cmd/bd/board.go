@@ -17,10 +17,9 @@ consumed by the web dashboard and the MCP tool.`,
 	Run: func(cmd *cobra.Command, args []string) {
 		project, _ := cmd.Flags().GetString("project")
 		limit, _ := cmd.Flags().GetInt("limit")
-		cursor, _ := cmd.Flags().GetString("cursor")
 		ctx := rootCtx
 
-		opts := buildBoardOptions(project, limit, cursor)
+		opts := buildBoardOptions(project, limit)
 		r, err := rollup.Compute(ctx, store, opts)
 		if err != nil {
 			FatalErrorRespectJSON("computing board: %v", err)
@@ -33,11 +32,13 @@ consumed by the web dashboard and the MCP tool.`,
 	},
 }
 
-// buildBoardOptions is unit-testable without a store. The cursor arg is a
-// reserved pagination slot (rollup.Options has no cursor field yet).
-// TODO: populate rollup.Options.CustomCategories from the store so custom
-// statuses map to their declared column instead of the fallback column.
-func buildBoardOptions(project string, limit int, _ string) rollup.Options {
+// buildBoardOptions is unit-testable without a store. v1 pagination is
+// --limit + DefaultLimit caps (spec C2); cursor-based pagination is a
+// documented future enhancement and is intentionally NOT exposed as a flag
+// until it actually does something (an advertised no-op flag is a footgun).
+// TODO(followup): populate rollup.Options.CustomCategories from the store so
+// custom statuses map to their declared column instead of the fallback one.
+func buildBoardOptions(project string, limit int) rollup.Options {
 	return rollup.Options{Project: project, Limit: limit}
 }
 
@@ -64,6 +65,5 @@ func renderBoardText(r *rollup.Rollup) {
 func init() {
 	boardCmd.Flags().String("project", "", "Scope to a single project slug")
 	boardCmd.Flags().Int("limit", 0, "Max issues to scan (0 = default cap)")
-	boardCmd.Flags().String("cursor", "", "Pagination cursor (reserved; opaque)")
 	rootCmd.AddCommand(boardCmd)
 }
