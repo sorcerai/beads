@@ -37,6 +37,10 @@ pkg/
 .codex
 
 
+# pm1 deploy: secrets + host inventory (never commit)
+deploy/pm1-beads/beads-client.env
+deploy/pm1-beads/preexisting-inventory-*.txt
+
 # OS
 .DS_Store
 Thumbs.db
