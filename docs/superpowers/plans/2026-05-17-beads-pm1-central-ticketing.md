@@ -34,10 +34,12 @@ All generated artifacts live under `deploy/pm1-beads/` in this repo (local ops; 
 
 - Create: `deploy/pm1-beads/dolt-sql-server.service` — systemd unit for the Dolt server
 - Create: `deploy/pm1-beads/preexisting-inventory-2026-05-17.txt` — pre-wipe snapshot (generated)
-- Create: `deploy/pm1-beads/client-config.yaml` — beads server-mode client config (Mac + agents)
+- Create: `deploy/pm1-beads/client-config.yaml` — beads server-mode client config (`dolt: mode/host/port/user` ONLY — no password/database keys; those are not valid beads config keys)
+- Create: `deploy/pm1-beads/beads-client.env` — generated; exports `BEADS_DOLT_*` incl. password (chmod 600, **gitignored**); clients `source` this
 - Create: `deploy/pm1-beads/backup.sh` — Mac-side backup script (off-box DR)
 - Create: `deploy/pm1-beads/RUNBOOK.md` — operations runbook
-- Create: `deploy/pm1-beads/.dolt-credentials` — generated Dolt SQL password (chmod 600, gitignored)
+
+**Auth model (corrected):** beads has no `password:`/`database:` config key. Password resolution (docs/DOLT.md:348-374) is: `BEADS_DOLT_PASSWORD` env (highest) → `~/.config/beads/credentials` `[host:port]` section → empty. This plan uses the env-var path via a sourced `beads-client.env` (doc-guaranteed, no INI-format guesswork). The beads project database is provisioned by `bd init --server`, not by manual `CREATE DATABASE`.
 
 ---
 
@@ -148,10 +150,10 @@ git commit -m "ops(pm1): capture pre-wipe inventory snapshot"
 
 ---
 
-## Task 2: Install Dolt + bd on pm1, init DB, create non-root SQL user
+## Task 2: Install Dolt + bd on pm1, init repo, create non-root SQL user
 
 **Files:**
-- Create: `deploy/pm1-beads/.dolt-credentials` (generated; chmod 600)
+- Create: `deploy/pm1-beads/beads-client.env` (generated; chmod 600; gitignored)
 
 - [ ] **Step 1: Verify Dolt/bd are NOT yet usable on pm1 (the failing check)**
 
@@ -177,7 +179,10 @@ ssh -i "$PM1_KEY" -o StrictHostKeyChecking=no -o ConnectTimeout=30 admin@100.85.
 ```
 Expected: `dolt` `>= 1.88.1` and `bd` `>= 0.59.0` printed.
 
-- [ ] **Step 3: Initialize the beads Dolt database in the data dir**
+- [ ] **Step 3: Initialize a Dolt repo for the server to serve (no manual CREATE DATABASE)**
+
+`bd init --server` (Task 5) provisions the beads project database itself. Here we
+only need a valid Dolt repo in the data dir so `dolt sql-server` has something to serve.
 
 Run:
 ```bash
@@ -186,34 +191,45 @@ ssh -i "$PM1_KEY" -o StrictHostKeyChecking=no -o ConnectTimeout=20 admin@100.85.
   set -e;
   mkdir -p /home/admin/beads-data;
   cd /home/admin/beads-data;
-  dolt init --name "beads-pm1" --email "beads@pm1.local" 2>/dev/null || echo "already initialized";
-  dolt sql -q "CREATE DATABASE IF NOT EXISTS beads;";
-  dolt ls 2>/dev/null || true;
-  echo DOLT_DB_READY
+  ( dolt status >/dev/null 2>&1 && echo "already a dolt repo" ) || dolt init --name "beads-pm1" --email "beads@pm1.local";
+  echo DOLT_REPO_READY
 '
 ```
-Expected: ends `DOLT_DB_READY`, no error.
+Expected: ends `DOLT_REPO_READY`, no error. (No `CREATE DATABASE` — that was a bug; beads names/creates its own DB on `bd init --server`.)
 
-- [ ] **Step 4: Generate a Dolt SQL password and create a non-root user**
+- [ ] **Step 4: Generate the password + write the client env file (env-var auth path)**
 
-Run (generates the secret locally, then applies it on pm1):
+Run (generates the secret locally; `BEADS_DOLT_PASSWORD` is the documented highest-priority auth path — no `password:` config key exists):
 ```bash
-PM1_KEY="/Users/ariapramesi/repos/cross-market-state-fusion/pm1_webdock_id_rsa"
 ART=/Users/ariapramesi/repos/beads/deploy/pm1-beads
 DOLT_PW="$(openssl rand -hex 24)"
-printf 'DOLT_USER=beads\nDOLT_PASSWORD=%s\nDOLT_HOST=100.85.126.95\nDOLT_PORT=3307\n' "$DOLT_PW" > "$ART/.dolt-credentials"
-chmod 600 "$ART/.dolt-credentials"
+cat > "$ART/beads-client.env" <<EOF
+# source this before running bd against pm1. gitignored (Task 8).
+export BEADS_DOLT_SERVER_MODE=1
+export BEADS_DOLT_SERVER_HOST=100.85.126.95
+export BEADS_DOLT_SERVER_PORT=3307
+export BEADS_DOLT_SERVER_USER=beads
+export BEADS_DOLT_PASSWORD='${DOLT_PW}'
+EOF
+chmod 600 "$ART/beads-client.env"
+grep -c BEADS_DOLT_PASSWORD "$ART/beads-client.env"
+```
+Expected: prints `1`; file mode `600`.
+
+- [ ] **Step 5: Create the non-root SQL user with broad privileges (beads creates its own DB)**
+
+Run (privileges on `*.*` because the project DB name is created by `bd init --server`, not pre-known):
+```bash
+PM1_KEY="/Users/ariapramesi/repos/cross-market-state-fusion/pm1_webdock_id_rsa"
+DOLT_PW="$(grep BEADS_DOLT_PASSWORD /Users/ariapramesi/repos/beads/deploy/pm1-beads/beads-client.env | sed "s/.*='//;s/'$//")"
 ssh -i "$PM1_KEY" -o StrictHostKeyChecking=no -o ConnectTimeout=20 admin@100.85.126.95 "
   cd /home/admin/beads-data &&
-  dolt sql -q \"CREATE USER IF NOT EXISTS 'beads'@'%' IDENTIFIED BY '${DOLT_PW}'; GRANT ALL PRIVILEGES ON beads.* TO 'beads'@'%'; FLUSH PRIVILEGES;\" &&
+  dolt sql -q \"CREATE USER IF NOT EXISTS 'beads'@'%' IDENTIFIED BY '${DOLT_PW}'; GRANT ALL PRIVILEGES ON *.* TO 'beads'@'%' WITH GRANT OPTION; FLUSH PRIVILEGES;\" &&
+  dolt sql -q \"SELECT user, host FROM mysql.user;\" &&
   echo DOLT_USER_CREATED
 "
 ```
-Expected: ends `DOLT_USER_CREATED`; local file `deploy/pm1-beads/.dolt-credentials` exists, mode `600`.
-
-- [ ] **Step 5: Commit (credentials file is gitignored — see Task 8; nothing to commit yet)**
-
-No commit this task (only the secret was produced). Proceed.
+Expected: ends `DOLT_USER_CREATED`; the `mysql.user` listing shows the `beads` user. **Note any `root`@`%` or empty-password root row — that is closed and verified in Task 3.**
 
 ---
 
@@ -231,7 +247,16 @@ ssh -i "$PM1_KEY" -o StrictHostKeyChecking=no -o ConnectTimeout=12 admin@100.85.
 ```
 Expected: `NOT_LISTENING`.
 
-- [ ] **Step 2: Write the systemd unit locally**
+- [ ] **Step 2: Verify `dolt sql-server` flag support on pm1 (don't assume `--data-dir`)**
+
+Run:
+```bash
+PM1_KEY="/Users/ariapramesi/repos/cross-market-state-fusion/pm1_webdock_id_rsa"
+ssh -i "$PM1_KEY" -o StrictHostKeyChecking=no -o ConnectTimeout=12 admin@100.85.126.95 'dolt sql-server --help 2>&1 | grep -E "^\s*--(host|port|data-dir)" || true'
+```
+Expected: confirms `--host` and `--port` exist. The beads docs run `dolt sql-server` from *inside* the repo dir with no `--data-dir`; the unit below uses `WorkingDirectory` + no `--data-dir` to match documented behavior. Only add `--data-dir=/home/admin/beads-data` if `--help` lists it AND running without it fails.
+
+- [ ] **Step 3: Write the systemd unit locally**
 
 Create `deploy/pm1-beads/dolt-sql-server.service`:
 ```ini
@@ -243,7 +268,7 @@ Wants=network-online.target
 [Service]
 User=admin
 WorkingDirectory=/home/admin/beads-data
-ExecStart=/usr/local/bin/dolt sql-server --host=100.85.126.95 --port=3307 --data-dir=/home/admin/beads-data
+ExecStart=/usr/local/bin/dolt sql-server --host=100.85.126.95 --port=3307
 Restart=always
 RestartSec=3
 LimitNOFILE=65536
@@ -252,7 +277,7 @@ LimitNOFILE=65536
 WantedBy=multi-user.target
 ```
 
-- [ ] **Step 3: Install, enable, and start the unit on pm1**
+- [ ] **Step 4: Install, enable, and start the unit on pm1**
 
 Run:
 ```bash
@@ -271,7 +296,7 @@ ssh -i "$PM1_KEY" -o StrictHostKeyChecking=no -o ConnectTimeout=20 admin@100.85.
 ```
 Expected: prints `active`.
 
-- [ ] **Step 4: Verify it listens on the Tailscale IP (not 0.0.0.0)**
+- [ ] **Step 5: Verify it listens on the Tailscale IP (not 0.0.0.0)**
 
 Run:
 ```bash
@@ -280,7 +305,30 @@ ssh -i "$PM1_KEY" -o StrictHostKeyChecking=no -o ConnectTimeout=12 admin@100.85.
 ```
 Expected: a line showing `100.85.126.95:3307` (NOT `0.0.0.0:3307` and NOT `*:3307`). If it shows `0.0.0.0`, stop — the `--host` bind failed; fix before Task 4.
 
-- [ ] **Step 5: Commit the unit file**
+- [ ] **Step 6: SECURITY GATE — close & verify passwordless/remote root (HARD STOP if it fails)**
+
+A `dolt sql-server` on a tailnet IP must not accept unauthenticated root. Lock it, then prove it.
+
+Run (lock root, restrict to localhost, drop wildcard root):
+```bash
+PM1_KEY="/Users/ariapramesi/repos/cross-market-state-fusion/pm1_webdock_id_rsa"
+ROOT_PW="$(openssl rand -hex 24)"
+ssh -i "$PM1_KEY" -o StrictHostKeyChecking=no -o ConnectTimeout=20 admin@100.85.126.95 "
+  cd /home/admin/beads-data &&
+  dolt sql -q \"ALTER USER IF EXISTS 'root'@'localhost' IDENTIFIED BY '${ROOT_PW}'; DROP USER IF EXISTS 'root'@'%'; FLUSH PRIVILEGES;\" 2>/dev/null;
+  dolt sql -q \"SELECT user, host, IF(authentication_string='','EMPTY','SET') AS pw FROM mysql.user;\"
+"
+```
+Expected: no user has `host = %` with `pw = EMPTY` except the intended `beads` user (which has a password set → `SET`). Record `ROOT_PW` into `beads-client.env` is **not** needed (root is not used by clients); note it in the runbook only if you want admin access.
+
+Verify from the Mac that bad/no credentials are rejected:
+```bash
+source /Users/ariapramesi/repos/beads/deploy/pm1-beads/beads-client.env
+BEADS_DOLT_SERVER_USER=root BEADS_DOLT_PASSWORD="" bd version >/dev/null 2>&1 && bd list 2>&1 | head -1
+```
+Expected: the root/no-password attempt **fails to read data** (auth error / connection refused), NOT a ticket list. If passwordless root can read/write over the tailnet: **HARD STOP — do not proceed to Task 4. Escalate to the user.**
+
+- [ ] **Step 7: Commit the unit file**
 
 ```bash
 cd /Users/ariapramesi/repos/beads
@@ -342,38 +390,35 @@ mkdir -p ~/beads-workspace && cd ~/beads-workspace && (bd status 2>&1 | head -3 
 ```
 Expected: `NO_WORKSPACE` or "not initialized".
 
-- [ ] **Step 2: Write the client server-mode config**
+- [ ] **Step 2: Write the client server-mode config (NO password/database keys — invalid in beads)**
 
-Read the generated password:
-```bash
-cat /Users/ariapramesi/repos/beads/deploy/pm1-beads/.dolt-credentials
-```
-Create `deploy/pm1-beads/client-config.yaml` (substitute the real `DOLT_PASSWORD` value from the file above — do not leave the literal token):
+Create `deploy/pm1-beads/client-config.yaml` exactly as below. Password is supplied
+via the sourced `beads-client.env` (`BEADS_DOLT_PASSWORD`), not config:
 ```yaml
 dolt:
   mode: server
   host: 100.85.126.95
   port: 3307
   user: beads
-  password: PASTE_DOLT_PASSWORD_FROM_.dolt-credentials
-  database: beads
 ```
 
-- [ ] **Step 3: Initialize the workspace in server mode and point it at pm1**
+- [ ] **Step 3: Initialize the workspace in server mode (env-var auth) and point it at pm1**
 
 Run:
 ```bash
+source /Users/ariapramesi/repos/beads/deploy/pm1-beads/beads-client.env
 cd ~/beads-workspace
 mkdir -p .beads
 cp /Users/ariapramesi/repos/beads/deploy/pm1-beads/client-config.yaml .beads/config.yaml
 bd init --server
 ```
-Expected: beads reports server-mode init against `100.85.126.95:3307`, no connection error.
+Expected: beads reports server-mode init against `100.85.126.95:3307`, no connection/auth error. (If auth fails: confirm `echo $BEADS_DOLT_PASSWORD` is non-empty and matches the pm1 `beads` user from Task 2 Step 5.)
 
 - [ ] **Step 4: Create a smoke-test ticket and read it back**
 
 Run:
 ```bash
+source /Users/ariapramesi/repos/beads/deploy/pm1-beads/beads-client.env
 cd ~/beads-workspace
 bd create "pm1 central ticketing online" -p 1 -t task --json | tee /tmp/bd_create.json
 bd list --json | grep "pm1 central ticketing online"
@@ -398,10 +443,9 @@ git commit -m "ops(pm1): beads server-mode client config template"
 
 Run:
 ```bash
+source /Users/ariapramesi/repos/beads/deploy/pm1-beads/beads-client.env
 mkdir -p /tmp/agent-bd && cd /tmp/agent-bd && mkdir -p .beads
 cp /Users/ariapramesi/repos/beads/deploy/pm1-beads/client-config.yaml .beads/config.yaml
-# substitute the real password in this copy too:
-sed -i '' "s/PASTE_DOLT_PASSWORD_FROM_.dolt-credentials/$(grep DOLT_PASSWORD /Users/ariapramesi/repos/beads/deploy/pm1-beads/.dolt-credentials | cut -d= -f2)/" .beads/config.yaml
 bd init --server
 bd list --json | grep "pm1 central ticketing online"
 ```
@@ -413,6 +457,7 @@ Run:
 ```bash
 PM1_KEY="/Users/ariapramesi/repos/cross-market-state-fusion/pm1_webdock_id_rsa"
 ssh -i "$PM1_KEY" -o StrictHostKeyChecking=no -o ConnectTimeout=15 admin@100.85.126.95 'sudo systemctl restart dolt-sql-server.service; sleep 4; systemctl is-active dolt-sql-server.service'
+source /Users/ariapramesi/repos/beads/deploy/pm1-beads/beads-client.env
 cd ~/beads-workspace && bd list --json | grep "pm1 central ticketing online"
 ```
 Expected: service `active` after restart; ticket still present (data persisted to Dolt).
@@ -431,6 +476,7 @@ Create `deploy/pm1-beads/backup.sh`:
 #!/usr/bin/env bash
 # Off-box DR for the pm1 beads workspace. Run from a server-mode client.
 set -euo pipefail
+source /Users/ariapramesi/repos/beads/deploy/pm1-beads/beads-client.env
 DEST="${1:-$HOME/beads-backups}"
 mkdir -p "$DEST"
 cd "$HOME/beads-workspace"
@@ -457,6 +503,7 @@ mkdir -p /tmp/restore-test && cd /tmp/restore-test && bd init
 bd backup restore --force "$HOME/beads-backups"
 bd list --json | grep "pm1 central ticketing online" && echo RESTORE_OK
 ```
+(Restore target uses default embedded mode — no env needed; it reads the backup, not pm1.)
 Expected: ends `RESTORE_OK` — the smoke-test ticket exists in the restored copy.
 
 - [ ] **Step 4: Schedule the backup (Mac cron, daily)**
@@ -484,17 +531,17 @@ git commit -m "ops(pm1): off-box backup script + restore-tested DR"
 - Create: `deploy/pm1-beads/RUNBOOK.md`
 - Modify: `.gitignore`
 
-- [ ] **Step 1: Gitignore the credentials file**
+- [ ] **Step 1: Gitignore the secret env file**
 
 Append to `/Users/ariapramesi/repos/beads/.gitignore`:
 ```
-deploy/pm1-beads/.dolt-credentials
+deploy/pm1-beads/beads-client.env
 ```
 Run:
 ```bash
-cd /Users/ariapramesi/repos/beads && git check-ignore deploy/pm1-beads/.dolt-credentials && echo IGNORED
+cd /Users/ariapramesi/repos/beads && git check-ignore deploy/pm1-beads/beads-client.env && echo IGNORED
 ```
-Expected: `IGNORED`.
+Expected: `IGNORED`. (Verify the secret was never committed: `git log --all --oneline -- deploy/pm1-beads/beads-client.env` returns nothing.)
 
 - [ ] **Step 2: Write the runbook**
 
@@ -510,7 +557,7 @@ Create `deploy/pm1-beads/RUNBOOK.md`:
 - Status:  ssh ... 'systemctl status dolt-sql-server.service'
 - Restart: ssh ... 'sudo systemctl restart dolt-sql-server.service'
 - Logs:    ssh ... 'journalctl -u dolt-sql-server.service -n 100 --no-pager'
-- Client config: copy deploy/pm1-beads/client-config.yaml to <workspace>/.beads/config.yaml, fill password from .dolt-credentials.
+- Client setup: `source deploy/pm1-beads/beads-client.env` then copy client-config.yaml to <workspace>/.beads/config.yaml. Password is the `BEADS_DOLT_PASSWORD` env var (no password key in config).
 - Backup:  deploy/pm1-beads/backup.sh (cron: daily 09:30 local).
 - Restore: bd init && bd backup restore --force ~/beads-backups
 
@@ -518,8 +565,8 @@ Create `deploy/pm1-beads/RUNBOOK.md`:
 Reprovision from this plan (Tasks 2-4), then `bd backup restore --force` from ~/beads-backups.
 
 ## Rotate Dolt password
-On pm1: dolt sql -q "ALTER USER 'beads'@'%' IDENTIFIED BY '<new>';" in /home/admin/beads-data,
-update .dolt-credentials and every client .beads/config.yaml.
+On pm1 (in /home/admin/beads-data): dolt sql -q "ALTER USER 'beads'@'%' IDENTIFIED BY '<new>';"
+then update BEADS_DOLT_PASSWORD in deploy/pm1-beads/beads-client.env on every client.
 ```
 
 - [ ] **Step 3: Commit runbook + gitignore**
@@ -534,6 +581,7 @@ git commit -m "ops(pm1): runbook + gitignore Dolt credentials"
 
 Run:
 ```bash
+source /Users/ariapramesi/repos/beads/deploy/pm1-beads/beads-client.env
 cd ~/beads-workspace
 bd create "verify: full pipeline" -t task --json >/dev/null
 bd list --json | grep "verify: full pipeline" && echo PIPELINE_OK
@@ -546,8 +594,10 @@ Expected: `PIPELINE_OK` and `active`.
 
 ## Self-Review
 
-**Spec coverage:** Phase 0 nuke → Task 1. pm1 provisioning → Task 2. Dolt server (systemd, tailnet bind, non-root user) → Tasks 2–3. Network/security (ufw, tailnet-only) → Task 4. bd CLI install → Task 2 (pm1) + Task 0 (Mac). Client config + bootstrap → Task 5. Backup/DR → Task 7. Verification (create/read/restart/off-tailnet/backup round-trip) → Tasks 5–8. Wrong-host guard → Task 0 Step 1 + operating constraints. Out-of-scope (web UI, reverie) honored — no tasks added. No gaps.
+**Spec coverage:** Phase 0 nuke → Task 1. pm1 provisioning → Task 2. Dolt server (systemd, tailnet bind, non-root user, **root-auth lockdown gate**) → Tasks 2–3. Network/security (ufw, tailnet-only) → Task 4. bd CLI install → Task 2 (pm1) + Task 0 (Mac). Client config + bootstrap → Task 5. Backup/DR → Task 7. Verification (create/read/restart/off-tailnet/auth-rejected/backup round-trip) → Tasks 3, 5–8. Wrong-host guard → Task 0 Step 1 + operating constraints. Out-of-scope (web UI, reverie) honored — no tasks added. No gaps.
 
-**Placeholder scan:** One intentional fill-in: the real Dolt password is pasted from the generated `.dolt-credentials` into `client-config.yaml` (Task 5 Step 2, Task 6 Step 1) — this is a generated secret, not a plan placeholder, and the steps state explicitly to substitute it.
+**Auth-model correction (post-review):** Removed invalid `password:`/`database:` config keys and the bogus `CREATE DATABASE beads`; auth now uses the documented `BEADS_DOLT_PASSWORD` env path via a gitignored `beads-client.env`; added a hard security gate (Task 3 Step 6) that closes and *verifies* passwordless/remote root before the port is opened in Task 4.
 
-**Type/name consistency:** Host `100.85.126.95`, user `admin`, key path, port `3307`, data dir `/home/admin/beads-data`, service `dolt-sql-server.service`, Dolt user `beads`, workspace `~/beads-workspace`, backup dir `~/beads-backups`, artifact dir `deploy/pm1-beads/` — used identically across all tasks.
+**Placeholder scan:** No fill-in placeholders remain. Secrets are generated by command (`openssl rand`) into `beads-client.env`; no `PASTE_…` tokens.
+
+**Type/name consistency:** Host `100.85.126.95`, user `admin`, key path, port `3307`, data dir `/home/admin/beads-data`, service `dolt-sql-server.service`, Dolt user `beads`, secret file `deploy/pm1-beads/beads-client.env`, workspace `~/beads-workspace`, backup dir `~/beads-backups`, artifact dir `deploy/pm1-beads/` — used identically across all tasks.
