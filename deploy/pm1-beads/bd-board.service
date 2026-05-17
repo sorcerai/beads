@@ -1,0 +1,31 @@
+[Unit]
+Description=Beads Project Board (read-only, tailnet only)
+After=network-online.target tailscaled.service dolt-sql-server.service
+Wants=network-online.target
+Requires=dolt-sql-server.service
+
+[Service]
+User=admin
+WorkingDirectory=/home/admin/beads-workspace
+EnvironmentFile=/home/admin/beads-client.env
+# C5: do not start until the tailnet IP is up AND Dolt answers a SQL ping.
+ExecStartPre=/bin/sh -c 'ip addr show | grep -q 100.85.126.95 || (echo "tailnet IP missing" >&2; exit 1)'
+ExecStartPre=/bin/sh -c '/usr/local/bin/dolt --host 100.85.126.95 --port 3307 --user "$BEADS_DOLT_SERVER_USER" --password "$BEADS_DOLT_PASSWORD" --no-tls sql -q "SELECT 1" >/dev/null 2>&1 || (echo "dolt ping failed" >&2; exit 1)'
+ExecStart=/usr/local/bin/bd serve-board --addr 100.85.126.95:8099 --refresh 30 --cache-ttl 20 --exec-timeout 10
+Restart=always
+RestartSec=5
+# C6: bound footprint on the shared box (co-exist with the live stack).
+MemoryMax=192M
+CPUQuota=25%
+TasksMax=64
+Nice=10
+IOSchedulingClass=idle
+LimitNOFILE=4096
+# Defense in depth: this service is read-only.
+ProtectSystem=strict
+ProtectHome=read-only
+ReadWritePaths=
+NoNewPrivileges=true
+
+[Install]
+WantedBy=multi-user.target

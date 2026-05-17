@@ -72,3 +72,23 @@ Then update `BEADS_DOLT_PASSWORD` in `deploy/pm1-beads/beads-client.env` on ever
 pm1 `/` ran ~92% full; the hog is reclaimable Docker build cache/images
 (~50 GB), not beads (DB <1 MB). Safe reclaim (touches nothing live):
 `sudo docker builder prune -af; sudo docker image prune -af; sudo apt-get clean`.
+
+
+## Project board (read-only web)
+
+- **Unit:** `bd-board.service` (this dir). Binds **only** `100.85.126.95:8099`.
+  Holds NO DB credentials: it execs `bd board --json` behind a
+  singleflight+TTL cache. cgroup-bounded (C6) to co-exist with the live
+  stack. Read-only Dolt user (reuses `BEADS_DOLT_SERVER_USER` from
+  `beads-client.env`; ensure that user has SELECT-only grants).
+- **Install:** copy `bd` to `/usr/local/bin/bd`, copy the unit to
+  `/etc/systemd/system/`, `sudo systemctl daemon-reload`,
+  `sudo systemctl enable --now bd-board.service`.
+- **View:** from a tailnet client, open `http://100.85.126.95:8099`.
+- **Status/logs:** `systemctl status bd-board.service`,
+  `journalctl -u bd-board.service -n 100 --no-pager`.
+- **It will not start** until the tailnet IP is present and Dolt answers a
+  SQL ping (ExecStartPre, C5). On Dolt/Tailscale outage the page renders
+  last-good with a "stale — backend error" banner (C7).
+- **Read-only grant check:** the board's SQL user must be SELECT-only.
+  Verify: `SHOW GRANTS FOR '<board user>'@'%';` shows no INSERT/UPDATE/DELETE.
