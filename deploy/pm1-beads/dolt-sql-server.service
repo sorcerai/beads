@@ -1,0 +1,15 @@
+[Unit]
+Description=Dolt SQL Server for Beads (tailnet only)
+After=network-online.target tailscaled.service
+Wants=network-online.target
+
+[Service]
+User=admin
+WorkingDirectory=/home/admin/beads-data
+ExecStart=/usr/local/bin/dolt sql-server --host=100.85.126.95 --port=3307 --data-dir=/home/admin/beads-data --skip-root-user-initialization
+Restart=always
+RestartSec=3
+LimitNOFILE=65536
+
+[Install]
+WantedBy=multi-user.target
