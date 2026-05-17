@@ -1115,6 +1115,23 @@ git commit -m "feat(deploy): bd-board systemd unit (health gate + cgroup limits)
 
 ## Task 6: MCP tool (`integrations/beads-mcp`)
 
+> **CORRECTION (architecture):** the MCP layering is 4 files, not 3. Verified
+> pattern: `server.py` `@mcp.tool` is a thin wrapper that calls a module-level
+> `beads_<name>()` in **`tools.py`**, which does `client = await _get_client()`
+> then `await client.<name>(...)`. `BdClient = BdCliClient` (alias, tests use
+> `BdClient`); abstract base is `BdClientBase`. So Task 6 = (1) abstract
+> `board()` on `BdClientBase` + concrete on `BdCliClient` (mirror `stats` at
+> bd_client.py:152 abstract / :708 concrete — `data = await
+> self._run_command(*args)`, `_run_command` adds `--json` itself), (2) new
+> `beads_board()` in `tools.py` (mirror `beads_stats` at tools.py:627), (3)
+> register `beads_board` in server.py's `from beads_mcp.tools import (...)`
+> block AND add the `@mcp.tool(name="board")`+`@with_workspace` wrapper
+> (mirror `stats` tool at server.py:1220), (4) test in
+> `tests/test_bd_client.py` using the existing `bd_client` fixture +
+> `@pytest.mark.asyncio` (asyncio_mode=auto), monkeypatching `_run_command`.
+> `board()` returns `dict[str, Any]` (no pydantic model — rollup JSON is
+> nested/opaque). `Any` already imported in both bd_client.py and tools.py.
+
 **Files:**
 - Modify: `integrations/beads-mcp/src/beads_mcp/bd_client.py`
 - Modify: `integrations/beads-mcp/src/beads_mcp/server.py`
