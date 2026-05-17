@@ -60,7 +60,7 @@ func TestBoardCache_GoodTimestampIsFetchTimeNotNow(t *testing.T) {
 	if fetchedAt.IsZero() {
 		t.Fatal("goodTimestamp must be set after a successful fetch")
 	}
-	time.Sleep(15 * time.Millisecond)
+	time.Sleep(60 * time.Millisecond)
 	fail = true
 	if _, stale, _ := bc.get(context.Background()); !stale {
 		t.Fatal("expected stale after backend error")
@@ -69,7 +69,7 @@ func TestBoardCache_GoodTimestampIsFetchTimeNotNow(t *testing.T) {
 	if !bc.goodTimestamp().Equal(fetchedAt) {
 		t.Fatalf("goodTimestamp moved: was %v now %v (banner would mislead)", fetchedAt, bc.goodTimestamp())
 	}
-	if time.Since(bc.goodTimestamp()) < 10*time.Millisecond {
+	if time.Since(bc.goodTimestamp()) < 40*time.Millisecond {
 		t.Fatal("goodTimestamp should reflect the older fetch, not the recent failed attempt")
 	}
 }

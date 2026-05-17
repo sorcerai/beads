@@ -5,6 +5,7 @@ import (
 	"context"
 	"fmt"
 	"html/template"
+	"io"
 	"net/http"
 	"os"
 	"os/exec"
@@ -25,10 +26,9 @@ type boardCache struct {
 	fetch fetchFn
 	sf    singleflight.Group
 
-	mu      sync.Mutex
-	good    []byte
-	goodAt  time.Time
-	lastErr error
+	mu     sync.Mutex
+	good   []byte
+	goodAt time.Time
 }
 
 func newBoardCache(ttl time.Duration, fetch fetchFn) *boardCache {
@@ -45,20 +45,22 @@ func (b *boardCache) get(ctx context.Context) ([]byte, bool, error) {
 	if fresh {
 		return cached, false, nil
 	}
+	// singleflight passes the first caller's ctx to fetch; if that caller
+	// cancels, peers share the error. Acceptable for an O(1)-viewer tailnet
+	// board (last-good still serves), not worth a detached-fetch rework.
 	v, err, _ := b.sf.Do("board", func() (interface{}, error) {
 		body, ferr := b.fetch(ctx)
 		if ferr != nil {
 			return nil, ferr
 		}
 		b.mu.Lock()
-		b.good, b.goodAt, b.lastErr = body, time.Now(), nil
+		b.good, b.goodAt = body, time.Now()
 		b.mu.Unlock()
 		return body, nil
 	})
 	if err != nil {
 		b.mu.Lock()
 		good := b.good
-		b.lastErr = err
 		b.mu.Unlock()
 		if good != nil {
 			return good, true, nil
@@ -87,13 +89,35 @@ func execBoardJSON(ctx context.Context, timeout time.Duration) ([]byte, error) {
 	cctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 	cmd := exec.CommandContext(cctx, self, "board", "--json")
-	var out bytes.Buffer
-	cmd.Stdout = &out
-	if err := cmd.Run(); err != nil {
-		return nil, fmt.Errorf("bd board --json failed: %w", err)
+	stdout, err := cmd.StdoutPipe()
+	if err != nil {
+		return nil, fmt.Errorf("stdout pipe: %w", err)
 	}
-	if out.Len() > maxBoardJSONBytes {
+	var errBuf bytes.Buffer
+	cmd.Stderr = &errBuf
+	if err := cmd.Start(); err != nil {
+		return nil, fmt.Errorf("start bd board: %w", err)
+	}
+	// Bound memory on the shared host (spec C6): never buffer more than the
+	// cap, even if the child misbehaves. Read at most cap+1; if we hit that,
+	// the output is over-large — kill the child now rather than wait out the
+	// timeout. Read fully before Wait (StdoutPipe contract).
+	var out bytes.Buffer
+	n, copyErr := io.Copy(&out, io.LimitReader(stdout, maxBoardJSONBytes+1))
+	if n > maxBoardJSONBytes {
+		cancel()
+		_ = cmd.Wait()
 		return nil, fmt.Errorf("board json exceeds %d bytes", maxBoardJSONBytes)
+	}
+	if waitErr := cmd.Wait(); waitErr != nil {
+		msg := errBuf.String()
+		if len(msg) > 2000 {
+			msg = msg[:2000] + "…"
+		}
+		return nil, fmt.Errorf("bd board --json failed: %w (stderr: %s)", waitErr, msg)
+	}
+	if copyErr != nil {
+		return nil, fmt.Errorf("reading bd board output: %w", copyErr)
 	}
 	return out.Bytes(), nil
 }
