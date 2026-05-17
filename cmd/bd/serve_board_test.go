@@ -44,3 +44,32 @@ func TestBoardCache_LastGoodOnError(t *testing.T) {
 		t.Fatalf("on backend error: want last-good + stale, got body=%q stale=%v err=%v", body, stale, err)
 	}
 }
+
+func TestBoardCache_GoodTimestampIsFetchTimeNotNow(t *testing.T) {
+	fail := false
+	bc := newBoardCache(time.Millisecond, func(_ context.Context) ([]byte, error) {
+		if fail {
+			return nil, context.DeadlineExceeded
+		}
+		return []byte(`{"ok":true}`), nil
+	})
+	if _, _, err := bc.get(context.Background()); err != nil {
+		t.Fatalf("seed fetch: %v", err)
+	}
+	fetchedAt := bc.goodTimestamp()
+	if fetchedAt.IsZero() {
+		t.Fatal("goodTimestamp must be set after a successful fetch")
+	}
+	time.Sleep(15 * time.Millisecond)
+	fail = true
+	if _, stale, _ := bc.get(context.Background()); !stale {
+		t.Fatal("expected stale after backend error")
+	}
+	// The stale banner must report the original fetch time, not "now".
+	if !bc.goodTimestamp().Equal(fetchedAt) {
+		t.Fatalf("goodTimestamp moved: was %v now %v (banner would mislead)", fetchedAt, bc.goodTimestamp())
+	}
+	if time.Since(bc.goodTimestamp()) < 10*time.Millisecond {
+		t.Fatal("goodTimestamp should reflect the older fetch, not the recent failed attempt")
+	}
+}

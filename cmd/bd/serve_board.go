@@ -68,6 +68,15 @@ func (b *boardCache) get(ctx context.Context) ([]byte, bool, error) {
 	return v.([]byte), false, nil
 }
 
+// goodTimestamp returns when the last successful fetch completed (zero if
+// none yet). The stale banner must show this, not the request time, or it
+// defeats spec C7 (operators must not mistake old data for live).
+func (b *boardCache) goodTimestamp() time.Time {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.goodAt
+}
+
 // execBoardJSON runs `bd board --json` (this same binary), with a hard
 // deadline and an output cap. The web process holds no DB credentials.
 func execBoardJSON(ctx context.Context, timeout time.Duration) ([]byte, error) {
@@ -126,7 +135,7 @@ func serveBoard(addr string, refreshSec int, ttl, timeout time.Duration) error {
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
 		_ = boardPageTmpl.Execute(w, map[string]any{
 			"JSON": string(body), "Stale": stale,
-			"Refresh": refreshSec, "GoodAt": time.Now().UTC().Format(time.RFC3339),
+			"Refresh": refreshSec, "GoodAt": cache.goodTimestamp().UTC().Format(time.RFC3339),
 		})
 	})
 	srv := &http.Server{
