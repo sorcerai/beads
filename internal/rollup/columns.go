@@ -14,7 +14,7 @@ const (
 	ColumnInProgress Column = "in_progress" // category: wip
 	ColumnDone       Column = "done"        // category: done
 	ColumnDeferred   Column = "deferred"    // category: frozen
-	ColumnFallback   Column = "fallback"    // unspecified / unknown custom
+	ColumnFallback   Column = "fallback"    // unspecified / unknown / unmapped
 )
 
 // columnForCategory maps a StatusCategory to a fixed board column.
@@ -35,7 +35,9 @@ func columnForCategory(c types.StatusCategory) Column {
 
 // ColumnForStatus returns the board column for a status. Built-in statuses
 // use types.BuiltInStatusCategory. Custom statuses use their self-declared
-// category from customCategories (status name -> category); unknown -> fallback.
+// category from customCategories (status name -> category). A custom status
+// mapped to an unspecified/unknown category, or a status absent from the map,
+// resolves to ColumnFallback.
 func ColumnForStatus(s types.Status, customCategories map[string]types.StatusCategory) Column {
 	cat := types.BuiltInStatusCategory(s)
 	if cat == types.CategoryUnspecified {

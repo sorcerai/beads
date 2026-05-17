@@ -41,3 +41,10 @@ func TestColumnForStatus_UnknownFallsBack(t *testing.T) {
 		t.Errorf("unknown status = %q, want %q", got, ColumnFallback)
 	}
 }
+
+func TestColumnForStatus_CustomUnspecifiedCategoryFallsBack(t *testing.T) {
+	custom := map[string]types.StatusCategory{"vague": types.CategoryUnspecified}
+	if got := ColumnForStatus(types.Status("vague"), custom); got != ColumnFallback {
+		t.Errorf("custom unspecified-category status = %q, want %q", got, ColumnFallback)
+	}
+}
