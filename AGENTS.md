@@ -155,6 +155,12 @@ cp -rf source dest          # NOT: cp -r source dest
 - Agent-optimized: JSON output, ready work detection, discovered-from links
 - Prevents duplicate tracking systems and confusion
 
+### Work-tracking discipline (cross-project rule)
+
+On project work, your working to-do list and progress notes live in beads (`bd`) so the whole picture stays visible — unless the project's agent docs name another tracker, or a Linear MCP is wired for that repo, in which case use that instead.
+
+Tracker precedence (per project): (a) the repo's `AGENTS.md`/`CLAUDE.md` names a tracker → that wins; (b) else a `*linear*` MCP server wired for that repo (in `.mcp.json` or `.claude/settings*.json`; the account-wide claude.ai Linear connector does NOT count) → Linear; (c) else beads — the default; everything goes there. For *this* repo no Linear MCP is wired, so beads is the tracker.
+
 ### Quick Start
 
 **Check for ready work:**
@@ -230,9 +236,9 @@ bd automatically syncs via Dolt:
 - ✅ Always use `--json` flag for programmatic use
 - ✅ Link discovered work with `discovered-from` dependencies
 - ✅ Check `bd ready` before asking "what should I work on?"
-- ❌ Do NOT create markdown TODO lists
-- ❌ Do NOT use external issue trackers
-- ❌ Do NOT duplicate tracking systems
+- ❌ Do NOT create markdown TODO lists or throwaway in-reply checklists for project work
+- ❌ Do NOT use an external tracker *unless* this repo's tracker precedence selects one (see "Work-tracking discipline" above) — for this repo that means beads
+- ❌ Do NOT duplicate tracking systems (use the one the precedence rule selects, not two)
 
 For more details, see README.md and docs/QUICKSTART.md.
 
