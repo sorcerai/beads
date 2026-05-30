@@ -27,7 +27,13 @@ EnvironmentFile=/home/admin/beads-board.env
 # this gate and keeps serving last-good through Dolt blips — see C7.)
 ExecStartPre=/bin/sh -c 'ip addr show | grep -qF 100.85.126.95 || (echo "tailnet IP missing" >&2; exit 1)'
 ExecStartPre=/bin/sh -c '/usr/local/bin/dolt --host 100.85.126.95 --port 3307 --user "$BEADS_DOLT_SERVER_USER" --password "$BEADS_DOLT_PASSWORD" --no-tls sql -q "SELECT 1" >/dev/null 2>&1 || (echo "dolt ping failed" >&2; exit 1)'
-ExecStart=/usr/local/bin/bd serve-board --addr 100.85.126.95:8099 --refresh 30 --cache-ttl 20 --exec-timeout 10
+# Base ticketing workspace is explicit; every project workspace is auto-discovered
+# by the glob, expanded live on each fetch — register.sh just creates the dir and
+# it appears on the board within the cache TTL, no edit/restart here. bd board runs
+# read-only against each (no ReadWritePaths needed for globbed workspaces).
+ExecStart=/usr/local/bin/bd serve-board --addr 100.85.126.95:8099 --refresh 30 --cache-ttl 20 --exec-timeout 10 \
+  --workspace /home/admin/beads-workspace \
+  --workspace-glob '/home/admin/beads-*-workspace'
 Restart=always
 RestartSec=5
 # A single OOM stops the unit instead of entering a SIGKILL/restart loop
@@ -48,7 +54,7 @@ LimitNOFILE=4096
 # bd board's normal client writes.
 ProtectSystem=strict
 ProtectHome=read-only
-ReadWritePaths=/home/admin/beads-workspace
+ReadWritePaths=/home/admin/beads-workspace /home/admin/beads-creator-kb-factory-workspace /home/admin/beads-growthcapital-content-workspace /home/admin/beads-KreatorFlow-workspace /home/admin/beads-antigravity-dashboard-workspace
 NoNewPrivileges=true
 
 [Install]

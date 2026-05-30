@@ -3,6 +3,9 @@ package main
 import (
 	"bytes"
 	"context"
+	"encoding/json"
+	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -11,6 +14,163 @@ import (
 
 	"github.com/steveyegge/beads/internal/rollup"
 )
+
+func wb(dir, data string) workspaceBlob { return workspaceBlob{dir: dir, data: []byte(data)} }
+
+func TestMergeRollups_CombinesProjects(t *testing.T) {
+	a := `{"generated_at":"2026-01-01T10:00:00Z","projects":[{"slug":"alpha","epics":[],"loose":[]}],"diagnostics":[]}`
+	b := `{"generated_at":"2026-01-01T11:00:00Z","projects":[{"slug":"beta","epics":[],"loose":[]}],"diagnostics":[]}`
+	out, err := mergeRollups([]workspaceBlob{wb("", a), wb("", b)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var r rollup.Rollup
+	if err := json.Unmarshal(out, &r); err != nil {
+		t.Fatal(err)
+	}
+	if len(r.Projects) != 2 {
+		t.Fatalf("want 2 projects, got %d: %+v", len(r.Projects), r.Projects)
+	}
+	slugs := map[string]bool{}
+	for _, p := range r.Projects {
+		slugs[p.Slug] = true
+	}
+	if !slugs["alpha"] || !slugs["beta"] {
+		t.Fatalf("missing slug: %v", slugs)
+	}
+}
+
+func TestMergeRollups_DeduplicatesSameSlug(t *testing.T) {
+	a := `{"generated_at":"2026-01-01T00:00:00Z","projects":[{"slug":"Unassigned","epics":[],"loose":[{"id":"x","title":"x","status":"open","column":"todo","priority":0,"updated_at":"2026-01-01T00:00:00Z"}]}],"diagnostics":[]}`
+	b := `{"generated_at":"2026-01-01T00:00:00Z","projects":[{"slug":"Unassigned","epics":[],"loose":[{"id":"y","title":"y","status":"open","column":"todo","priority":0,"updated_at":"2026-01-01T00:00:00Z"}]}],"diagnostics":[]}`
+	out, _ := mergeRollups([]workspaceBlob{wb("", a), wb("", b)})
+	var r rollup.Rollup
+	if err := json.Unmarshal(out, &r); err != nil {
+		t.Fatal(err)
+	}
+	if len(r.Projects) != 1 {
+		t.Fatalf("same-slug projects must merge into one, got %d", len(r.Projects))
+	}
+	if len(r.Projects[0].Loose) != 2 {
+		t.Fatalf("merged project must have both cards, got %d", len(r.Projects[0].Loose))
+	}
+}
+
+func TestMergeRollups_RenamesUnassignedToWorkspaceName(t *testing.T) {
+	data := `{"generated_at":"2026-01-01T00:00:00Z","projects":[{"slug":"Unassigned","epics":[],"loose":[]}],"diagnostics":[]}`
+	out, _ := mergeRollups([]workspaceBlob{wb("/home/admin/beads-myproject-workspace", data)})
+	var r rollup.Rollup
+	if err := json.Unmarshal(out, &r); err != nil {
+		t.Fatal(err)
+	}
+	if len(r.Projects) != 1 || r.Projects[0].Slug != "myproject" {
+		t.Fatalf("want slug=myproject, got %+v", r.Projects)
+	}
+}
+
+func TestWorkspaceName(t *testing.T) {
+	cases := []struct{ dir, want string }{
+		{"/home/admin/beads-creator-kb-factory-workspace", "creator-kb-factory"},
+		{"/home/admin/beads-KreatorFlow-workspace", "KreatorFlow"},
+		{"/home/admin/beads-workspace", ""},  // generic, no project name
+		{"", ""},                              // CWD default
+		{"/home/admin/other-dir", ""},         // doesn't match convention
+	}
+	for _, c := range cases {
+		if got := workspaceName(c.dir); got != c.want {
+			t.Errorf("workspaceName(%q) = %q, want %q", c.dir, got, c.want)
+		}
+	}
+}
+
+func TestResolveWorkspaces_GlobAndExplicitUnion(t *testing.T) {
+	dir := t.TempDir()
+	// Two matching workspace dirs + a non-matching dir + a file that matches the glob.
+	for _, d := range []string{"beads-alpha-workspace", "beads-beta-workspace", "unrelated"} {
+		if err := os.Mkdir(filepath.Join(dir, d), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.WriteFile(filepath.Join(dir, "beads-file-workspace"), []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	glob := filepath.Join(dir, "beads-*-workspace")
+
+	got := resolveWorkspaces([]string{"/explicit/base"}, []string{glob})
+
+	// explicit first, then the two matching DIRS (file excluded), sorted by glob.
+	if len(got) != 3 || got[0] != "/explicit/base" {
+		t.Fatalf("want explicit base + 2 dirs, got %v", got)
+	}
+	found := map[string]bool{}
+	for _, g := range got {
+		found[filepath.Base(g)] = true
+	}
+	if !found["beads-alpha-workspace"] || !found["beads-beta-workspace"] {
+		t.Fatalf("glob did not pick up both workspace dirs: %v", got)
+	}
+	if found["beads-file-workspace"] || found["unrelated"] {
+		t.Fatalf("glob included a file or non-matching dir: %v", got)
+	}
+}
+
+func TestResolveWorkspaces_DedupAndEmptyFallback(t *testing.T) {
+	// Empty inputs => CWD fallback (back-compat).
+	if got := resolveWorkspaces(nil, nil); len(got) != 1 || got[0] != "" {
+		t.Fatalf("empty inputs must fall back to {\"\"}, got %v", got)
+	}
+	// A dir that is both explicit and glob-matched appears once.
+	dir := t.TempDir()
+	ws := filepath.Join(dir, "beads-x-workspace")
+	if err := os.Mkdir(ws, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	got := resolveWorkspaces([]string{ws}, []string{filepath.Join(dir, "beads-*-workspace")})
+	if len(got) != 1 || got[0] != ws {
+		t.Fatalf("explicit+glob dup must collapse to one, got %v", got)
+	}
+}
+
+func TestMergeRollups_UsesMaxGeneratedAt(t *testing.T) {
+	a := `{"generated_at":"2026-01-01T10:00:00Z","projects":[],"diagnostics":[]}`
+	b := `{"generated_at":"2026-01-01T11:00:00Z","projects":[],"diagnostics":[]}`
+	out, _ := mergeRollups([]workspaceBlob{wb("", a), wb("", b)})
+	var r rollup.Rollup
+	if err := json.Unmarshal(out, &r); err != nil {
+		t.Fatal(err)
+	}
+	if got := r.GeneratedAt.UTC().Format(time.RFC3339); got != "2026-01-01T11:00:00Z" {
+		t.Fatalf("want max GeneratedAt, got %s", got)
+	}
+}
+
+func TestMergeRollups_MergesDiagnostics(t *testing.T) {
+	a := `{"generated_at":"2026-01-01T00:00:00Z","projects":[],"diagnostics":[{"kind":"multi_project","issue_id":"a-1"}]}`
+	b := `{"generated_at":"2026-01-01T00:00:00Z","projects":[],"diagnostics":[{"kind":"invalid_graph","issue_id":"b-2"}]}`
+	out, _ := mergeRollups([]workspaceBlob{wb("", a), wb("", b)})
+	var r rollup.Rollup
+	if err := json.Unmarshal(out, &r); err != nil {
+		t.Fatal(err)
+	}
+	if len(r.Diagnostics) != 2 {
+		t.Fatalf("want 2 diagnostics, got %d", len(r.Diagnostics))
+	}
+}
+
+func TestMergeRollups_SkipsMalformedBlobs(t *testing.T) {
+	good := `{"generated_at":"2026-01-01T00:00:00Z","projects":[{"slug":"ok","epics":[],"loose":[]}],"diagnostics":[]}`
+	out, err := mergeRollups([]workspaceBlob{wb("", "not json"), wb("", good)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var r rollup.Rollup
+	if err := json.Unmarshal(out, &r); err != nil {
+		t.Fatal(err)
+	}
+	if len(r.Projects) != 1 || r.Projects[0].Slug != "ok" {
+		t.Fatalf("want one good project, got %+v", r.Projects)
+	}
+}
 
 func TestBoardCache_SingleflightCollapsesConcurrent(t *testing.T) {
 	var calls int32

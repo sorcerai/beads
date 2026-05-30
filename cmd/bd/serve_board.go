@@ -10,6 +10,8 @@ import (
 	"net/http"
 	"os"
 	"os/exec"
+	"path/filepath"
+	"strings"
 	"sync"
 	"time"
 
@@ -81,16 +83,57 @@ func (b *boardCache) goodTimestamp() time.Time {
 	return b.goodAt
 }
 
-// execBoardJSON runs `bd board --json` (this same binary), with a hard
-// deadline and an output cap. The web process holds no DB credentials.
-func execBoardJSON(ctx context.Context, timeout time.Duration) ([]byte, error) {
+// embeddedMode reports whether the beads workspace at dir uses embedded Dolt
+// (as opposed to a remote server). Used to avoid leaking BEADS_DOLT_* server
+// credentials into subprocess environments where they would override local DB.
+func embeddedMode(dir string) bool {
+	metaPath := filepath.Join(dir, ".beads", "metadata.json")
+	if dir == "" {
+		metaPath = filepath.Join(".beads", "metadata.json")
+	}
+	data, err := os.ReadFile(metaPath)
+	if err != nil {
+		return false
+	}
+	var m struct {
+		DoltMode string `json:"dolt_mode"`
+	}
+	if err := json.Unmarshal(data, &m); err != nil {
+		return false
+	}
+	return m.DoltMode == "embedded"
+}
+
+// execBoardJSONIn runs `bd board --json` (this same binary) in dir, with a
+// hard deadline and an output cap. dir="" uses the process CWD. The web
+// process holds no DB credentials.
+func execBoardJSONIn(ctx context.Context, dir string, timeout time.Duration) ([]byte, error) {
 	self, err := os.Executable()
 	if err != nil {
 		return nil, fmt.Errorf("resolve self: %w", err)
 	}
 	cctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
-	cmd := exec.CommandContext(cctx, self, "board", "--json")
+	// Use -C to explicitly set the working directory so bd's .beads discovery
+	// finds the workspace's own database rather than the parent process's CWD.
+	args := []string{"board", "--json"}
+	if dir != "" {
+		args = append([]string{"-C", dir}, args...)
+	}
+	cmd := exec.CommandContext(cctx, self, args...)
+	// For embedded workspaces, strip inherited BEADS_DOLT_* server credentials
+	// so the subprocess reads its own local metadata.json instead of connecting
+	// to the parent process's remote Dolt server.
+	if embeddedMode(dir) {
+		env := os.Environ()
+		filtered := env[:0]
+		for _, e := range env {
+			if !strings.HasPrefix(e, "BEADS_DOLT_") {
+				filtered = append(filtered, e)
+			}
+		}
+		cmd.Env = filtered
+	}
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
 		return nil, fmt.Errorf("stdout pipe: %w", err)
@@ -122,6 +165,152 @@ func execBoardJSON(ctx context.Context, timeout time.Duration) ([]byte, error) {
 		return nil, fmt.Errorf("reading bd board output: %w", copyErr)
 	}
 	return out.Bytes(), nil
+}
+
+// workspaceBlob pairs a workspace directory with its bd-board JSON payload.
+type workspaceBlob struct {
+	dir  string
+	data []byte
+}
+
+// workspaceName derives an implied project slug from a workspace directory
+// path that follows the beads-<project>-workspace convention.
+// Returns "" when the dir doesn't match or no meaningful name can be derived.
+func workspaceName(dir string) string {
+	if dir == "" {
+		return ""
+	}
+	base := filepath.Base(dir)
+	after, ok := strings.CutPrefix(base, "beads-")
+	if !ok {
+		return ""
+	}
+	name, ok := strings.CutSuffix(after, "-workspace")
+	if !ok || name == "" {
+		return "" // "beads-workspace" has no project segment
+	}
+	return name
+}
+
+// mergeRollups combines rollup JSON blobs from multiple workspaces into one.
+// Projects with the same slug are merged (their cards combined). Unassigned
+// issues in a named workspace (beads-<project>-workspace) are re-slugged to
+// that project name so they surface under the right column. GeneratedAt is
+// the max across all inputs. Malformed blobs are skipped silently.
+func mergeRollups(wbs []workspaceBlob) ([]byte, error) {
+	var merged rollup.Rollup
+	bySlug := map[string]*rollup.Project{}
+	var slugOrder []string
+
+	add := func(p rollup.Project) {
+		if ex, ok := bySlug[p.Slug]; ok {
+			ex.Epics = append(ex.Epics, p.Epics...)
+			ex.Loose = append(ex.Loose, p.Loose...)
+			return
+		}
+		cp := p
+		bySlug[cp.Slug] = &cp
+		slugOrder = append(slugOrder, cp.Slug)
+	}
+
+	for _, wb := range wbs {
+		var r rollup.Rollup
+		if err := json.Unmarshal(wb.data, &r); err != nil {
+			continue
+		}
+		if r.GeneratedAt.After(merged.GeneratedAt) {
+			merged.GeneratedAt = r.GeneratedAt
+		}
+		implied := workspaceName(wb.dir)
+		for _, p := range r.Projects {
+			if p.Slug == "Unassigned" && implied != "" {
+				p.Slug = implied
+			}
+			add(p)
+		}
+		merged.Diagnostics = append(merged.Diagnostics, r.Diagnostics...)
+	}
+
+	for _, slug := range slugOrder {
+		merged.Projects = append(merged.Projects, *bySlug[slug])
+	}
+	return json.Marshal(merged)
+}
+
+// resolveWorkspaces expands glob patterns into concrete workspace dirs and
+// unions them with the explicit list, de-duplicated, order-stable (explicit
+// first). Called on every fetch so a workspace created after startup (e.g. by
+// register.sh) is picked up live — no restart. Non-matching/!dir globs are
+// skipped. Empty result falls back to {""} (process CWD) for back-compat.
+func resolveWorkspaces(explicit, globs []string) []string {
+	seen := map[string]bool{}
+	var out []string
+	add := func(d string) {
+		if seen[d] {
+			return
+		}
+		seen[d] = true
+		out = append(out, d)
+	}
+	for _, w := range explicit {
+		add(w)
+	}
+	for _, g := range globs {
+		matches, err := filepath.Glob(g)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "serve-board: bad --workspace-glob %q: %v\n", g, err)
+			continue
+		}
+		for _, m := range matches {
+			if fi, err := os.Stat(m); err == nil && fi.IsDir() {
+				add(m)
+			}
+		}
+	}
+	if len(out) == 0 {
+		return []string{""}
+	}
+	return out
+}
+
+// fetchWorkspaces runs bd board --json in each workspace concurrently and
+// merges the results. Workspaces that fail are skipped; error is returned
+// only when all workspaces fail.
+func fetchWorkspaces(ctx context.Context, workspaces []string, timeout time.Duration) ([]byte, error) {
+	if len(workspaces) == 1 {
+		return execBoardJSONIn(ctx, workspaces[0], timeout)
+	}
+	type result struct {
+		data []byte
+		err  error
+	}
+	results := make([]result, len(workspaces))
+	var wg sync.WaitGroup
+	for i, ws := range workspaces {
+		wg.Add(1)
+		go func(i int, ws string) {
+			defer wg.Done()
+			data, err := execBoardJSONIn(ctx, ws, timeout)
+			results[i] = result{data, err}
+		}(i, ws)
+	}
+	wg.Wait()
+
+	var wbs []workspaceBlob
+	for i, r := range results {
+		if r.err == nil {
+			wbs = append(wbs, workspaceBlob{dir: workspaces[i], data: r.data})
+		} else {
+			fmt.Fprintf(os.Stderr, "serve-board: workspace fetch error: %v\n", r.err)
+		}
+	}
+	if len(wbs) == 0 {
+		return nil, fmt.Errorf("all %d workspace(s) failed to produce board data", len(workspaces))
+	}
+	if len(wbs) == 1 {
+		return wbs[0].data, nil
+	}
+	return mergeRollups(wbs)
 }
 
 // ---- view model: structured rollup -> premium board render ----
@@ -529,9 +718,11 @@ body::after{background:radial-gradient(900px 700px at 50% 120%,rgba(139,149,232,
 </div>
 </body></html>`))
 
-func serveBoard(addr string, refreshSec int, ttl, timeout time.Duration) error {
+func serveBoard(addr string, refreshSec int, ttl, timeout time.Duration, explicit, globs []string) error {
 	cache := newBoardCache(ttl, func(ctx context.Context) ([]byte, error) {
-		return execBoardJSON(ctx, timeout)
+		// Resolve per fetch so workspaces created after startup are picked up
+		// live (no restart). Cheap: a few globs + stats.
+		return fetchWorkspaces(ctx, resolveWorkspaces(explicit, globs), timeout)
 	})
 	sema := make(chan struct{}, 8) // bounded concurrency (spec C4)
 
@@ -584,12 +775,15 @@ IP only; never a public interface.`,
 		refresh, _ := cmd.Flags().GetInt("refresh")
 		ttlSec, _ := cmd.Flags().GetInt("cache-ttl")
 		timeoutSec, _ := cmd.Flags().GetInt("exec-timeout")
+		workspaces, _ := cmd.Flags().GetStringArray("workspace")
+		globs, _ := cmd.Flags().GetStringArray("workspace-glob")
 		if addr == "" {
 			return fmt.Errorf("--addr is required (tailnet IP:port, e.g. 100.x.y.z:8099)")
 		}
-		fmt.Printf("serving board on http://%s (refresh=%ds ttl=%ds)\n", addr, refresh, ttlSec)
+		fmt.Printf("serving board on http://%s (refresh=%ds ttl=%ds workspaces=%d globs=%d)\n",
+			addr, refresh, ttlSec, len(workspaces), len(globs))
 		return serveBoard(addr, refresh,
-			time.Duration(ttlSec)*time.Second, time.Duration(timeoutSec)*time.Second)
+			time.Duration(ttlSec)*time.Second, time.Duration(timeoutSec)*time.Second, workspaces, globs)
 	},
 }
 
@@ -598,5 +792,7 @@ func init() {
 	serveBoardCmd.Flags().Int("refresh", 30, "Browser auto-refresh seconds (spec: >=15)")
 	serveBoardCmd.Flags().Int("cache-ttl", 20, "Server cache TTL seconds (<= refresh)")
 	serveBoardCmd.Flags().Int("exec-timeout", 10, "Hard timeout for 'bd board --json' seconds")
+	serveBoardCmd.Flags().StringArray("workspace", nil, "Workspace directory to include; repeatable (default: process CWD)")
+	serveBoardCmd.Flags().StringArray("workspace-glob", nil, "Glob for workspace dirs, expanded live on each fetch so new projects appear without a restart; repeatable (e.g. /home/admin/beads-*-workspace)")
 	rootCmd.AddCommand(serveBoardCmd)
 }
