@@ -337,6 +337,9 @@ type vmProject struct {
 	Slug         string
 	Epics, Loose int
 	Lanes        []vmLane
+	// Progress (burn-down) over top-level cards (epics + loose):
+	Total, Done, DonePct, Conflicts int
+	Bar                             []vmSeg // proportional segments by status column
 }
 type vmPage struct {
 	Projects                       []vmProject
@@ -349,6 +352,11 @@ type vmPage struct {
 	Refresh                        int
 	Empty                          bool
 	DiagCount                      int
+	// Summary across the projects currently shown (adapts to the switcher filter):
+	ProjectCount                                   int
+	SumTotal, SumDone, SumInProgress, SumConflicts int
+	SumDonePct                                     int
+	SumBar                                         []vmSeg
 }
 
 var laneOrder = []struct {
@@ -391,6 +399,34 @@ func relTime(t time.Time) string {
 	default:
 		return fmt.Sprintf("%dd ago", int(d.Hours())/24)
 	}
+}
+
+// pct returns done/total as an integer percent, rounded, 0 when total==0.
+func pct(done, total int) int {
+	if total <= 0 {
+		return 0
+	}
+	return (done*100 + total/2) / total
+}
+
+// barSegs builds proportional status segments from per-column counts, in lane
+// order, skipping empty columns. total must be the sum of the counts.
+func barSegs(colCount map[string]int, total int) []vmSeg {
+	if total <= 0 {
+		return nil
+	}
+	var segs []vmSeg
+	for _, lo := range laneOrder {
+		n := colCount[lo.Key]
+		if n == 0 {
+			continue
+		}
+		segs = append(segs, vmSeg{
+			Class: lo.Key, Label: lo.Title, Count: n,
+			Width: fmt.Sprintf("%.3f", float64(n)*100/float64(total)),
+		})
+	}
+	return segs
 }
 
 func childSegs(children []rollup.Card) (int, []vmSeg) {
@@ -452,6 +488,7 @@ func buildPage(r *rollup.Rollup, stale bool, goodAt string, refresh int, selecte
 		p.Selected = ""
 	}
 	total := 0
+	globalCol := map[string]int{} // per-column totals across shown projects
 	for _, proj := range r.Projects {
 		if selected != "" && proj.Slug != selected {
 			continue // single-cache fetch; filter the parsed rollup (no extra Dolt)
@@ -468,12 +505,36 @@ func buildPage(r *rollup.Rollup, stale bool, goodAt string, refresh int, selecte
 			byCol[lc.Column] = append(byCol[lc.Column], mkCard(lc, false, nil))
 			total++
 		}
+		colCount := map[string]int{}
 		for _, lo := range laneOrder {
 			cards := byCol[lo.Col]
 			vp.Lanes = append(vp.Lanes, vmLane{Key: lo.Key, Title: lo.Title, Count: len(cards), Cards: cards})
+			colCount[lo.Key] = len(cards)
+			vp.Total += len(cards)
+			for _, c := range cards {
+				if c.Conflict {
+					vp.Conflicts++
+				}
+			}
 		}
+		vp.Done = colCount["done"]
+		vp.DonePct = pct(vp.Done, vp.Total)
+		vp.Bar = barSegs(colCount, vp.Total)
+		// Aggregate into the page summary (over shown projects).
+		globalCol["todo"] += colCount["todo"]
+		globalCol["in_progress"] += colCount["in_progress"]
+		globalCol["done"] += colCount["done"]
+		globalCol["deferred"] += colCount["deferred"]
+		globalCol["fallback"] += colCount["fallback"]
+		p.SumConflicts += vp.Conflicts
 		p.Projects = append(p.Projects, vp)
 	}
+	p.ProjectCount = len(p.Projects)
+	p.SumTotal = total
+	p.SumDone = globalCol["done"]
+	p.SumInProgress = globalCol["in_progress"]
+	p.SumDonePct = pct(p.SumDone, p.SumTotal)
+	p.SumBar = barSegs(globalCol, p.SumTotal)
 	p.Empty = total == 0
 	return p
 }
@@ -572,6 +633,25 @@ body::after{background:radial-gradient(900px 700px at 50% 120%,rgba(139,149,232,
 .proj-h .slug{font-size:clamp(19px,2.3vw,25px);font-weight:600;letter-spacing:-.02em}
 .proj-h .cnt{font-size:12px;color:var(--ink-3);font-variant-numeric:tabular-nums}
 .proj-h .cnt b{color:var(--ink-2);font-weight:560}
+.proj-h .cnt .cf{color:var(--p0);font-weight:560}
+
+/* summary — at-a-glance burn-down across the shown projects */
+.summary{margin:8px 0 34px}
+.tiles{display:grid;grid-template-columns:repeat(5,minmax(0,1fr)) 2fr;gap:12px}
+@media (max-width:760px){.tiles{grid-template-columns:repeat(2,1fr)}.tile.big{grid-column:1/-1}}
+.tile{background:rgba(255,255,255,.022);border:1px solid var(--hair-2);border-radius:16px;padding:15px 17px;display:flex;flex-direction:column;gap:7px;box-shadow:inset 0 1px 1px rgba(255,255,255,.03)}
+.tile .k{font-size:10px;text-transform:uppercase;letter-spacing:.16em;color:var(--ink-3)}
+.tile b{font-size:24px;font-weight:600;letter-spacing:-.02em;font-variant-numeric:tabular-nums}
+.tile b.wip{color:var(--in_progress)} .tile b.ok{color:var(--done)}
+.tile.alert{border-color:rgba(248,81,73,.32)} .tile.alert b{color:var(--p0)}
+.tile.big{justify-content:center;gap:11px}
+.tile.big .bar{height:7px}
+
+/* per-project burn-down row */
+.proj-prog{display:flex;align-items:center;gap:13px;margin:-6px 0 20px;font-size:11px;color:var(--ink-3);font-variant-numeric:tabular-nums}
+.proj-prog .pc{font-size:13px;font-weight:600;color:var(--ink);min-width:38px}
+.proj-prog .bar{flex:1;max-width:520px}
+.proj-prog .frac{white-space:nowrap}
 
 /* lanes — domain dictates columns; depth comes from texture/cards/motion */
 .lanes{display:flex;gap:16px;overflow-x:auto;padding:6px 2px 22px;scroll-snap-type:x proximity}
@@ -677,12 +757,28 @@ body::after{background:radial-gradient(900px 700px at 50% 120%,rgba(139,149,232,
   {{if .Empty}}
     <div class="proj"><div class="empty" style="padding:60px 0">No issues yet. The board will populate as work is tracked.</div></div>
   {{else}}
+    <section class="summary">
+      <div class="tiles">
+        <div class="tile"><span class="k">Projects</span><b>{{.ProjectCount}}</b></div>
+        <div class="tile"><span class="k">Tracked</span><b>{{.SumTotal}}</b></div>
+        <div class="tile"><span class="k">In progress</span><b class="wip">{{.SumInProgress}}</b></div>
+        <div class="tile"><span class="k">Done</span><b class="ok">{{.SumDone}}</b></div>
+        <div class="tile{{if .SumConflicts}} alert{{end}}"><span class="k">Conflicts</span><b>{{.SumConflicts}}</b></div>
+        <div class="tile big"><span class="k">Overall · {{.SumDonePct}}% done</span>
+          <div class="bar">{{range .SumBar}}<i class="{{.Class}}" style="width:{{.Width}}%"></i>{{end}}</div>
+        </div>
+      </div>
+    </section>
     {{range .Projects}}
     <section class="proj">
       <div class="proj-h">
         <div class="t"><span class="eyebrow">Project</span><span class="slug">{{.Slug}}</span></div>
-        <div class="cnt"><b>{{.Epics}}</b> epics · <b>{{.Loose}}</b> without an epic</div>
+        <div class="cnt"><b>{{.Epics}}</b> epics · <b>{{.Loose}}</b> without an epic{{if .Conflicts}} · <span class="cf">{{.Conflicts}} conflict{{if gt .Conflicts 1}}s{{end}}</span>{{end}}</div>
       </div>
+      {{if .Total}}<div class="proj-prog"><span class="pc">{{.DonePct}}%</span>
+        <div class="bar">{{range .Bar}}<i class="{{.Class}}" style="width:{{.Width}}%"></i>{{end}}</div>
+        <span class="frac">{{.Done}}/{{.Total}} done</span>
+      </div>{{end}}
       <div class="lanes">
         {{range .Lanes}}
         <div class="lane" data-k="{{.Key}}">

@@ -172,6 +172,50 @@ func TestMergeRollups_SkipsMalformedBlobs(t *testing.T) {
 	}
 }
 
+func TestBuildPage_BurndownAndSummary(t *testing.T) {
+	r := &rollup.Rollup{Projects: []rollup.Project{
+		{
+			Slug: "p",
+			Epics: []rollup.Epic{
+				{Issue: rollup.Card{ID: "p-1"}, Column: rollup.ColumnDone},
+				{Issue: rollup.Card{ID: "p-2"}, Column: rollup.ColumnInProgress, Conflict: true},
+			},
+			Loose: []rollup.Card{
+				{ID: "p-3", Column: rollup.ColumnDone},
+				{ID: "p-4", Column: rollup.ColumnTodo},
+			},
+		},
+		{Slug: "q", Loose: []rollup.Card{{ID: "q-1", Column: rollup.ColumnDone}}},
+	}}
+	p := buildPage(r, false, "", 30, "")
+
+	// project p: 4 placed cards, 2 done => 50%, 1 conflict, bar has todo+wip+done.
+	pp := p.Projects[0]
+	if pp.Total != 4 || pp.Done != 2 || pp.DonePct != 50 || pp.Conflicts != 1 {
+		t.Fatalf("project p burn-down wrong: %+v", pp)
+	}
+	if len(pp.Bar) != 3 {
+		t.Fatalf("project p bar should have 3 non-empty segments, got %d", len(pp.Bar))
+	}
+	// page summary across both shown projects: 5 total, 3 done => 60%.
+	if p.ProjectCount != 2 || p.SumTotal != 5 || p.SumDone != 3 || p.SumInProgress != 1 ||
+		p.SumConflicts != 1 || p.SumDonePct != 60 {
+		t.Fatalf("page summary wrong: count=%d total=%d done=%d wip=%d conf=%d pct=%d",
+			p.ProjectCount, p.SumTotal, p.SumDone, p.SumInProgress, p.SumConflicts, p.SumDonePct)
+	}
+}
+
+func TestPct(t *testing.T) {
+	cases := []struct{ d, tot, want int }{
+		{0, 0, 0}, {1, 0, 0}, {2, 4, 50}, {3, 5, 60}, {1, 3, 33}, {2, 3, 67}, {7, 7, 100},
+	}
+	for _, c := range cases {
+		if got := pct(c.d, c.tot); got != c.want {
+			t.Errorf("pct(%d,%d)=%d want %d", c.d, c.tot, got, c.want)
+		}
+	}
+}
+
 func TestBoardCache_SingleflightCollapsesConcurrent(t *testing.T) {
 	var calls int32
 	bc := newBoardCache(50*time.Millisecond, func(_ context.Context) ([]byte, error) {
