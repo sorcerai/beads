@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -202,6 +203,64 @@ func TestBuildPage_BurndownAndSummary(t *testing.T) {
 		p.SumConflicts != 1 || p.SumDonePct != 60 {
 		t.Fatalf("page summary wrong: count=%d total=%d done=%d wip=%d conf=%d pct=%d",
 			p.ProjectCount, p.SumTotal, p.SumDone, p.SumInProgress, p.SumConflicts, p.SumDonePct)
+	}
+}
+
+func TestBuildDigest(t *testing.T) {
+	now := time.Date(2026, 6, 4, 12, 0, 0, 0, time.UTC)
+	recent := now.Add(-2 * time.Hour)      // in window
+	yesterday := now.Add(-26 * time.Hour)  // in window
+	old := now.Add(-10 * 24 * time.Hour)   // outside 7d window
+	r := &rollup.Rollup{Projects: []rollup.Project{
+		{
+			Slug: "alpha",
+			Epics: []rollup.Epic{{
+				Issue:    rollup.Card{ID: "a-1", Title: "epic", Column: rollup.ColumnInProgress, Updated: recent},
+				Children: []rollup.Card{{ID: "a-2", Title: "child done", Column: rollup.ColumnDone, Updated: yesterday}},
+			}},
+			Loose: []rollup.Card{
+				{ID: "a-3", Title: "fresh todo", Column: rollup.ColumnTodo, Updated: recent},
+				{ID: "a-4", Title: "stale", Column: rollup.ColumnTodo, Updated: old}, // excluded
+			},
+		},
+		{Slug: "beta", Loose: []rollup.Card{{ID: "b-1", Title: "beta done", Column: rollup.ColumnDone, Updated: now.Add(-time.Minute)}}},
+	}}
+
+	groups, total := buildDigest(r, "", now, digestWindow)
+	if total != 4 { // a-1, a-2, a-3, b-1 — a-4 is too old
+		t.Fatalf("want 4 recent items, got %d", total)
+	}
+	byKey := map[string]vmDigestGroup{}
+	for _, g := range groups {
+		byKey[g.Key] = g
+	}
+	if byKey["done"].Count != 2 || byKey["todo"].Count != 1 || byKey["in_progress"].Count != 1 {
+		t.Fatalf("group counts wrong: %+v", byKey)
+	}
+	// done group sorted newest-first: b-1 (1m ago) before a-2 (26h ago).
+	if got := byKey["done"].Items; len(got) != 2 || got[0].ID != "b-1" || got[1].ID != "a-2" {
+		t.Fatalf("done group not newest-first: %+v", got)
+	}
+	// filter to beta only.
+	bg, bt := buildDigest(r, "beta", now, digestWindow)
+	if bt != 1 || len(bg) != 1 || bg[0].Key != "done" || bg[0].Items[0].ID != "b-1" {
+		t.Fatalf("filtered digest wrong: total=%d groups=%+v", bt, bg)
+	}
+}
+
+func TestBuildDigest_CapsPerGroup(t *testing.T) {
+	now := time.Date(2026, 6, 4, 12, 0, 0, 0, time.UTC)
+	var loose []rollup.Card
+	for i := 0; i < digestPerGroupCap+5; i++ {
+		loose = append(loose, rollup.Card{ID: fmt.Sprintf("x-%d", i), Column: rollup.ColumnTodo, Updated: now.Add(-time.Duration(i) * time.Hour)})
+	}
+	r := &rollup.Rollup{Projects: []rollup.Project{{Slug: "x", Loose: loose}}}
+	g, total := buildDigest(r, "", now, digestWindow)
+	if total != digestPerGroupCap+5 {
+		t.Fatalf("total should count all in-window, got %d", total)
+	}
+	if len(g) != 1 || g[0].Count != digestPerGroupCap+5 || len(g[0].Items) != digestPerGroupCap || g[0].More != 5 {
+		t.Fatalf("cap/More wrong: count=%d shown=%d more=%d", g[0].Count, len(g[0].Items), g[0].More)
 	}
 }
 

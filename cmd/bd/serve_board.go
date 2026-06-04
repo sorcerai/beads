@@ -11,6 +11,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -357,6 +358,10 @@ type vmPage struct {
 	SumTotal, SumDone, SumInProgress, SumConflicts int
 	SumDonePct                                     int
 	SumBar                                         []vmSeg
+	// "Recently active" digest (cards updated within digestWindow):
+	Digest      []vmDigestGroup
+	DigestCount int
+	DigestSince string
 }
 
 var laneOrder = []struct {
@@ -385,11 +390,14 @@ func prioClass(p int) string {
 	}
 }
 
-func relTime(t time.Time) string {
+func relTime(t time.Time) string { return relTimeAt(t, time.Now()) }
+
+// relTimeAt renders t relative to now (injectable for testing).
+func relTimeAt(t, now time.Time) string {
 	if t.IsZero() {
 		return "—"
 	}
-	switch d := time.Since(t); {
+	switch d := now.Sub(t); {
 	case d < time.Minute:
 		return "just now"
 	case d < time.Hour:
@@ -399,6 +407,16 @@ func relTime(t time.Time) string {
 	default:
 		return fmt.Sprintf("%dd ago", int(d.Hours())/24)
 	}
+}
+
+// columnKey maps a rollup column to its lane key (todo/in_progress/...).
+func columnKey(c rollup.Column) string {
+	for _, lo := range laneOrder {
+		if lo.Col == c {
+			return lo.Key
+		}
+	}
+	return "fallback"
 }
 
 // pct returns done/total as an integer percent, rounded, 0 when total==0.
@@ -427,6 +445,70 @@ func barSegs(colCount map[string]int, total int) []vmSeg {
 		})
 	}
 	return segs
+}
+
+const (
+	digestWindow      = 7 * 24 * time.Hour // "recently active" lookback
+	digestPerGroupCap = 8                  // max items shown per status group
+)
+
+type vmDigestItem struct {
+	Rel, Title, Slug, ID, Status, ColKey string
+	updated                              time.Time // unexported: sort key only
+}
+type vmDigestGroup struct {
+	Key, Title  string
+	Count, More int // Count = full count; More = hidden beyond the cap
+	Items       []vmDigestItem
+}
+
+// buildDigest collects cards (epics, their children, and loose) updated within
+// `window` of `now` across the shown projects, grouped by status column in lane
+// order, newest first, capped per group. Returns the groups + total updated.
+func buildDigest(r *rollup.Rollup, selected string, now time.Time, window time.Duration) ([]vmDigestGroup, int) {
+	cutoff := now.Add(-window)
+	byCol := map[string][]vmDigestItem{}
+	total := 0
+	add := func(c rollup.Card, slug string) {
+		if c.Updated.IsZero() || c.Updated.Before(cutoff) {
+			return
+		}
+		k := columnKey(c.Column)
+		byCol[k] = append(byCol[k], vmDigestItem{
+			Rel: relTimeAt(c.Updated, now), Title: c.Title, Slug: slug,
+			ID: c.ID, Status: c.Status, ColKey: k, updated: c.Updated,
+		})
+		total++
+	}
+	for _, proj := range r.Projects {
+		if selected != "" && proj.Slug != selected {
+			continue
+		}
+		for _, e := range proj.Epics {
+			add(e.Issue, proj.Slug)
+			for _, ch := range e.Children {
+				add(ch, proj.Slug)
+			}
+		}
+		for _, lc := range proj.Loose {
+			add(lc, proj.Slug)
+		}
+	}
+	var groups []vmDigestGroup
+	for _, lo := range laneOrder {
+		items := byCol[lo.Key]
+		if len(items) == 0 {
+			continue
+		}
+		sort.SliceStable(items, func(i, j int) bool { return items[i].updated.After(items[j].updated) })
+		full := len(items)
+		more := 0
+		if full > digestPerGroupCap {
+			items, more = items[:digestPerGroupCap], full-digestPerGroupCap
+		}
+		groups = append(groups, vmDigestGroup{Key: lo.Key, Title: lo.Title, Count: full, More: more, Items: items})
+	}
+	return groups, total
 }
 
 func childSegs(children []rollup.Card) (int, []vmSeg) {
@@ -535,6 +617,8 @@ func buildPage(r *rollup.Rollup, stale bool, goodAt string, refresh int, selecte
 	p.SumInProgress = globalCol["in_progress"]
 	p.SumDonePct = pct(p.SumDone, p.SumTotal)
 	p.SumBar = barSegs(globalCol, p.SumTotal)
+	p.Digest, p.DigestCount = buildDigest(r, selected, time.Now(), digestWindow)
+	p.DigestSince = "7 days"
 	p.Empty = total == 0
 	return p
 }
@@ -653,6 +737,25 @@ body::after{background:radial-gradient(900px 700px at 50% 120%,rgba(139,149,232,
 .proj-prog .bar{flex:1;max-width:520px}
 .proj-prog .frac{white-space:nowrap}
 
+/* digest — cross-project "what moved recently", grouped by status */
+.digest{margin:0 0 40px}
+.dg-h{display:flex;align-items:baseline;gap:14px;margin-bottom:16px}
+.dg-h .dg-sub{font-size:10px;text-transform:uppercase;letter-spacing:.16em;color:var(--ink-3)}
+.dg-cols{display:grid;grid-template-columns:repeat(auto-fill,minmax(238px,1fr));gap:14px;align-items:start}
+.dg-col{background:rgba(255,255,255,.018);border:1px solid var(--hair-2);border-radius:16px;padding:13px 15px;box-shadow:inset 0 1px 1px rgba(255,255,255,.025)}
+.dg-cap{display:flex;align-items:center;gap:8px;font-size:10px;text-transform:uppercase;letter-spacing:.13em;color:var(--ink-2);margin-bottom:9px}
+.dg-cap .nm{flex:1}
+.dg-cap .ct{color:var(--ink-3);font-variant-numeric:tabular-nums}
+.dg-cap .acc{width:7px;height:7px;border-radius:50%;flex:0 0 auto}
+.dg-col[data-k=todo] .acc{background:var(--todo)} .dg-col[data-k=in_progress] .acc{background:var(--in_progress)}
+.dg-col[data-k=done] .acc{background:var(--done)} .dg-col[data-k=deferred] .acc{background:var(--deferred)} .dg-col[data-k=fallback] .acc{background:var(--fallback)}
+.dg-item{display:flex;flex-direction:column;gap:3px;padding:8px 0;border-top:1px solid var(--hair-2)}
+.dg-item:first-of-type{border-top:0;padding-top:0}
+.dg-item .when{font-size:10px;color:var(--ink-3);font-variant-numeric:tabular-nums}
+.dg-item .ti{font-size:12.5px;color:var(--ink);line-height:1.32;letter-spacing:-.01em}
+.dg-item .mt{font-size:10px;color:var(--ink-3);font-family:"Geist Mono","Geist Mono Fallback",ui-monospace,monospace}
+.dg-more{font-size:10px;color:var(--ink-3);padding-top:9px}
+
 /* lanes — domain dictates columns; depth comes from texture/cards/motion */
 .lanes{display:flex;gap:16px;overflow-x:auto;padding:6px 2px 22px;scroll-snap-type:x proximity}
 .lanes::-webkit-scrollbar{height:8px}
@@ -769,6 +872,22 @@ body::after{background:radial-gradient(900px 700px at 50% 120%,rgba(139,149,232,
         </div>
       </div>
     </section>
+    {{if .DigestCount}}
+    <section class="digest">
+      <div class="dg-h"><span class="eyebrow">Recently active</span><span class="dg-sub">last {{.DigestSince}} · {{.DigestCount}} updated</span></div>
+      <div class="dg-cols">
+        {{range .Digest}}
+        <div class="dg-col" data-k="{{.Key}}">
+          <div class="dg-cap"><span class="acc"></span><span class="nm">{{.Title}}</span><span class="ct">{{.Count}}</span></div>
+          {{range .Items}}
+          <div class="dg-item"><span class="when">{{.Rel}}</span><span class="ti">{{.Title}}</span><span class="mt">{{.Slug}} · {{.ID}}</span></div>
+          {{end}}
+          {{if .More}}<div class="dg-more">+{{.More}} more</div>{{end}}
+        </div>
+        {{end}}
+      </div>
+    </section>
+    {{end}}
     {{range .Projects}}
     <section class="proj">
       <div class="proj-h">
