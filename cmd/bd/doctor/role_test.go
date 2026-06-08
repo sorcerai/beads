@@ -92,6 +92,10 @@ func TestCheckBeadsRole_NotGitRepo(t *testing.T) {
 	}
 	defer os.RemoveAll(tmpDir)
 
+	t.Setenv("HOME", tmpDir)
+	t.Setenv("XDG_CONFIG_HOME", filepath.Join(tmpDir, ".config"))
+	t.Setenv("GIT_CONFIG_GLOBAL", filepath.Join(tmpDir, ".gitconfig"))
+
 	// Don't initialize git - just a plain directory
 	check := CheckBeadsRole(tmpDir)
 
@@ -106,6 +110,11 @@ func TestCheckBeadsRole_NotGitRepo(t *testing.T) {
 }
 
 func TestCheckBeadsRole_NonexistentPath(t *testing.T) {
+	tmpHome := t.TempDir()
+	t.Setenv("HOME", tmpHome)
+	t.Setenv("XDG_CONFIG_HOME", filepath.Join(tmpHome, ".config"))
+	t.Setenv("GIT_CONFIG_GLOBAL", filepath.Join(tmpHome, ".gitconfig"))
+
 	// Test with a path that doesn't exist — git will report "not a git repository"
 	check := CheckBeadsRole(filepath.Join(os.TempDir(), "nonexistent-beads-test-dir"))
 
