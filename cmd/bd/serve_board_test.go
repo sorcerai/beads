@@ -5,6 +5,8 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
@@ -14,6 +16,7 @@ import (
 	"time"
 
 	"github.com/steveyegge/beads/internal/rollup"
+	"github.com/steveyegge/beads/internal/types"
 )
 
 func wb(dir, data string) workspaceBlob { return workspaceBlob{dir: dir, data: []byte(data)} }
@@ -439,3 +442,175 @@ func TestBoardTemplate_RendersAndEscapes(t *testing.T) {
 		t.Fatal("expected the malicious title to appear HTML-escaped")
 	}
 }
+
+func TestExplainIssue_NoFilesNoGraph(t *testing.T) {
+	dir := t.TempDir()
+	resp, err := explainIssueInWorkspace(context.Background(), dir, "bd-123")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resp.IssueID != "bd-123" {
+		t.Errorf("expected issue ID bd-123, got %s", resp.IssueID)
+	}
+	if resp.HasGraph {
+		t.Error("expected HasGraph to be false")
+	}
+	if len(resp.Files) != 0 {
+		t.Errorf("expected 0 files, got %d", len(resp.Files))
+	}
+}
+
+func TestExplainIssue_WithGraph(t *testing.T) {
+	dir := t.TempDir()
+
+	// Write a mock knowledge-graph.json
+	graph := uaGraph{
+		Project: uaProject{
+			Name: "test-proj",
+		},
+		Nodes: []uaNode{
+			{
+				ID:       "file:src/auth.go",
+				Type:     "file",
+				Name:     "auth.go",
+				FilePath: "src/auth.go",
+				Summary:  "Handles user authentication",
+			},
+		},
+		Edges: []uaEdge{},
+		Layers: []uaLayer{
+			{
+				ID:          "layer:api",
+				Name:        "API Layer",
+				Description: "HTTP endpoints",
+				NodeIds:     []string{"file:src/auth.go"},
+			},
+		},
+	}
+	uaDir := filepath.Join(dir, ".understand-anything")
+	if err := os.MkdirAll(uaDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	graphData, err := json.Marshal(graph)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(uaDir, "knowledge-graph.json"), graphData, 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	resp, err := explainIssueInWorkspace(context.Background(), dir, "bd-123")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !resp.HasGraph {
+		t.Error("expected HasGraph to be true")
+	}
+}
+
+func TestExplainEndpoint(t *testing.T) {
+	// Simple test for the route handler
+	req := httptest.NewRequest("GET", "/explain?issue=bd-123", nil)
+	w := httptest.NewRecorder()
+
+	sema := make(chan struct{}, 1)
+	explicit := []string{t.TempDir()}
+	var globs []string
+
+	handler := func(w http.ResponseWriter, r *http.Request) {
+		select {
+		case sema <- struct{}{}:
+			defer func() { <-sema }()
+		default:
+			http.Error(w, "busy", http.StatusServiceUnavailable)
+			return
+		}
+
+		issue := r.URL.Query().Get("issue")
+		project := r.URL.Query().Get("project")
+		if issue == "" {
+			http.Error(w, "missing issue parameter", http.StatusBadRequest)
+			return
+		}
+
+		wDirs := resolveWorkspaces(explicit, globs)
+		var targetDir string
+
+		if project != "" {
+			for _, d := range wDirs {
+				if workspaceName(d) == project {
+					targetDir = d
+					break
+				}
+			}
+		}
+
+		if targetDir == "" {
+			if len(wDirs) > 0 {
+				targetDir = wDirs[0]
+			} else {
+				targetDir = ""
+			}
+		}
+
+		resp, err := explainIssueInWorkspace(r.Context(), targetDir, issue)
+		if err != nil {
+			http.Error(w, "failed to explain issue: "+err.Error(), http.StatusInternalServerError)
+			return
+		}
+
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(resp)
+	}
+
+	handler(w, req)
+
+	resp := w.Result()
+	if resp.StatusCode != http.StatusOK {
+		t.Errorf("expected status 200, got %d", resp.StatusCode)
+	}
+
+	var explainResp ExplainResponse
+	if err := json.NewDecoder(resp.Body).Decode(&explainResp); err != nil {
+		t.Fatal(err)
+	}
+
+	if explainResp.IssueID != "bd-123" {
+		t.Errorf("expected issue ID bd-123, got %s", explainResp.IssueID)
+	}
+}
+
+func TestParseShowIssueJSON(t *testing.T) {
+	// 1. Direct array format
+	arrJSON := `[{"id":"bd-123","title":"Test Issue","status":"in_progress","priority":1}]`
+	var issue *types.IssueDetails
+	var err error
+	issue, err = parseShowIssueJSON([]byte(arrJSON))
+	if err != nil {
+		t.Fatalf("failed to parse array JSON: %v", err)
+	}
+	if issue.ID != "bd-123" || issue.Title != "Test Issue" || issue.Status != "in_progress" {
+		t.Errorf("incorrect fields parsed from array JSON: %+v", issue)
+	}
+
+	// 2. Wrapped envelope format: {"schema_version": 2, "data": [...]}
+	envJSON := `{"schema_version":2,"data":[{"id":"bd-123","title":"Test Issue Env","status":"done","priority":2}]}`
+	issue, err = parseShowIssueJSON([]byte(envJSON))
+	if err != nil {
+		t.Fatalf("failed to parse envelope JSON: %v", err)
+	}
+	if issue.ID != "bd-123" || issue.Title != "Test Issue Env" || issue.Status != "done" {
+		t.Errorf("incorrect fields parsed from envelope JSON: %+v", issue)
+	}
+
+	// 3. Single object format
+	objJSON := `{"id":"bd-123","title":"Test Issue Obj","status":"todo","priority":0}`
+	issue, err = parseShowIssueJSON([]byte(objJSON))
+	if err != nil {
+		t.Fatalf("failed to parse object JSON: %v", err)
+	}
+	if issue.ID != "bd-123" || issue.Title != "Test Issue Obj" || issue.Status != "todo" {
+		t.Errorf("incorrect fields parsed from object JSON: %+v", issue)
+	}
+}
+

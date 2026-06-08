@@ -18,6 +18,7 @@ import (
 
 	"github.com/spf13/cobra"
 	"github.com/steveyegge/beads/internal/rollup"
+	"github.com/steveyegge/beads/internal/types"
 	"golang.org/x/sync/singleflight"
 )
 
@@ -795,6 +796,9 @@ body::after{background:radial-gradient(900px 700px at 50% 120%,rgba(139,149,232,
 .c-meta{display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-top:11px}
 .id{font-family:"Geist Mono",ui-monospace,SFMono-Regular,monospace;font-size:10.5px;
   color:var(--ink-3);letter-spacing:.01em}
+.id-link{font-family:"Geist Mono",ui-monospace,SFMono-Regular,monospace;font-size:10.5px;
+  color:var(--ink-3);letter-spacing:.01em;text-decoration:none;cursor:pointer;transition:color .3s}
+.id-link:hover{color:var(--ink-2);text-decoration:underline}
 .st{font-size:9.5px;font-weight:600;letter-spacing:.13em;text-transform:uppercase;color:var(--ink-2);
   background:rgba(255,255,255,.05);border:1px solid var(--hair-2);padding:3px 9px;border-radius:9999px}
 .conf{font-size:9.5px;font-weight:600;letter-spacing:.06em;color:#ff9c94;
@@ -830,6 +834,46 @@ body::after{background:radial-gradient(900px 700px at 50% 120%,rgba(139,149,232,
 @media (prefers-reduced-motion:reduce){
   .card{animation:none}.card:hover{transform:none}*{transition:none!important}
 }
+.drawer{position:fixed;top:0;right:0;width:min(540px,90vw);height:100dvh;background:rgba(12,13,17,.96);border-left:1px solid var(--hair);box-shadow:-10px 0 40px rgba(0,0,0,.8);z-index:100;transform:translateX(100%);transition:transform .4s var(--ease);display:flex;flex-direction:column;backdrop-filter:blur(20px);-webkit-backdrop-filter:blur(20px)}
+.drawer.open{transform:translateX(0)}
+.drawer-h{padding:24px;border-bottom:1px solid var(--hair);display:flex;justify-content:space-between;align-items:center}
+.drawer-title{font-size:18px;font-weight:600;letter-spacing:-.02em}
+.drawer-close{background:none;border:none;color:var(--ink-2);font-size:24px;cursor:pointer;padding:4px 8px;border-radius:6px;transition:background .3s}
+.drawer-close:hover{background:rgba(255,255,255,.05);color:var(--ink)}
+.drawer-b{flex:1;overflow-y:auto;padding:24px;display:flex;flex-direction:column;gap:20px}
+.drawer-overlay{position:fixed;inset:0;background:rgba(0,0,0,.5);z-index:99;opacity:0;pointer-events:none;transition:opacity .4s var(--ease);backdrop-filter:blur(2px)}
+.drawer-overlay.open{opacity:1;pointer-events:auto}
+.ex-file{background:rgba(255,255,255,.015);border:1px solid var(--hair-2);border-radius:12px;padding:16px;display:flex;flex-direction:column;gap:10px}
+.ex-file-h{display:flex;justify-content:space-between;align-items:flex-start;gap:10px}
+.ex-path{font-family:"Geist Mono",monospace;font-size:13px;color:var(--ink);word-break:break-all}
+.ex-status{font-size:9.5px;font-weight:600;text-transform:uppercase;letter-spacing:.1em;padding:3px 8px;border-radius:9999px}
+.ex-status.modified{background:rgba(227,179,65,.12);color:var(--in_progress);border:1px solid rgba(227,179,65,.25)}
+.ex-status.added{background:rgba(63,185,80,.12);color:var(--done);border:1px solid rgba(63,185,80,.25)}
+.ex-status.deleted{background:rgba(248,81,73,.12);color:var(--p0);border:1px solid rgba(248,81,73,.25)}
+.ex-status.committed{background:rgba(255,255,255,.06);color:var(--ink-2);border:1px solid var(--hair-2)}
+.ex-summary{font-size:13px;color:var(--ink-2);line-height:1.45}
+.ex-meta-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(120px,1fr));gap:10px;margin-top:4px}
+.ex-meta-item{display:flex;flex-direction:column;gap:2px}
+.ex-meta-label{font-size:9px;text-transform:uppercase;letter-spacing:.1em;color:var(--ink-3)}
+.ex-meta-val{font-size:12px;color:var(--ink-2)}
+.ex-diff{font-family:"Geist Mono",monospace;font-size:11px;background:rgba(0,0,0,.3);border:1px solid var(--hair-2);border-radius:8px;padding:12px;overflow-x:auto;white-space:pre;color:var(--ink-2);max-height:220px;overflow-y:auto;margin-top:6px}
+.ex-diff-add{color:#3fb950}
+.ex-diff-del{color:#f85149}
+.ex-diff-info{color:#8b95e8}
+.ex-issue-card {background:rgba(255,255,255,0.02);border:1px solid var(--hair-2);border-radius:16px;padding:18px;display:flex;flex-direction:column;gap:14px;box-shadow:inset 0 1px 0 rgba(255,255,255,0.03)}
+.ex-issue-header {display:flex;align-items:flex-start;gap:12px}
+.ex-issue-title {font-size:16px;font-weight:600;line-height:1.35;color:var(--ink);margin:0}
+.ex-issue-meta {display:flex;flex-wrap:wrap;gap:12px 24px;font-size:12px;color:var(--ink-2);padding-bottom:8px;border-bottom:1px solid var(--hair-2)}
+.ex-issue-meta div {display:flex;align-items:center;gap:6px}
+.ex-issue-sec {display:flex;flex-direction:column;gap:4px}
+.ex-issue-body {font-size:13px;color:var(--ink-2);line-height:1.5;white-space:pre-wrap;word-break:break-word}
+.ex-section-title {font-size:12px;font-weight:600;letter-spacing:.08em;text-transform:uppercase;color:var(--ink-3);margin-top:14px;margin-bottom:4px}
+.ex-comments-list {display:flex;flex-direction:column;gap:10px;margin-top:4px}
+.ex-comment-item {background:rgba(255,255,255,0.01);border:1px solid var(--hair-2);border-radius:10px;padding:10px 12px}
+.ex-comment-meta {display:flex;justify-content:space-between;align-items:center;font-size:11px;color:var(--ink-3);margin-bottom:6px}
+.ex-comment-author {font-weight:560;color:var(--ink-2)}
+.ex-comment-date {font-variant-numeric:tabular-nums}
+.ex-comment-body {font-size:12.5px;color:var(--ink-2);line-height:1.45;white-space:pre-wrap;word-break:break-word}
 </style></head>
 <body>
 <div class="rail"><div class="wrap"><div class="rail-in">
@@ -880,7 +924,7 @@ body::after{background:radial-gradient(900px 700px at 50% 120%,rgba(139,149,232,
         <div class="dg-col" data-k="{{.Key}}">
           <div class="dg-cap"><span class="acc"></span><span class="nm">{{.Title}}</span><span class="ct">{{.Count}}</span></div>
           {{range .Items}}
-          <div class="dg-item"><span class="when">{{.Rel}}</span><span class="ti">{{.Title}}</span><span class="mt">{{.Slug}} · {{.ID}}</span></div>
+          <div class="dg-item"><span class="when">{{.Rel}}</span><span class="ti">{{.Title}}</span><span class="mt">{{.Slug}} · <a href="javascript:void(0)" class="id-link" onclick="showExplain('{{.ID}}', '{{.Slug}}')">{{.ID}}</a></span></div>
           {{end}}
           {{if .More}}<div class="dg-more">+{{.More}} more</div>{{end}}
         </div>
@@ -888,7 +932,7 @@ body::after{background:radial-gradient(900px 700px at 50% 120%,rgba(139,149,232,
       </div>
     </section>
     {{end}}
-    {{range .Projects}}
+    {{range .Projects}}{{$projSlug := .Slug}}
     <section class="proj">
       <div class="proj-h">
         <div class="t"><span class="eyebrow">Project</span><span class="slug">{{.Slug}}</span></div>
@@ -909,7 +953,7 @@ body::after{background:radial-gradient(900px 700px at 50% 120%,rgba(139,149,232,
               <div class="c-title">{{.Title}}</div>
             </div>
             <div class="c-meta">
-              <span class="id">{{.ID}}</span>
+              <a href="javascript:void(0)" class="id-link" onclick="showExplain('{{.ID}}', '{{$projSlug}}')">{{.ID}}</a>
               <span class="st">{{.Status}}</span>
               {{if .IsEpic}}<span class="epi">Epic{{if .ChildTotal}} · {{.ChildTotal}}{{end}}</span>{{end}}
               {{if .Conflict}}<span class="conf">⚠ closed · open children</span>{{end}}
@@ -931,7 +975,584 @@ body::after{background:radial-gradient(900px 700px at 50% 120%,rgba(139,149,232,
   <span>tailnet-only · read-only</span><span>auto-refresh {{.Refresh}}s</span>
   <span>generated {{.GeneratedAtAbs}}</span><span>beads project board</span>
 </div>
+<div class="drawer-overlay" id="drawer-overlay" onclick="closeDrawer()"></div>
+<div class="drawer" id="drawer">
+  <div class="drawer-h">
+    <div class="drawer-title" id="drawer-title">Explain Changes</div>
+    <button class="drawer-close" onclick="closeDrawer()">&times;</button>
+  </div>
+  <div class="drawer-b" id="drawer-body"></div>
+</div>
+<script>
+function showExplain(cardId, projectSlug) {
+  const overlay = document.getElementById('drawer-overlay');
+  const drawer = document.getElementById('drawer');
+  const title = document.getElementById('drawer-title');
+  const body = document.getElementById('drawer-body');
+  
+  title.textContent = 'Explaining ' + cardId;
+  body.innerHTML = '<div style="text-align:center;padding:40px 0;color:var(--ink-3);">Loading explanation...</div>';
+  
+  overlay.classList.add('open');
+  drawer.classList.add('open');
+  
+  fetch('/explain?issue=' + encodeURIComponent(cardId) + '&project=' + encodeURIComponent(projectSlug))
+    .then(r => {
+      if (!r.ok) throw new Error('Failed to fetch explanation');
+      return r.json();
+    })
+    .then(data => {
+      let html = '';
+      if (data.issue_details) {
+        let issue = data.issue_details;
+        let prioText = 'P' + issue.priority;
+        let prioClass = 'p' + issue.priority;
+        let statusText = issue.status || 'unknown';
+        let typeText = issue.issue_type || '';
+        let typeBadge = typeText ? '<span class="st" style="text-transform:capitalize;margin-left:6px;">' + escapeHtml(typeText) + '</span>' : '';
+        
+        html += '<div class="ex-issue-card" style="margin-bottom: 20px;">' +
+          '<div class="ex-issue-header">' +
+            '<span class="prio ' + prioClass + '" style="margin-top:6px;width:10px;height:10px;flex-shrink:0;" title="' + prioText + '"></span>' +
+            '<h2 class="ex-issue-title">' + escapeHtml(issue.title) + '</h2>' +
+          '</div>' +
+          '<div class="ex-issue-meta">' +
+            '<div><span class="ex-meta-label">Status</span><span class="st">' + escapeHtml(statusText) + '</span>' + typeBadge + '</div>' +
+            (issue.assignee ? '<div><span class="ex-meta-label">Assignee</span><span class="ex-meta-val">' + escapeHtml(issue.assignee) + '</span></div>' : '') +
+            (issue.owner ? '<div><span class="ex-meta-label">Owner</span><span class="ex-meta-val">' + escapeHtml(issue.owner) + '</span></div>' : '') +
+          '</div>';
+
+        if (issue.description) {
+          html += '<div class="ex-issue-sec">' +
+            '<span class="ex-meta-label">Description</span>' +
+            '<div class="ex-issue-body">' + escapeHtml(issue.description).replace(/\n/g, '<br>') + '</div>' +
+          '</div>';
+        }
+
+        if (issue.design) {
+          html += '<div class="ex-issue-sec">' +
+            '<span class="ex-meta-label">Design Notes</span>' +
+            '<div class="ex-issue-body" style="border-left:2px solid var(--in_progress);padding-left:10px;">' + escapeHtml(issue.design).replace(/\n/g, '<br>') + '</div>' +
+          '</div>';
+        }
+
+        if (issue.acceptance_criteria) {
+          html += '<div class="ex-issue-sec">' +
+            '<span class="ex-meta-label">Acceptance Criteria</span>' +
+            '<div class="ex-issue-body" style="border-left:2px solid var(--done);padding-left:10px;">' + escapeHtml(issue.acceptance_criteria).replace(/\n/g, '<br>') + '</div>' +
+          '</div>';
+        }
+
+        if (issue.notes) {
+          html += '<div class="ex-issue-sec">' +
+            '<span class="ex-meta-label">Notes</span>' +
+            '<div class="ex-issue-body">' + escapeHtml(issue.notes).replace(/\n/g, '<br>') + '</div>' +
+          '</div>';
+        }
+
+        if (issue.comments && issue.comments.length > 0) {
+          html += '<div class="ex-issue-sec">' +
+            '<span class="ex-meta-label">Comments (' + issue.comments.length + ')</span>' +
+            '<div class="ex-comments-list">';
+          issue.comments.forEach(c => {
+            let created = c.created_at ? new Date(c.created_at).toLocaleString() : '';
+            html += '<div class="ex-comment-item">' +
+              '<div class="ex-comment-meta">' +
+                '<span class="ex-comment-author">' + escapeHtml(c.author || 'system') + '</span>' +
+                '<span class="ex-comment-date">' + escapeHtml(created) + '</span>' +
+              '</div>' +
+              '<div class="ex-comment-body">' + escapeHtml(c.body).replace(/\n/g, '<br>') + '</div>' +
+            '</div>';
+          });
+          html += '</div></div>';
+        }
+
+        if (issue.close_reason) {
+          html += '<div class="ex-issue-sec" style="background:rgba(63,185,80,0.05);border:1px solid rgba(63,185,80,0.15);padding:10px;border-radius:8px;">' +
+            '<span class="ex-meta-label" style="color:var(--done)">Close Reason</span>' +
+            '<div class="ex-issue-body">' + escapeHtml(issue.close_reason).replace(/\n/g, '<br>') + '</div>' +
+          '</div>';
+        }
+
+        html += '</div>';
+      }
+
+      html += '<div class="ex-section-title">Associated Code & Workspace</div>';
+
+      if (!data.has_graph) {
+        html += '<div class="diag" style="margin-top:0;margin-bottom:16px;width:100%;">' +
+          '<b>Notice</b> ' +
+          '<span>No <code>.understand-anything/knowledge-graph.json</code> was found. Run <code>/understand</code> in the project workspace to get file summaries and architecture context.</span>' +
+        '</div>';
+      }
+
+      if (!data.files || data.files.length === 0) {
+        html += '<div style="text-align:center;padding:24px 0;color:var(--ink-3);">' +
+          'No associated files or changes found in the git history for <b>' + escapeHtml(cardId) + '</b>.' +
+        '</div>';
+      } else {
+        data.files.forEach(f => {
+          let statusClass = f.status.toLowerCase();
+          let tagsHtml = (f.tags || []).map(t => '<span class="st" style="margin-right:4px;background:rgba(255,255,255,0.03);">' + escapeHtml(t) + '</span>').join('');
+          
+          let metaHtml = '';
+          if (f.complexity || f.layer || tagsHtml) {
+            metaHtml = '<div class="ex-meta-grid">' +
+              (f.layer ? '<div class="ex-meta-item"><span class="ex-meta-label">Layer</span><span class="ex-meta-val">' + escapeHtml(f.layer) + '</span></div>' : '') +
+              (f.complexity ? '<div class="ex-meta-item"><span class="ex-meta-label">Complexity</span><span class="ex-meta-val">' + escapeHtml(f.complexity) + '</span></div>' : '') +
+              (tagsHtml ? '<div class="ex-meta-item"><span class="ex-meta-label">Tags</span><span class="ex-meta-val" style="display:flex;flex-wrap:wrap;gap:4px;">' + tagsHtml + '</span></div>' : '') +
+            '</div>';
+          }
+          
+          let connHtml = '';
+          if (f.connections && f.connections.length > 0) {
+            connHtml = '<div class="ex-meta-item" style="margin-top:10px;">' +
+              '<span class="ex-meta-label">Connected Components</span>' +
+              '<span class="ex-meta-val" style="display:flex;flex-wrap:wrap;gap:4px;margin-top:4px;">' +
+                f.connections.map(c => '<span class="epi" style="font-size:9.5px;color:var(--ink-2);background:rgba(255,255,255,0.01);">' + escapeHtml(c) + '</span>').join('') +
+              '</span>' +
+            '</div>';
+          }
+
+          let diffHtml = '';
+          if (f.diff_preview) {
+            let lines = f.diff_preview.split('\n');
+            let formattedLines = lines.map(line => {
+              if (line.startsWith('+') && !line.startsWith('+++')) {
+                return '<span class="ex-diff-add">' + escapeHtml(line) + '</span>';
+              } else if (line.startsWith('-') && !line.startsWith('---')) {
+                return '<span class="ex-diff-del">' + escapeHtml(line) + '</span>';
+              } else if (line.startsWith('@@') || line.startsWith('diff') || line.startsWith('index') || line.startsWith('---') || line.startsWith('+++')) {
+                return '<span class="ex-diff-info">' + escapeHtml(line) + '</span>';
+              }
+              return escapeHtml(line);
+            }).join('\n');
+            
+            diffHtml = '<div style="margin-top:12px;">' +
+              '<span class="ex-meta-label">Git Diff</span>' +
+              '<div class="ex-diff">' + formattedLines + '</div>' +
+            '</div>';
+          }
+
+          html += '<div class="ex-file">' +
+            '<div class="ex-file-h">' +
+              '<span class="ex-path">' + escapeHtml(f.path) + '</span>' +
+              '<span class="ex-status ' + statusClass + '">' + escapeHtml(f.status) + '</span>' +
+            '</div>' +
+            (f.summary ? '<div class="ex-summary">' + escapeHtml(f.summary) + '</div>' : '') +
+            metaHtml +
+            connHtml +
+            diffHtml +
+          '</div>';
+        });
+      }
+      
+      body.innerHTML = html;
+    })
+    .catch(err => {
+      body.innerHTML = '<div style="text-align:center;padding:40px 0;color:var(--p0);">Error loading explanation: ' + escapeHtml(err.message) + '</div>';
+    });
+}
+
+function closeDrawer() {
+  document.getElementById('drawer-overlay').classList.remove('open');
+  document.getElementById('drawer').classList.remove('open');
+}
+
+function escapeHtml(str) {
+  return str.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;').replace(/'/g, '&#039;');
+}
+</script>
 </body></html>`))
+
+type uaProject struct {
+	Name        string   `json:"name"`
+	Languages   []string `json:"languages"`
+	Frameworks  []string `json:"frameworks"`
+	Description string   `json:"description"`
+}
+
+type uaNode struct {
+	ID            string   `json:"id"`
+	Type          string   `json:"type"`
+	Name          string   `json:"name"`
+	FilePath      string   `json:"filePath,omitempty"`
+	Summary       string   `json:"summary"`
+	Tags          []string `json:"tags"`
+	Complexity    string   `json:"complexity"`
+	LanguageNotes string   `json:"languageNotes,omitempty"`
+}
+
+type uaEdge struct {
+	Source      string  `json:"source"`
+	Target      string  `json:"target"`
+	Type        string  `json:"type"`
+	Direction   string  `json:"direction"`
+	Description string  `json:"description,omitempty"`
+	Weight      float64 `json:"weight"`
+}
+
+type uaLayer struct {
+	ID          string   `json:"id"`
+	Name        string   `json:"name"`
+	Description string   `json:"description"`
+	NodeIds     []string `json:"nodeIds"`
+}
+
+type uaGraph struct {
+	Project uaProject `json:"project"`
+	Nodes   []uaNode  `json:"nodes"`
+	Edges   []uaEdge  `json:"edges"`
+	Layers  []uaLayer `json:"layers"`
+}
+
+type ExplainFile struct {
+	Path        string   `json:"path"`
+	Status      string   `json:"status"`
+	Summary     string   `json:"summary,omitempty"`
+	Complexity  string   `json:"complexity,omitempty"`
+	Layer       string   `json:"layer,omitempty"`
+	Tags        []string `json:"tags,omitempty"`
+	Connections []string `json:"connections,omitempty"`
+	DiffPreview string   `json:"diff_preview,omitempty"`
+}
+
+type ExplainResponse struct {
+	IssueID      string              `json:"issue_id"`
+	WorkspaceDir string              `json:"workspace_dir"`
+	HasGraph     bool                `json:"has_graph"`
+	IssueDetails *types.IssueDetails `json:"issue_details,omitempty"`
+	Files        []ExplainFile       `json:"files"`
+}
+
+func runGitCmd(ctx context.Context, dir string, args ...string) (string, error) {
+	cctx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+	cmd := exec.CommandContext(cctx, "git", args...)
+	if dir != "" {
+		cmd.Dir = dir
+	}
+	env := os.Environ()
+	filtered := env[:0]
+	for _, e := range env {
+		if !strings.HasPrefix(e, "BEADS_DOLT_") {
+			filtered = append(filtered, e)
+		}
+	}
+	cmd.Env = filtered
+	var out bytes.Buffer
+	cmd.Stdout = &out
+	if err := cmd.Run(); err != nil {
+		return "", err
+	}
+	return out.String(), nil
+}
+
+func parseGitLogNameStatus(output string) map[string]string {
+	files := make(map[string]string)
+	lines := strings.Split(output, "\n")
+	for _, line := range lines {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+		parts := strings.Fields(line)
+		if len(parts) >= 2 {
+			status := parts[0]
+			path := parts[1]
+			switch status {
+			case "M":
+				files[path] = "modified"
+			case "A":
+				files[path] = "added"
+			case "D":
+				files[path] = "deleted"
+			default:
+				files[path] = "committed"
+			}
+		}
+	}
+	return files
+}
+
+func parseGitStatusPorcelain(output string) map[string]string {
+	files := make(map[string]string)
+	lines := strings.Split(output, "\n")
+	for _, line := range lines {
+		if len(line) < 4 {
+			continue
+		}
+		statusX := line[0]
+		statusY := line[1]
+		path := strings.TrimSpace(line[3:])
+		status := "modified"
+		if statusX == '?' || statusY == '?' {
+			status = "added"
+		} else if statusX == 'D' || statusY == 'D' {
+			status = "deleted"
+		} else if statusX == 'A' || statusY == 'A' {
+			status = "added"
+		}
+		files[path] = status
+	}
+	return files
+}
+
+func getGitDiffPreview(ctx context.Context, dir string, filePath string, isUncommitted bool, baseBranch string) string {
+	var out string
+	var err error
+	if isUncommitted {
+		out, err = runGitCmd(ctx, dir, "diff", "--", filePath)
+	} else if baseBranch != "" {
+		out, err = runGitCmd(ctx, dir, "diff", baseBranch+"...HEAD", "--", filePath)
+	} else {
+		out, err = runGitCmd(ctx, dir, "diff", "HEAD~1", "HEAD", "--", filePath)
+	}
+	if err != nil || out == "" {
+		return ""
+	}
+	lines := strings.Split(out, "\n")
+	if len(lines) > 60 {
+		return strings.Join(lines[:60], "\n") + "\n... (truncated)"
+	}
+	return out
+}
+
+func execShowIssueJSONIn(ctx context.Context, dir string, issueID string) ([]byte, error) {
+	self, err := os.Executable()
+	if err != nil {
+		return nil, fmt.Errorf("resolve self: %w", err)
+	}
+	cctx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+
+	args := []string{"show", issueID, "--json", "--include-comments"}
+	if dir != "" {
+		args = append([]string{"-C", dir}, args...)
+	}
+	cmd := exec.CommandContext(cctx, self, args...)
+	if embeddedMode(dir) {
+		env := os.Environ()
+		filtered := env[:0]
+		for _, e := range env {
+			if !strings.HasPrefix(e, "BEADS_DOLT_") {
+				filtered = append(filtered, e)
+			}
+		}
+		cmd.Env = filtered
+	}
+	var out bytes.Buffer
+	cmd.Stdout = &out
+	var errBuf bytes.Buffer
+	cmd.Stderr = &errBuf
+	if err := cmd.Run(); err != nil {
+		return nil, fmt.Errorf("bd show --json failed: %w (stderr: %s)", err, errBuf.String())
+	}
+	return out.Bytes(), nil
+}
+
+func parseShowIssueJSON(data []byte) (*types.IssueDetails, error) {
+	// First try parsing as envelope: {"schema_version": ..., "data": [...]}
+	var env struct {
+		Data json.RawMessage `json:"data"`
+	}
+	if err := json.Unmarshal(data, &env); err == nil && len(env.Data) > 0 {
+		// Try parsing env.Data as array
+		var list []types.IssueDetails
+		if err := json.Unmarshal(env.Data, &list); err == nil && len(list) > 0 {
+			return &list[0], nil
+		}
+		// Try parsing env.Data as single object
+		var item types.IssueDetails
+		if err := json.Unmarshal(env.Data, &item); err == nil && item.ID != "" {
+			return &item, nil
+		}
+	}
+
+	// Try parsing direct array
+	var list []types.IssueDetails
+	if err := json.Unmarshal(data, &list); err == nil && len(list) > 0 {
+		return &list[0], nil
+	}
+
+	// Try parsing single object
+	var item types.IssueDetails
+	if err := json.Unmarshal(data, &item); err == nil && item.ID != "" {
+		return &item, nil
+	}
+
+	return nil, fmt.Errorf("unable to parse issue details from JSON: %s", string(data))
+}
+
+func explainIssueInWorkspace(ctx context.Context, dir string, issueID string) (ExplainResponse, error) {
+	resp := ExplainResponse{
+		IssueID:      issueID,
+		WorkspaceDir: dir,
+		Files:        []ExplainFile{},
+	}
+
+	// Fetch issue details from beads database in this workspace if it exists
+	beadsDir := filepath.Join(dir, ".beads")
+	if _, err := os.Stat(beadsDir); err == nil {
+		if showJSON, err := execShowIssueJSONIn(ctx, dir, issueID); err == nil {
+			if details, parseErr := parseShowIssueJSON(showJSON); parseErr == nil {
+				resp.IssueDetails = details
+			}
+		}
+	}
+
+	associatedFiles := make(map[string]string)
+	
+	logOut, err := runGitCmd(ctx, dir, "log", "--grep="+issueID, "--name-status", "--pretty=format:", "--max-count=50")
+	if err == nil {
+		for k, v := range parseGitLogNameStatus(logOut) {
+			associatedFiles[k] = v
+		}
+	}
+
+	branchName, err := runGitCmd(ctx, dir, "rev-parse", "--abbrev-ref", "HEAD")
+	branchName = strings.TrimSpace(branchName)
+	isCurrentBranch := err == nil && strings.Contains(strings.ToLower(branchName), strings.ToLower(issueID))
+
+	var baseBranch string
+	if isCurrentBranch {
+		statusOut, err := runGitCmd(ctx, dir, "status", "--porcelain")
+		if err == nil {
+			for k, v := range parseGitStatusPorcelain(statusOut) {
+				associatedFiles[k] = v
+			}
+		}
+
+		bases := []string{"origin/main", "main", "origin/master", "master"}
+		for _, base := range bases {
+			_, err := runGitCmd(ctx, dir, "diff", "--name-status", base+"...HEAD")
+			if err == nil {
+				baseBranch = base
+				break
+			}
+		}
+		if baseBranch == "" {
+			_, err = runGitCmd(ctx, dir, "diff", "--name-status", "HEAD~1...HEAD")
+			if err == nil {
+				baseBranch = "HEAD~1"
+			}
+		}
+
+		if baseBranch != "" {
+			diffOut, err := runGitCmd(ctx, dir, "diff", "--name-status", baseBranch+"...HEAD")
+			if err == nil {
+				for k, v := range parseGitLogNameStatus(diffOut) {
+					if _, exists := associatedFiles[k]; !exists {
+						associatedFiles[k] = v
+					}
+				}
+			}
+		}
+	}
+
+	var graph uaGraph
+	graphPath := filepath.Join(dir, ".understand-anything", "knowledge-graph.json")
+	graphData, err := os.ReadFile(graphPath)
+	if err == nil {
+		if jsonErr := json.Unmarshal(graphData, &graph); jsonErr == nil {
+			resp.HasGraph = true
+		}
+	}
+
+	var files []ExplainFile
+	for path, status := range associatedFiles {
+		exFile := ExplainFile{
+			Path:   path,
+			Status: status,
+		}
+
+		isUncommitted := status == "modified" || status == "added" || status == "deleted"
+		exFile.DiffPreview = getGitDiffPreview(ctx, dir, path, isUncommitted, baseBranch)
+
+		if resp.HasGraph {
+			var targetNode *uaNode
+			cleanedPath := filepath.Clean(path)
+			for i := range graph.Nodes {
+				nodePath := filepath.Clean(graph.Nodes[i].FilePath)
+				if nodePath == cleanedPath {
+					targetNode = &graph.Nodes[i]
+					break
+				}
+			}
+
+			if targetNode != nil {
+				exFile.Summary = targetNode.Summary
+				exFile.Complexity = targetNode.Complexity
+				exFile.Tags = targetNode.Tags
+
+				for _, layer := range graph.Layers {
+					for _, nid := range layer.NodeIds {
+						if nid == targetNode.ID {
+							exFile.Layer = layer.Name
+							break
+						}
+					}
+					if exFile.Layer != "" {
+						break
+					}
+				}
+
+				connectionsSet := make(map[string]bool)
+				for _, edge := range graph.Edges {
+					if edge.Type == "contains" {
+						continue
+					}
+					var connID string
+					var edgeDir string
+					if edge.Source == targetNode.ID {
+						connID = edge.Target
+						edgeDir = "calls"
+						if edge.Type == "imports" {
+							edgeDir = "imports"
+						} else if edge.Type == "depends_on" {
+							edgeDir = "depends on"
+						}
+					} else if edge.Target == targetNode.ID {
+						connID = edge.Source
+						edgeDir = "called by"
+						if edge.Type == "imports" {
+							edgeDir = "imported by"
+						} else if edge.Type == "depends_on" {
+							edgeDir = "depended on by"
+						}
+					}
+
+					if connID != "" {
+						for i := range graph.Nodes {
+							if graph.Nodes[i].ID == connID {
+								connName := graph.Nodes[i].Name
+								if graph.Nodes[i].Type == "file" && graph.Nodes[i].FilePath != "" {
+									connName = filepath.Base(graph.Nodes[i].FilePath)
+								}
+								connectionsSet[fmt.Sprintf("%s (%s)", connName, edgeDir)] = true
+								break
+							}
+						}
+					}
+				}
+
+				for conn := range connectionsSet {
+					exFile.Connections = append(exFile.Connections, conn)
+				}
+				sort.Strings(exFile.Connections)
+			}
+		}
+
+		files = append(files, exFile)
+	}
+
+	sort.Slice(files, func(i, j int) bool {
+		return files[i].Path < files[j].Path
+	})
+
+	resp.Files = files
+	return resp, nil
+}
 
 func serveBoard(addr string, refreshSec int, ttl, timeout time.Duration, explicit, globs []string) error {
 	cache := newBoardCache(ttl, func(ctx context.Context) ([]byte, error) {
@@ -944,6 +1565,61 @@ func serveBoard(addr string, refreshSec int, ttl, timeout time.Duration, explici
 	mux := http.NewServeMux()
 	mux.HandleFunc("/healthz", func(w http.ResponseWriter, _ *http.Request) {
 		_, _ = w.Write([]byte("ok"))
+	})
+	mux.HandleFunc("/explain", func(w http.ResponseWriter, r *http.Request) {
+		select {
+		case sema <- struct{}{}:
+			defer func() { <-sema }()
+		default:
+			http.Error(w, "busy", http.StatusServiceUnavailable)
+			return
+		}
+
+		issue := r.URL.Query().Get("issue")
+		project := r.URL.Query().Get("project")
+		if issue == "" {
+			http.Error(w, "missing issue parameter", http.StatusBadRequest)
+			return
+		}
+
+		wDirs := resolveWorkspaces(explicit, globs)
+		var targetDir string
+
+		if project != "" {
+			for _, d := range wDirs {
+				if workspaceName(d) == project {
+					targetDir = d
+					break
+				}
+			}
+		}
+
+		if targetDir == "" && len(wDirs) > 1 {
+			for _, d := range wDirs {
+				testResp, err := explainIssueInWorkspace(r.Context(), d, issue)
+				if err == nil && len(testResp.Files) > 0 {
+					targetDir = d
+					break
+				}
+			}
+		}
+
+		if targetDir == "" {
+			if len(wDirs) > 0 {
+				targetDir = wDirs[0]
+			} else {
+				targetDir = ""
+			}
+		}
+
+		resp, err := explainIssueInWorkspace(r.Context(), targetDir, issue)
+		if err != nil {
+			http.Error(w, "failed to explain issue: "+err.Error(), http.StatusInternalServerError)
+			return
+		}
+
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(resp)
 	})
 	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
 		select {
