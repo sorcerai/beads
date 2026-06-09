@@ -1402,11 +1402,22 @@ func explainIssueInWorkspace(ctx context.Context, dir string, issueID string) (E
 	}
 
 	associatedFiles := make(map[string]string)
+	uncommittedFiles := make(map[string]bool)
+
+	statusOut, statusErr := runGitCmd(ctx, dir, "status", "--porcelain")
+	if statusErr == nil {
+		for k, v := range parseGitStatusPorcelain(statusOut) {
+			uncommittedFiles[k] = true
+			associatedFiles[k] = v
+		}
+	}
 	
 	logOut, err := runGitCmd(ctx, dir, "log", "--grep="+issueID, "--name-status", "--pretty=format:", "--max-count=50")
 	if err == nil {
 		for k, v := range parseGitLogNameStatus(logOut) {
-			associatedFiles[k] = v
+			if _, exists := associatedFiles[k]; !exists {
+				associatedFiles[k] = v
+			}
 		}
 	}
 
@@ -1416,13 +1427,6 @@ func explainIssueInWorkspace(ctx context.Context, dir string, issueID string) (E
 
 	var baseBranch string
 	if isCurrentBranch {
-		statusOut, err := runGitCmd(ctx, dir, "status", "--porcelain")
-		if err == nil {
-			for k, v := range parseGitStatusPorcelain(statusOut) {
-				associatedFiles[k] = v
-			}
-		}
-
 		bases := []string{"origin/main", "main", "origin/master", "master"}
 		for _, base := range bases {
 			_, err := runGitCmd(ctx, dir, "diff", "--name-status", base+"...HEAD")
@@ -1466,7 +1470,7 @@ func explainIssueInWorkspace(ctx context.Context, dir string, issueID string) (E
 			Status: status,
 		}
 
-		isUncommitted := status == "modified" || status == "added" || status == "deleted"
+		isUncommitted := uncommittedFiles[path]
 		exFile.DiffPreview = getGitDiffPreview(ctx, dir, path, isUncommitted, baseBranch)
 
 		if resp.HasGraph {
