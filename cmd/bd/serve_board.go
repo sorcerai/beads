@@ -270,6 +270,9 @@ func resolveWorkspaces(explicit, globs []string) []string {
 		}
 	}
 	if len(out) == 0 {
+		if changeDir != "" {
+			return []string{changeDir}
+		}
 		return []string{""}
 	}
 	return out
@@ -1394,8 +1397,14 @@ func explainIssueInWorkspace(ctx context.Context, dir string, issueID string) (E
 	// Fetch issue details from beads database in this workspace if it exists
 	beadsDir := filepath.Join(dir, ".beads")
 	if _, err := os.Stat(beadsDir); err == nil {
-		if showJSON, err := execShowIssueJSONIn(ctx, dir, issueID); err == nil {
-			if details, parseErr := parseShowIssueJSON(showJSON); parseErr == nil {
+		showJSON, err := execShowIssueJSONIn(ctx, dir, issueID)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "explain: execShowIssueJSONIn failed: %v\n", err)
+		} else {
+			details, parseErr := parseShowIssueJSON(showJSON)
+			if parseErr != nil {
+				fmt.Fprintf(os.Stderr, "explain: parseShowIssueJSON failed: %v\n", parseErr)
+			} else {
 				resp.IssueDetails = details
 			}
 		}
