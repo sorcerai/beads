@@ -31,8 +31,10 @@ Examples:
 		id := args[0]
 		ctx := rootCtx
 
-		// Resolve ID with prefix routing (supports cross-rig edits like `bd edit xe-5ls`)
-		result, err := resolveAndGetIssueWithRouting(ctx, store, id)
+		// Resolve ID with prefix routing (supports cross-rig edits like `bd edit xe-5ls`).
+		// Write-intent: the routed target opens writable so the field update
+		// commits on the target head (#4141).
+		result, err := resolveAndGetIssueWithRoutingForWrite(ctx, store, id)
 		if err != nil {
 			FatalErrorRespectJSON("resolving %s: %v", id, err)
 		}

@@ -40,7 +40,9 @@ Examples:
 
 		ctx := rootCtx
 
-		result, err := resolveAndGetIssueWithRouting(ctx, store, id)
+		// Write-intent routing: a prefix-routed target must open writable so the
+		// priority update commits on the target head (#4141).
+		result, err := resolveAndGetIssueWithRoutingForWrite(ctx, store, id)
 		if err != nil {
 			if result != nil {
 				result.Close()

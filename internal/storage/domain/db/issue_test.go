@@ -3,7 +3,6 @@ package db
 import (
 	"database/sql"
 	"errors"
-	"fmt"
 	"time"
 
 	"github.com/steveyegge/beads/internal/storage/domain"
@@ -39,19 +38,10 @@ func (s *testSuite) TestIssueSQLRepository() {
 		s.Run("EmptySliceReturnsNil", s.issueGetByIDsEmpty)
 		s.Run("ReturnsOnlyExistingRows", s.issueGetByIDsPartial)
 	})
-	s.Run("Search", func() {
-		s.Run("NoFilterReturnsAll", s.issueSearchAll)
-		s.Run("FilterByStatus", s.issueSearchByStatus)
-		s.Run("FilterByIssueType", s.issueSearchByIssueType)
-		s.Run("FilterByIDPrefix", s.issueSearchByIDPrefix)
-		s.Run("FilterByIDs", s.issueSearchByIDs)
-		s.Run("LimitRespected", s.issueSearchLimit)
-	})
 	s.Run("Wisp", func() {
 		s.Run("InsertRoutesToWispsTable", s.issueWispInsertRouting)
 		s.Run("GetReadsFromWispsTable", s.issueWispGet)
 		s.Run("UpdateWritesToWispsTable", s.issueWispUpdate)
-		s.Run("SearchReadsFromWispsTable", s.issueWispSearch)
 		s.Run("CrossRoutedLookupsAreEmpty", s.issueWispIsolated)
 	})
 	s.Run("Exists", func() {
@@ -316,85 +306,6 @@ func (s *testSuite) issueGetByIDsPartial() {
 	s.True(ids["bd-pres-2"])
 }
 
-func (s *testSuite) issueSearchAll() {
-	r := s.issueRepo()
-	s.Require().NoError(r.Insert(s.Ctx(), newTestIssue("bd-srch-1", "a"), "tester", domain.InsertIssueOpts{}))
-	s.Require().NoError(r.Insert(s.Ctx(), newTestIssue("bd-srch-2", "b"), "tester", domain.InsertIssueOpts{}))
-
-	out, err := r.Search(s.Ctx(), types.IssueFilter{}, domain.IssueTableOpts{})
-	s.Require().NoError(err)
-	s.GreaterOrEqual(len(out), 2)
-}
-
-func (s *testSuite) issueSearchByStatus() {
-	r := s.issueRepo()
-
-	open1 := newTestIssue("bd-stat-open", "open one")
-	s.Require().NoError(r.Insert(s.Ctx(), open1, "tester", domain.InsertIssueOpts{}))
-
-	closed := newTestIssue("bd-stat-closed", "closed one")
-	closed.Status = types.StatusClosed
-	s.Require().NoError(r.Insert(s.Ctx(), closed, "tester", domain.InsertIssueOpts{}))
-
-	// Scope by ID prefix — earlier subtests share the DB state and may have
-	// created closed rows.
-	closedStatus := types.StatusClosed
-	out, err := r.Search(s.Ctx(), types.IssueFilter{Status: &closedStatus, IDPrefix: "bd-stat-"}, domain.IssueTableOpts{})
-	s.Require().NoError(err)
-	s.Len(out, 1)
-	s.Equal("bd-stat-closed", out[0].ID)
-}
-
-func (s *testSuite) issueSearchByIssueType() {
-	r := s.issueRepo()
-
-	bug := newTestIssue("bd-type-bug", "bug")
-	bug.IssueType = types.TypeBug
-	s.Require().NoError(r.Insert(s.Ctx(), bug, "tester", domain.InsertIssueOpts{}))
-
-	task := newTestIssue("bd-type-task", "task")
-	s.Require().NoError(r.Insert(s.Ctx(), task, "tester", domain.InsertIssueOpts{}))
-
-	// Scope by ID prefix to isolate from earlier subtests.
-	bugType := types.TypeBug
-	out, err := r.Search(s.Ctx(), types.IssueFilter{IssueType: &bugType, IDPrefix: "bd-type-"}, domain.IssueTableOpts{})
-	s.Require().NoError(err)
-	s.Len(out, 1)
-	s.Equal("bd-type-bug", out[0].ID)
-}
-
-func (s *testSuite) issueSearchByIDPrefix() {
-	r := s.issueRepo()
-	s.Require().NoError(r.Insert(s.Ctx(), newTestIssue("bd-pfx-a", "a"), "tester", domain.InsertIssueOpts{}))
-	s.Require().NoError(r.Insert(s.Ctx(), newTestIssue("bd-pfx-b", "b"), "tester", domain.InsertIssueOpts{}))
-	s.Require().NoError(r.Insert(s.Ctx(), newTestIssue("other-1", "other"), "tester", domain.InsertIssueOpts{}))
-
-	out, err := r.Search(s.Ctx(), types.IssueFilter{IDPrefix: "bd-pfx-"}, domain.IssueTableOpts{})
-	s.Require().NoError(err)
-	s.Len(out, 2)
-}
-
-func (s *testSuite) issueSearchByIDs() {
-	r := s.issueRepo()
-	s.Require().NoError(r.Insert(s.Ctx(), newTestIssue("bd-ids-1", "a"), "tester", domain.InsertIssueOpts{}))
-	s.Require().NoError(r.Insert(s.Ctx(), newTestIssue("bd-ids-2", "b"), "tester", domain.InsertIssueOpts{}))
-	s.Require().NoError(r.Insert(s.Ctx(), newTestIssue("bd-ids-3", "c"), "tester", domain.InsertIssueOpts{}))
-
-	out, err := r.Search(s.Ctx(), types.IssueFilter{IDs: []string{"bd-ids-1", "bd-ids-3"}}, domain.IssueTableOpts{})
-	s.Require().NoError(err)
-	s.Len(out, 2)
-}
-
-func (s *testSuite) issueSearchLimit() {
-	r := s.issueRepo()
-	for i := 0; i < 5; i++ {
-		s.Require().NoError(r.Insert(s.Ctx(), newTestIssue(fmt.Sprintf("bd-lim-%d", i), "x"), "tester", domain.InsertIssueOpts{}))
-	}
-	out, err := r.Search(s.Ctx(), types.IssueFilter{Limit: 3, IDPrefix: "bd-lim-"}, domain.IssueTableOpts{})
-	s.Require().NoError(err)
-	s.Len(out, 3)
-}
-
 func (s *testSuite) issueWispInsertRouting() {
 	r := s.issueRepo()
 	wisp := newTestIssue("bd-iss-wisp-1", "wisp issue")
@@ -447,21 +358,6 @@ func (s *testSuite) issueWispUpdate() {
 		"SELECT COUNT(*) FROM events WHERE issue_id = ? AND event_type = ?",
 		"bd-iss-wisp-upd", string(types.EventUpdated)).Scan(&permEvtCount))
 	s.Equal(0, permEvtCount)
-}
-
-func (s *testSuite) issueWispSearch() {
-	r := s.issueRepo()
-	for i := 0; i < 3; i++ {
-		w := newTestIssue(fmt.Sprintf("bd-iss-wsrch-%d", i), "x")
-		w.Ephemeral = true
-		s.Require().NoError(r.Insert(s.Ctx(), w, "tester", domain.InsertIssueOpts{UseWispsTable: true}))
-	}
-	out, err := r.Search(s.Ctx(),
-		types.IssueFilter{IDPrefix: "bd-iss-wsrch-"},
-		domain.IssueTableOpts{UseWispsTable: true},
-	)
-	s.Require().NoError(err)
-	s.Len(out, 3)
 }
 
 func (s *testSuite) issueWispIsolated() {

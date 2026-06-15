@@ -60,7 +60,7 @@ Examples:
 
 		ctx := rootCtx
 
-		result, err := resolveAndGetIssueWithRouting(ctx, store, id)
+		result, err := resolveAndGetIssueWithRoutingForWrite(ctx, store, id)
 		if err != nil {
 			if result != nil {
 				result.Close()

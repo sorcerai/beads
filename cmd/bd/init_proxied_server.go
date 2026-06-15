@@ -144,12 +144,15 @@ func runInitProxiedServer(cmd *cobra.Command, ctx context.Context, in initProxie
 		fmt.Fprintf(os.Stderr, "Warning: failed to initialize version tracking: %v\n", fsResult.LocalVersionErr)
 	}
 
-	uowProvider, err := newProxiedServerUOWProvider(ctx, beadsDir)
+	// Deliberately a local, not the package-global uowProvider: init owns this
+	// provider's whole lifecycle and closes it before the tail runs.
+	provider, err := newProxiedServerUOWProvider(ctx, beadsDir)
 	if err != nil {
 		FatalError("failed to open uow provider: %v", err)
 	}
+	defer func() { _ = provider.Close(ctx) }()
 
-	uw, err := uowProvider.NewUOW(ctx)
+	uw, err := provider.NewUOW(ctx)
 	if err != nil {
 		FatalError("failed to open unit of work: %v", err)
 	}

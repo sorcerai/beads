@@ -3,6 +3,7 @@ package main
 import (
 	"bufio"
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -22,6 +23,7 @@ import (
 	"github.com/steveyegge/beads/internal/git"
 	"github.com/steveyegge/beads/internal/storage"
 	"github.com/steveyegge/beads/internal/storage/dolt"
+	"github.com/steveyegge/beads/internal/storage/schema"
 	"github.com/steveyegge/beads/internal/templates/agents"
 	"github.com/steveyegge/beads/internal/ui"
 	"github.com/steveyegge/beads/internal/utils"
@@ -118,12 +120,6 @@ Non-interactive mode (--non-interactive or BD_NON_INTERACTIVE=1):
 		if os.Getenv("BEADS_DOLT_PROXIED_SERVER") == "1" {
 			initProxiedServer = true
 		}
-		if initProxiedServer {
-			// Proxied-server mode has no local Dolt init lifecycle yet. When it
-			// is implemented, that path must mark any local .dolt/ it creates or
-			// acknowledges with doltserver.MarkDoltDirCompatible.
-			FatalError("--proxied-server is not yet implemented")
-		}
 		if initProxiedServer && initServerMode {
 			FatalError("--server and --proxied-server are mutually exclusive")
 		}
@@ -132,6 +128,13 @@ Non-interactive mode (--non-interactive or BD_NON_INTERACTIVE=1):
 				serverHost != "" || serverPort != 0 || serverSocket != "" || serverUser != "" {
 				FatalError("--proxied-server cannot be combined with --shared-server, --external, or any --server-* flag")
 			}
+		}
+		if initProxiedServer && !proxiedServerInitUngated() {
+			// Dark-launch gate (bd-6dnrw.44): stays until the remaining P1
+			// decisions land (TLS, auth). The env escape exists so the proxied
+			// integration suites and their CI lane can bootstrap real
+			// workspaces without opening the user surface.
+			FatalError("--proxied-server is not yet implemented")
 		}
 		if serverConfigPath != "" {
 			if !initProxiedServer {
@@ -943,6 +946,34 @@ Non-interactive mode (--non-interactive or BD_NON_INTERACTIVE=1):
 
 		store, err := newDoltStore(ctx, doltCfg)
 		if err != nil {
+			// #4259: the remote-migrate gate refused to auto-apply pending
+			// migrations. When init just bootstrapped the clone, the REMOTE is
+			// what is behind this binary — the gate's generic "adopt: bd
+			// bootstrap" remedy is circular, and init has not yet written
+			// metadata.json/config.yaml, so without finalization the workspace
+			// is stranded where not even the gate's own unlock commands can
+			// open it (bd-4mpy7).
+			var gateErr *schema.RemoteMigrateGateError
+			if errors.As(err, &gateErr) {
+				if bootstrappedFromRemote {
+					// Leave the workspace in the same finalized state the
+					// bd bootstrap sync path produces (GH#3201) so
+					// `BD_ALLOW_REMOTE_MIGRATE=1 bd migrate` and
+					// `bd dolt push` can open the cloned database.
+					fcfg := initTimeCloneConfig(initServerMode, serverHost, serverPort, serverSocket, serverUser, dbName)
+					if ferr := finalizeSyncedBootstrap(beadsDir, syncURL, fcfg, dbName); ferr != nil {
+						fmt.Fprintf(os.Stderr, "Warning: failed to finalize bootstrapped workspace: %v\n", ferr)
+					}
+				}
+				if jsonOutput {
+					handleRemoteMigrateGateJSON(gateErr)
+				} else if bootstrappedFromRemote {
+					printBootstrapRemoteBehindGuidance(os.Stderr, gateErr, syncURL, "bd init")
+				} else {
+					fmt.Fprint(os.Stderr, gateErr.UserMessage())
+				}
+				os.Exit(1)
+			}
 			fmt.Fprintf(os.Stderr, "Error: failed to open Dolt store: %v\n", err)
 			os.Exit(1)
 		}

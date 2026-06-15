@@ -31,8 +31,10 @@ Examples:
 
 		ctx := rootCtx
 
-		// Resolve partial IDs with routing support
-		fromID, fromStore, fromCleanup, err := resolveIDWithRouting(ctx, store, id1)
+		// Resolve partial IDs with routing support. The source issue's store is
+		// mutated by AddDependency below, so resolve it write-intent (#4141); the
+		// dependency target is only resolved by ID and stays read-only.
+		fromID, fromStore, fromCleanup, err := resolveIDWithRoutingForWrite(ctx, store, id1)
 		if err != nil {
 			FatalErrorRespectJSON("%v", err)
 		}

@@ -9,7 +9,10 @@ import (
 	"time"
 
 	"github.com/steveyegge/beads/internal/storage/dberrors"
+	"github.com/steveyegge/beads/internal/storage/depid"
 	"github.com/steveyegge/beads/internal/storage/domain"
+	"github.com/steveyegge/beads/internal/storage/issueops"
+	"github.com/steveyegge/beads/internal/storage/sqlbuild"
 	"github.com/steveyegge/beads/internal/types"
 )
 
@@ -23,7 +26,7 @@ type dependencySQLRepositoryImpl struct {
 
 var _ domain.DependencySQLRepository = (*dependencySQLRepositoryImpl)(nil)
 
-const depTargetExpr = "COALESCE(depends_on_issue_id, depends_on_wisp_id, depends_on_external)"
+const depTargetExpr = sqlbuild.DepTargetExpr
 
 const depSelectColumns = "issue_id, " + depTargetExpr + " AS depends_on_id, type, created_at, created_by, metadata, thread_id"
 
@@ -103,17 +106,91 @@ func (r *dependencySQLRepositoryImpl) Insert(ctx context.Context, dep *types.Dep
 		return fmt.Errorf("db: DependencySQLRepository.Insert: %w", err)
 	}
 
+	// Deterministic id keyed on (issue_id, target), the same derivation as the
+	// embedded/issueops path, so server-mode (use-case) dependency creation stays
+	// merge-safe across clones and works once the DEFAULT (UUID()) is dropped (#4259).
 	//nolint:gosec // G201: table is one of two hardcoded constants; targetCol is from pickDepTargetColumn
 	if _, err := r.runner.ExecContext(ctx, fmt.Sprintf(`
-		INSERT INTO %s (issue_id, %s, type, created_at, created_by, metadata, thread_id)
-		VALUES (?, ?, ?, ?, ?, ?, ?)
+		INSERT INTO %s (id, issue_id, %s, type, created_at, created_by, metadata, thread_id)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?)
 	`, table, targetCol),
-		dep.IssueID, dep.DependsOnID, string(dep.Type),
+		depid.New(dep.IssueID, dep.DependsOnID), dep.IssueID, dep.DependsOnID, string(dep.Type),
 		time.Now().UTC(), actor, metadata, dep.ThreadID,
 	); err != nil {
 		return fmt.Errorf("db: DependencySQLRepository.Insert: %w", err)
 	}
+
+	// is_blocked maintenance mirrors the classic AddDependencyInTx flow
+	// (issueops/dependencies.go): the affected set expands the source by its
+	// parent-child descendants (plus, for parent-child edges, waiters on the
+	// target spawner), then a Mark pass propagates blocked state — or, for
+	// parent-child adds (not monotonic: an already-closed child can satisfy an
+	// any-children waits-for gate), a full mark/unmark Recompute. Skipping the
+	// expansion left descendants stale when a blocking edge landed on their
+	// ancestor (bd-6dnrw.44 item 3).
+	srcIsWisp := opts.UseWispsTable
+	var affectedIssues, affectedWisps []string
+	var aerr error
+	if srcIsWisp {
+		affectedIssues, affectedWisps, aerr = issueops.AffectedByDepChangeForWispInTx(ctx, r.runner, dep.IssueID, dep.DependsOnID, dep.Type)
+	} else {
+		affectedIssues, affectedWisps, aerr = issueops.AffectedByDepChangeInTx(ctx, r.runner, dep.IssueID, dep.DependsOnID, dep.Type)
+	}
+	if aerr != nil {
+		return fmt.Errorf("db: DependencySQLRepository.Insert: affected set: %w", aerr)
+	}
+	if dep.Type == types.DepBlocks || dep.Type == types.DepConditionalBlocks {
+		if err := r.markDirectBlockedSource(ctx, dep.IssueID, srcIsWisp, dep.DependsOnID, targetCol); err != nil {
+			return fmt.Errorf("db: DependencySQLRepository.Insert: mark is_blocked: %w", err)
+		}
+		affectedIssues, affectedWisps = issueops.RemoveSourceFromAffected(dep.IssueID, srcIsWisp, affectedIssues, affectedWisps)
+	}
+	if dep.Type == types.DepParentChild {
+		if err := issueops.RecomputeIsBlockedInTx(ctx, r.runner, affectedIssues, affectedWisps); err != nil {
+			return fmt.Errorf("db: DependencySQLRepository.Insert: recompute is_blocked: %w", err)
+		}
+		return nil
+	}
+	if err := issueops.MarkIsBlockedInTx(ctx, r.runner, affectedIssues, affectedWisps); err != nil {
+		return fmt.Errorf("db: DependencySQLRepository.Insert: mark is_blocked (affected): %w", err)
+	}
 	return nil
+}
+
+// markDirectBlockedSource mirrors issueops.markDirectBlockingDependencySourceInTx:
+// is_blocked is derived state, and ready-work queries filter on it directly
+// (is_blocked = 0), so a blocking edge insert must set it on the source row
+// while the target is still open. updated_at is pinned because recomputing
+// derived state is not an edit.
+func (r *dependencySQLRepositoryImpl) markDirectBlockedSource(ctx context.Context, source string, srcIsWisp bool, target, targetCol string) error {
+	sourceTable := "issues"
+	if srcIsWisp {
+		sourceTable = "wisps"
+	}
+	var targetTable string
+	switch targetCol {
+	case "depends_on_issue_id":
+		targetTable = "issues"
+	case "depends_on_wisp_id":
+		targetTable = "wisps"
+	default:
+		// External targets carry no local status to derive from.
+		return nil
+	}
+
+	//nolint:gosec // G201: sourceTable/targetTable are hardcoded constants
+	_, err := r.runner.ExecContext(ctx, fmt.Sprintf(`
+		UPDATE %s s SET s.is_blocked = 1, s.updated_at = s.updated_at
+		WHERE s.id = ?
+		  AND s.is_blocked = 0
+		  AND s.status <> 'closed' AND s.status <> 'pinned'
+		  AND EXISTS (
+		    SELECT 1 FROM %s t
+		    WHERE t.id = ?
+		      AND t.status <> 'closed' AND t.status <> 'pinned'
+		  )
+	`, sourceTable, targetTable), source, target)
+	return err
 }
 
 func (r *dependencySQLRepositoryImpl) HasCycle(ctx context.Context, issueID, dependsOnID string) (bool, error) {

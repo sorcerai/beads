@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"database/sql"
 	"errors"
 	"fmt"
 	"os"
@@ -12,6 +13,7 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/steveyegge/beads/internal/storage/dberrors"
 	"github.com/steveyegge/beads/internal/storage/uow"
 	"github.com/steveyegge/beads/internal/types"
 	"github.com/steveyegge/beads/internal/ui"
@@ -115,6 +117,14 @@ func runListProxiedHierarchicalParent(ctx context.Context, uw uow.UnitOfWork, in
 
 func gatherProxiedHierarchical(ctx context.Context, uw uow.UnitOfWork, parentID string, baseFilter types.IssueFilter) ([]*types.Issue, error) {
 	parent, err := uw.IssueUseCase().GetIssue(ctx, parentID)
+	if isProxiedIssueNotFound(err) {
+		// Classic GetIssue falls back to the wisps table; a wisp parent
+		// (e.g. a mol root) must be treeable here too.
+		parent, err = uw.IssueUseCase().GetWisp(ctx, parentID)
+		if isProxiedIssueNotFound(err) {
+			return nil, fmt.Errorf("parent issue %q not found", parentID)
+		}
+	}
 	if err != nil {
 		return nil, fmt.Errorf("error checking parent issue: %w", err)
 	}
@@ -252,6 +262,12 @@ func runListProxiedWatch(_ *cobra.Command, ctx context.Context, in listInput) er
 			}
 		}
 	}
+}
+
+// isProxiedIssueNotFound reports whether a use-case Get failed because the
+// row (or the whole wisps table) is absent, as opposed to a real query error.
+func isProxiedIssueNotFound(err error) bool {
+	return errors.Is(err, sql.ErrNoRows) || dberrors.IsTableNotExist(err)
 }
 
 func emitProxiedListJSONResult(iwc []*types.IssueWithCounts, in listInput, hasMore bool) {

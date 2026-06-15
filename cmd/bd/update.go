@@ -322,8 +322,9 @@ create, update, show, or close operation).`,
 			pendingCloseResults = nil
 		}
 		for _, id := range args {
-			// Resolve and get issue with routing (e.g., gt-xyz routes to another rig)
-			result, err := resolveAndGetIssueWithRouting(ctx, store, id)
+			// Resolve and get issue with routing (e.g., gt-xyz routes to another rig).
+			// Write-intent: update commits through the routed target store (#4141).
+			result, err := resolveAndGetIssueWithRoutingForWrite(ctx, store, id)
 			if err != nil {
 				if result != nil {
 					result.Close()

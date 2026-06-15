@@ -149,8 +149,8 @@ func AddLabelInTx(ctx context.Context, tx *sql.Tx, labelTable, eventTable, issue
 	}
 	comment := "Added label: " + label
 	//nolint:gosec // G201: eventTable is from WispTableRouting ("events" or "wisp_events")
-	if _, err := tx.ExecContext(ctx, fmt.Sprintf(`INSERT INTO %s (issue_id, event_type, actor, comment) VALUES (?, ?, ?, ?)`, eventTable),
-		issueID, types.EventLabelAdded, actor, comment); err != nil {
+	if _, err := tx.ExecContext(ctx, fmt.Sprintf(`INSERT INTO %s (id, issue_id, event_type, actor, comment) VALUES (?, ?, ?, ?, ?)`, eventTable),
+		NewEventID(), issueID, types.EventLabelAdded, actor, comment); err != nil {
 		return fmt.Errorf("add label: record event: %w", err)
 	}
 	return nil
@@ -176,8 +176,8 @@ func RemoveLabelInTx(ctx context.Context, tx *sql.Tx, labelTable, eventTable, is
 		return fmt.Errorf("remove label: %w", err)
 	}
 	comment := "Removed label: " + label
-	if _, err := tx.ExecContext(ctx, fmt.Sprintf(`INSERT INTO %s (issue_id, event_type, actor, comment) VALUES (?, ?, ?, ?)`, eventTable),
-		issueID, types.EventLabelRemoved, actor, comment); err != nil {
+	if _, err := tx.ExecContext(ctx, fmt.Sprintf(`INSERT INTO %s (id, issue_id, event_type, actor, comment) VALUES (?, ?, ?, ?, ?)`, eventTable),
+		NewEventID(), issueID, types.EventLabelRemoved, actor, comment); err != nil {
 		return fmt.Errorf("remove label: record event: %w", err)
 	}
 	return nil

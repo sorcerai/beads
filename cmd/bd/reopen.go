@@ -31,8 +31,9 @@ This is more explicit than 'bd update --status open' and emits a Reopened event.
 				diagHint())
 		}
 		for _, id := range args {
-			// Resolve with prefix routing (supports cross-rig reopens like `bd reopen xe-5ls`)
-			result, err := resolveAndGetIssueWithRouting(ctx, store, id)
+			// Resolve with prefix routing (supports cross-rig reopens like `bd reopen xe-5ls`).
+			// Write-intent: reopen commits through the routed target store (#4141).
+			result, err := resolveAndGetIssueWithRoutingForWrite(ctx, store, id)
 			if err != nil {
 				fmt.Fprintf(os.Stderr, "Error resolving %s: %v\n", id, err)
 				hasError = true

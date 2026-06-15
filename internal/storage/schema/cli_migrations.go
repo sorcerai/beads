@@ -38,6 +38,11 @@ func cliCompatibleMigrationSQL(name, sqlText string) string {
 		return cliMigration0046AddIsBlocked
 	case "0049_longtext_large_content_columns.up.sql":
 		return cliMigration0049LongtextLargeContentColumns
+	case "0051_drop_aux_id_defaults.up.sql":
+		// Direct DDL: the source migration's PREPARE/EXECUTE guards exist for
+		// re-run safety on upgraded databases; a fresh bundle always has the
+		// 0004/0005/0009/0010 defaults to drop.
+		return cliMigration0051DropAuxIDDefaults
 	default:
 		return sqlText
 	}
@@ -114,3 +119,8 @@ ALTER TABLE issues MODIFY COLUMN close_reason LONGTEXT DEFAULT '';
 ALTER TABLE wisps MODIFY COLUMN description LONGTEXT NOT NULL DEFAULT '', MODIFY COLUMN design LONGTEXT NOT NULL DEFAULT '', MODIFY COLUMN acceptance_criteria LONGTEXT NOT NULL DEFAULT '', MODIFY COLUMN notes LONGTEXT NOT NULL DEFAULT '';
 ALTER TABLE wisps MODIFY COLUMN close_reason LONGTEXT DEFAULT '';
 ALTER TABLE comments MODIFY COLUMN text LONGTEXT NOT NULL;`
+
+const cliMigration0051DropAuxIDDefaults = `ALTER TABLE events ALTER COLUMN id DROP DEFAULT;
+ALTER TABLE comments ALTER COLUMN id DROP DEFAULT;
+ALTER TABLE issue_snapshots ALTER COLUMN id DROP DEFAULT;
+ALTER TABLE compaction_snapshots ALTER COLUMN id DROP DEFAULT;`

@@ -15,6 +15,7 @@ package dolt
 import (
 	"context"
 	"database/sql"
+	"database/sql/driver"
 	"errors"
 	"fmt"
 	"hash/fnv"
@@ -41,6 +42,7 @@ import (
 	"github.com/steveyegge/beads/internal/doltserver"
 	"github.com/steveyegge/beads/internal/storage"
 	"github.com/steveyegge/beads/internal/storage/doltutil"
+	"github.com/steveyegge/beads/internal/storage/issueops"
 	"github.com/steveyegge/beads/internal/storage/schema"
 	"github.com/steveyegge/beads/internal/storage/versioncontrolops"
 	"github.com/steveyegge/beads/internal/types"
@@ -693,6 +695,12 @@ func (s *DoltStore) execContext(ctx context.Context, query string, args ...any) 
 // Use sparingly — prefer the store's typed methods for normal operations.
 func (s *DoltStore) DB() *sql.DB {
 	return s.db
+}
+
+// RemoteName returns the configured default sync remote name ("origin" unless
+// overridden), the remote Push/Pull target when no explicit remote is given.
+func (s *DoltStore) RemoteName() string {
+	return s.remote
 }
 
 // BackupAdd registers a Dolt backup destination.
@@ -1487,6 +1495,16 @@ func initSchemaOnDB(ctx context.Context, db *sql.DB) (int, error) {
 }
 
 func initSchemaOnDBWithRetry(ctx context.Context, db *sql.DB) (int, error) {
+	return initSchemaOnDBWithRetryAndGate(ctx, db, nil)
+}
+
+// initSchemaOnDBWithRetryAndGate is initSchemaOnDBWithRetry with an optional
+// pre-migration gate run INSIDE the retry loop. The gate's own reads
+// (schema_migrations, dolt_remotes) can hit the same transient Dolt
+// startup/catalog races the migration retry absorbs, so gate probe errors are
+// retried with them instead of failing the open fast (bd-6dnrw.30); a
+// *schema.RemoteMigrateGateError refusal stays permanent.
+func initSchemaOnDBWithRetryAndGate(ctx context.Context, db *sql.DB, gate func(context.Context, *sql.DB) error) (int, error) {
 	// Schema initialization for server mode is idempotent. Retry transient
 	// Dolt startup/catalog races and contended migration-lock attempts so
 	// concurrent bd processes converge instead of failing one unlucky waiter.
@@ -1497,6 +1515,14 @@ func initSchemaOnDBWithRetry(ctx context.Context, db *sql.DB) (int, error) {
 	schemaBO.MaxElapsedTime = serverRetryMaxElapsed
 	var applied int
 	err := backoff.Retry(func() error {
+		if gate != nil {
+			if gateErr := gate(ctx, db); gateErr != nil {
+				if !schema.IsRemoteMigrateGateError(gateErr) && isRetryableError(gateErr) {
+					return gateErr
+				}
+				return backoff.Permanent(gateErr)
+			}
+		}
 		var schemaErr error
 		applied, schemaErr = initSchemaOnDB(ctx, db)
 		if schemaErr != nil && isRetryableError(schemaErr) {
@@ -1523,7 +1549,19 @@ func (s *DoltStore) initSchema(ctx context.Context) error {
 		return err
 	}
 	defer migDB.Close()
-	_, err = initSchemaOnDBWithRetry(ctx, migDB)
+	// #4259: refuse to silently apply pending migrations to a remote-backed,
+	// already-initialized database — that is how two clones fork the schema.
+	// The gate runs inside the retry loop, before each migration attempt: its
+	// reads can hit transient startup/catalog races (retryable) while a gate
+	// refusal is permanent and never retried into a migration.
+	// Use the on-disk fallback: a freshly (auto-)started server can report an
+	// empty dolt_remotes table even though remotes are persisted in .dolt/config
+	// (GH#2315), so an SQL-only check would miss the remote on the first write
+	// open after an upgrade.
+	gate := func(ctx context.Context, db *sql.DB) error {
+		return schema.CheckRemoteMigrateGateWithRemoteCheck(ctx, db, s.hasPersistedCLIRemote)
+	}
+	_, err = initSchemaOnDBWithRetryAndGate(ctx, migDB, gate)
 	return err
 }
 
@@ -1785,20 +1823,11 @@ func (s *DoltStore) doltAddAndCommit(ctx context.Context, tables []string, commi
 // This is the primary commit mechanism for batch mode, where multiple bd commands
 // accumulate changes in the working set before committing at a logical boundary.
 func (s *DoltStore) CommitPending(ctx context.Context, actor string) (bool, error) {
-	// Check if there are any committable changes (excluding dolt_ignore'd tables
-	// like wisp tables, which appear in dolt_status but can't be staged).
-	var count int
-	err := s.db.QueryRowContext(ctx, `
-		SELECT COUNT(*) FROM dolt_status s
-		WHERE NOT EXISTS (
-			SELECT 1 FROM dolt_ignore di
-			WHERE di.ignored = 1
-			AND s.table_name LIKE di.pattern
-		)`).Scan(&count)
+	pending, err := s.HasPendingChanges(ctx)
 	if err != nil {
-		return false, fmt.Errorf("failed to check status: %w", err)
+		return false, err
 	}
-	if count == 0 {
+	if !pending {
 		return false, nil // Nothing to commit
 	}
 
@@ -1816,6 +1845,13 @@ func (s *DoltStore) CommitPending(ctx context.Context, actor string) (bool, erro
 		return false, err
 	}
 	return true, nil
+}
+
+// HasPendingChanges reports whether the working set has committable changes,
+// excluding dolt_ignore'd tables (e.g. wisp tables, which can sit dirty in
+// dolt_status indefinitely without being committable).
+func (s *DoltStore) HasPendingChanges(ctx context.Context) (bool, error) {
+	return issueops.HasPendingChanges(ctx, s.db)
 }
 
 // buildBatchCommitMessage generates a descriptive commit message summarizing
@@ -2278,6 +2314,33 @@ func (s *DoltStore) pullFromRemote(ctx context.Context, remote string) (retErr e
 		}
 	}
 
+	// bd-6dnrw.3: capture the pre-pull HEAD so a successful merge can recompute
+	// the denormalized is_blocked column for the rows it changed. Read before
+	// the transport; an unreadable HEAD degrades to a full recompute.
+	preHead := ""
+	if !s.readOnly {
+		if h, err := s.GetCurrentCommit(ctx); err == nil {
+			preHead = h
+		}
+	}
+
+	if err := s.pullTransport(ctx, remote); err != nil {
+		return err
+	}
+
+	if !s.readOnly {
+		if err := s.recomputeBlockedAfterPull(ctx, preHead); err != nil {
+			return fmt.Errorf("pull succeeded but is_blocked recompute failed: %w", err)
+		}
+	}
+	return nil
+}
+
+// pullTransport routes one pull through CLI or SQL based on the remote's
+// protocol and credentials, including the post-pull conflict auto-resolution
+// each route carries. Split from pullFromRemote so every successful route
+// funnels back through the is_blocked recompute.
+func (s *DoltStore) pullTransport(ctx context.Context, remote string) error {
 	creds := s.credentialsForRemote(remote)
 	// Git-protocol remotes: use CLI to avoid MySQL connection timeout during transfer.
 	// Must check before remoteUser — Hosted Dolt SSH remotes have remoteUser set
@@ -2286,41 +2349,37 @@ func (s *DoltStore) pullFromRemote(ctx context.Context, remote string) (retErr e
 	if useCLI, err := s.prepareCLIRouteForGitProtocol(ctx, remote); err != nil {
 		return err
 	} else if useCLI {
-		if err := s.doltCLIPull(ctx, remote, creds); err != nil {
-			return err
-		}
-		return nil
+		// CLI pull leaves any conflicts in the working set; run the auto-resolver so
+		// git-protocol remotes get the same audit-only dependency / metadata repair
+		// as the SQL DOLT_PULL path (#4259).
+		return s.finishCLIPull(ctx, s.doltCLIPull(ctx, remote, creds))
 	}
-	// Credential CLI routing: mirrors git-protocol path.
-	// Skips pullWithAutoResolve (consistent with git-protocol Pull — CLI manages its
-	// own connections and conflict handling).
+	// Credential CLI routing: mirrors git-protocol path, including post-pull
+	// auto-resolution.
 	if useCLI, err := s.prepareCLIRouteForCredentials(ctx, remote, creds); err != nil {
 		return err
 	} else if useCLI {
-		if err := s.doltCLIPull(ctx, remote, creds); err != nil {
-			return err
-		}
-		return nil
+		return s.finishCLIPull(ctx, s.doltCLIPull(ctx, remote, creds))
 	}
-	// Cloud auth CLI routing (GH#6).
+	// Cloud auth CLI routing (GH#6), including post-pull auto-resolution.
 	if useCLI, err := s.prepareCLIRouteForCloudAuth(ctx, remote); err != nil {
 		return err
 	} else if useCLI {
-		return s.doltCLIPull(ctx, remote, creds)
+		return s.finishCLIPull(ctx, s.doltCLIPull(ctx, remote, creds))
 	}
 	// Local file:// pulls intentionally stay on the SQL path. The matching CLI
 	// guard is a push-only optimization; SQL pull keeps pullWithAutoResolve in
 	// charge of metadata-only conflict repair.
 	if s.remoteUser != "" && remote == s.remote {
 		return withRemoteOperationEnv(creds, s.isS3Remote(ctx, remote), func() error {
-			if err := s.pullWithAutoResolve(ctx, "CALL DOLT_PULL('--user', ?, ?, ?)", s.remoteUser, remote, s.branch); err != nil {
+			if err := s.pullWithAutoResolve(ctx, remote, "CALL DOLT_PULL('--user', ?, ?, ?)", s.remoteUser, remote, s.branch); err != nil {
 				return fmt.Errorf("failed to pull from %s/%s: %w", remote, s.branch, err)
 			}
 			return nil
 		})
 	}
 	return withRemoteOperationEnv(nil, s.isS3Remote(ctx, remote), func() error {
-		if err := s.pullWithAutoResolve(ctx, "CALL DOLT_PULL(?, ?)", remote, s.branch); err != nil {
+		if err := s.pullWithAutoResolve(ctx, remote, "CALL DOLT_PULL(?, ?)", remote, s.branch); err != nil {
 			return fmt.Errorf("failed to pull from %s/%s: %w", remote, s.branch, err)
 		}
 		return nil
@@ -2338,18 +2397,32 @@ func (s *DoltStore) pullFromRemote(ctx context.Context, remote string) (retErr e
 //
 // This method handles both by checking for conflicts after the pull call
 // (whether it errored or not) and auto-resolving metadata-only conflicts.
-func (s *DoltStore) pullWithAutoResolve(ctx context.Context, query string, args ...any) error {
+// openLongTimeoutConn opens a dedicated single-connection *sql.DB to this store's
+// database with a long read timeout, for merge/pull/conflict operations that can run
+// longer than the default connection timeout. The caller must Close the returned DB.
+func (s *DoltStore) openLongTimeoutConn() (*sql.DB, error) {
 	cfg, err := mysql.ParseDSN(s.connStr)
 	if err != nil {
-		return fmt.Errorf("failed to parse DSN for long-timeout connection: %w", err)
+		return nil, fmt.Errorf("failed to parse DSN for long-timeout connection: %w", err)
 	}
 	cfg.ReadTimeout = 5 * time.Minute
 	db, err := sql.Open("mysql", cfg.FormatDSN())
 	if err != nil {
-		return fmt.Errorf("failed to open long-timeout connection: %w", err)
+		return nil, fmt.Errorf("failed to open long-timeout connection: %w", err)
+	}
+	db.SetMaxOpenConns(1)
+	return db, nil
+}
+
+// remote names the remote the query pulls from; the GH#3144 fetch+merge
+// fallback targets it directly, so pulls from non-default remotes (PullRemote,
+// federation peers) no longer fall back to s.remote.
+func (s *DoltStore) pullWithAutoResolve(ctx context.Context, remote string, query string, args ...any) error {
+	db, err := s.openLongTimeoutConn()
+	if err != nil {
+		return err
 	}
 	defer db.Close()
-	db.SetMaxOpenConns(1)
 	tx, err := db.BeginTx(ctx, nil)
 	if err != nil {
 		return fmt.Errorf("failed to begin transaction: %w", err)
@@ -2360,6 +2433,16 @@ func (s *DoltStore) pullWithAutoResolve(ctx context.Context, query string, args 
 		_ = tx.Rollback()
 		return fmt.Errorf("failed to set dolt_allow_commit_conflicts: %w", err)
 	}
+	// bd-6dnrw.4: a merge that violates a foreign key (e.g. one clone deleted
+	// an issue while another inserted a child row referencing it) rolls the
+	// whole transaction back before it can be inspected. Let it land in the
+	// working set instead so tryRepairFKCascadeViolations can apply the
+	// cascade semantics; the violation check before tx.Commit() below refuses
+	// to commit anything the repair did not fully clear.
+	if _, err := tx.ExecContext(ctx, "SET @@dolt_force_transaction_commit = 1"); err != nil {
+		_ = tx.Rollback()
+		return fmt.Errorf("failed to set dolt_force_transaction_commit: %w", err)
+	}
 
 	_, pullErr := tx.ExecContext(ctx, query, args...)
 
@@ -2368,11 +2451,11 @@ func (s *DoltStore) pullWithAutoResolve(ctx context.Context, query string, args 
 	// bd dolt remote add rather than bd bootstrap/dolt clone), fall back to
 	// DOLT_FETCH + DOLT_MERGE which does not require tracking config.
 	if pullErr != nil && isBranchTrackingError(pullErr) {
-		if _, err := tx.ExecContext(ctx, "CALL DOLT_FETCH(?, ?)", s.remote, s.branch); err != nil {
+		if _, err := tx.ExecContext(ctx, "CALL DOLT_FETCH(?, ?)", remote, s.branch); err != nil {
 			_ = tx.Rollback()
-			return fmt.Errorf("fetch from %s/%s: %w", s.remote, s.branch, err)
+			return fmt.Errorf("fetch from %s/%s: %w", remote, s.branch, err)
 		}
-		trackingRef := s.remote + "/" + s.branch
+		trackingRef := remote + "/" + s.branch
 		_, mergeErr := tx.ExecContext(ctx, "CALL DOLT_MERGE(?)", trackingRef)
 		if mergeErr != nil && strings.Contains(mergeErr.Error(), "up to date") {
 			mergeErr = nil
@@ -2380,9 +2463,21 @@ func (s *DoltStore) pullWithAutoResolve(ctx context.Context, query string, args 
 		pullErr = mergeErr
 	}
 
+	return s.settleMergeInTx(ctx, tx, pullErr)
+}
+
+// settleMergeInTx finishes a pull/merge that ran in tx: it auto-resolves the
+// safe conflict classes, repairs FK cascade violations (bd-6dnrw.4), and
+// commits — or rolls back when anything needs the operator. pullErr is the
+// pull/merge statement's own error; it is surfaced whenever nothing was
+// resolved or repaired. The tx must have been opened with
+// dolt_allow_commit_conflicts and dolt_force_transaction_commit set, which is
+// why the violation gate here is mandatory: with the force flag on, committing
+// without it would persist a violated working set.
+func (s *DoltStore) settleMergeInTx(ctx context.Context, tx *sql.Tx, pullErr error) error {
 	// Check for merge conflicts regardless of whether DOLT_PULL errored.
 	// Some Dolt versions error on conflicts, others leave them in the working set.
-	resolved, resolveErr := s.tryAutoResolveMetadataConflicts(ctx, tx)
+	resolved, resolveErr := s.tryAutoResolveMergeConflicts(ctx, tx)
 	if resolveErr != nil {
 		_ = tx.Rollback()
 		if pullErr != nil {
@@ -2391,67 +2486,240 @@ func (s *DoltStore) pullWithAutoResolve(ctx context.Context, query string, args 
 		return resolveErr
 	}
 
-	if pullErr != nil && !resolved {
+	// bd-578h9.15: conflicts the resolver declined are the operator's. Capture
+	// them BEFORE the rollback wipes merge state — a post-rollback GetConflicts
+	// on a fresh transaction sees an empty set, which made PullFrom's
+	// conflict-reporting contract dead code on the SQL route. The resolver
+	// pre-screens every table before resolving any, so a declined resolve
+	// leaves dolt_conflicts fully intact here.
+	if !resolved {
+		if conflicts, cErr := versioncontrolops.GetConflicts(ctx, tx); cErr == nil && len(conflicts) > 0 {
+			_ = tx.Rollback()
+			return &versioncontrolops.MergeConflictsError{Conflicts: conflicts, MergeErr: pullErr}
+		}
+	}
+
+	// bd-6dnrw.4: repair FK cascade violations the merge produced (child rows
+	// whose parent issue was deleted on the other clone). Unrepaired
+	// violations MUST NOT be committed.
+	repairedViol, hadViol, violErr := s.tryRepairFKCascadeViolations(ctx, tx)
+	if violErr != nil {
+		_ = tx.Rollback()
+		if pullErr != nil {
+			return pullErr
+		}
+		return violErr
+	}
+	if hadViol && !repairedViol {
+		_ = tx.Rollback()
+		if pullErr != nil {
+			return pullErr
+		}
+		return fmt.Errorf("pull merge left constraint violations bd cannot auto-repair; inspect dolt_constraint_violations and resolve before retrying")
+	}
+
+	if pullErr != nil && !resolved && !repairedViol {
 		// Pull failed for a non-conflict reason, or conflicts include non-metadata tables.
 		_ = tx.Rollback()
 		return pullErr
 	}
 
+	// Conclude the merge for resolved conflicts only now, after the FK repair:
+	// DOLT_COMMIT refuses a violated working set, so a merge carrying both
+	// classes could never settle when the resolver committed first (bd-578h9.14).
+	if resolved {
+		if err := versioncontrolops.CommitResolvedConflicts(ctx, tx); err != nil {
+			_ = tx.Rollback()
+			if pullErr != nil {
+				return pullErr
+			}
+			return err
+		}
+	}
+
 	return tx.Commit()
 }
 
-// tryAutoResolveMetadataConflicts checks if all merge conflicts are on the metadata
-// table and resolves them with "theirs" strategy. Returns (true, nil) if all conflicts
-// were resolved, (false, nil) if non-metadata conflicts exist, or (false, err) on error.
-func (s *DoltStore) tryAutoResolveMetadataConflicts(ctx context.Context, tx *sql.Tx) (bool, error) {
-	rows, err := tx.QueryContext(ctx, "SELECT `table`, num_conflicts FROM dolt_conflicts")
-	if err != nil {
-		return false, fmt.Errorf("failed to query conflicts: %w", err)
+// recomputeBlockedAfterPull recomputes the denormalized is_blocked column for
+// the rows a pull's merge changed (bd-6dnrw.3) and commits the result.
+// is_blocked is otherwise maintained only by local write paths, so a merge
+// that brings in another clone's status or dependency changes leaves it stale
+// and `bd ready` trusts it. fromCommit is the pre-pull HEAD; empty means it
+// could not be read, which degrades to a full recompute. A pull that merged
+// nothing (HEAD unchanged) is a no-op.
+func (s *DoltStore) recomputeBlockedAfterPull(ctx context.Context, fromCommit string) error {
+	if err := s.recomputeBlockedTx(ctx, fromCommit); err != nil {
+		// The merge this recompute covers is already committed, so a plain
+		// retry on the next pull would skip as "nothing merged" — leave a
+		// marker so it widens its window instead (bd-578h9.11). Best-effort:
+		// the recompute error is what matters.
+		s.markBlockedRecomputePending(ctx, fromCommit)
+		return err
 	}
+	// Derived state converges: every clone computes the same values from the
+	// same merged graph, so committing is merge-safe. Commit no-ops when the
+	// recompute changed nothing.
+	if err := s.Commit(ctx, "bd: recompute is_blocked after pull"); err != nil && !isDoltNothingToCommit(err) {
+		return fmt.Errorf("commit is_blocked recompute: %w", err)
+	}
+	return nil
+}
 
-	type conflict struct {
-		table string
-		count int
+// recomputeBlockedTx runs the post-merge is_blocked recompute in its own
+// transaction.
+func (s *DoltStore) recomputeBlockedTx(ctx context.Context, fromCommit string) error {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("begin is_blocked recompute: %w", err)
 	}
-	var conflicts []conflict
-	for rows.Next() {
-		var c conflict
-		if err := rows.Scan(&c.table, &c.count); err != nil {
-			_ = rows.Close()
-			return false, fmt.Errorf("failed to scan conflict: %w", err)
+	if err := issueops.RecomputeIsBlockedAfterMergeInTx(ctx, tx, fromCommit); err != nil {
+		_ = tx.Rollback()
+		return err
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("commit is_blocked recompute: %w", err)
+	}
+	return nil
+}
+
+// markBlockedRecomputePending best-effort records a failed post-merge
+// is_blocked recompute (bd-578h9.11); see
+// issueops.MarkIsBlockedRecomputePendingInTx.
+func (s *DoltStore) markBlockedRecomputePending(ctx context.Context, fromCommit string) {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return
+	}
+	if err := issueops.MarkIsBlockedRecomputePendingInTx(ctx, tx, fromCommit); err != nil {
+		_ = tx.Rollback()
+		return
+	}
+	_ = tx.Commit()
+}
+
+// finishCLIPull runs the merge-conflict auto-resolver after a CLI-based pull
+// (git-protocol, credentialed, or cloud-auth remotes). CLI `dolt pull` writes any
+// merge conflicts into the shared working set but, unlike the SQL DOLT_PULL path,
+// returns without a transaction we can inspect — so these remotes historically
+// skipped the resolver entirely. With deterministic dependency ids (#4259) a
+// same-edge conflict that differs only in audit columns is safe to auto-resolve, and
+// the git remote topology in #4259 is exactly this CLI path; route it through the
+// same resolver as the SQL path. pullErr is what doltCLIPull returned: a pull that
+// fails *because* of conflicts is recoverable once they resolve, so we inspect the
+// working set regardless and only surface pullErr when nothing was resolved.
+func (s *DoltStore) finishCLIPull(ctx context.Context, pullErr error) error {
+	if s.readOnly {
+		// A read-only store cannot resolve or commit; surface the pull result as-is.
+		return pullErr
+	}
+	resolved, resolveErr := s.autoResolveConflictsAfterCLIPull(ctx)
+	if resolveErr != nil {
+		if pullErr != nil {
+			return pullErr
 		}
-		conflicts = append(conflicts, c)
+		return resolveErr
 	}
-	_ = rows.Close()
-	if err := rows.Err(); err != nil {
+	if pullErr != nil && !resolved {
+		// Pull failed for a non-conflict reason, or conflicts are not auto-resolvable;
+		// leave them in the working set for the operator.
+		return pullErr
+	}
+	return nil
+}
+
+// autoResolveConflictsAfterCLIPull inspects the working set and auto-resolves the
+// conflict classes that are safe without operator input (#4259 audit-only dependency
+// edges, GH#2466 metadata). It runs on a connection from the store pool (s.db) on
+// purpose: those connections are on the same branch the CLI `dolt pull` merged into,
+// whereas a separately opened connection would default to the base branch and never
+// see the conflicts. The pull's
+// network transfer already completed in the subprocess, so no long-timeout connection
+// is needed for the local resolve. Returns (true, nil) only if all conflicts were
+// resolved and committed; (false, nil) when there is nothing to resolve or a conflict
+// needs the operator, leaving the working set untouched for manual resolution.
+func (s *DoltStore) autoResolveConflictsAfterCLIPull(ctx context.Context) (bool, error) {
+	// Pin a single connection: @@dolt_allow_commit_conflicts is session-scoped,
+	// and setting it through a pooled transaction leaks it to whichever caller
+	// drains that connection next. Reset it before releasing the connection; if
+	// the reset cannot run, discard the connection rather than return it dirty.
+	conn, err := s.db.Conn(ctx)
+	if err != nil {
+		return false, fmt.Errorf("failed to acquire connection: %w", err)
+	}
+	varSet := false
+	defer func() {
+		if varSet {
+			if _, err := conn.ExecContext(ctx, "SET @@dolt_allow_commit_conflicts = 0"); err != nil {
+				_ = conn.Raw(func(any) error { return driver.ErrBadConn })
+			}
+		}
+		_ = conn.Close()
+	}()
+	// Allow committing while conflicts exist so we can inspect and resolve them.
+	if _, err := conn.ExecContext(ctx, "SET @@dolt_allow_commit_conflicts = 1"); err != nil {
+		return false, fmt.Errorf("failed to set dolt_allow_commit_conflicts: %w", err)
+	}
+	varSet = true
+	tx, err := conn.BeginTx(ctx, nil)
+	if err != nil {
+		return false, fmt.Errorf("failed to begin transaction: %w", err)
+	}
+	resolved, err := s.tryAutoResolveMergeConflicts(ctx, tx)
+	if err != nil {
+		_ = tx.Rollback()
 		return false, err
 	}
-
-	if len(conflicts) == 0 {
-		return false, nil // No conflicts to resolve — error was something else
+	// bd-6dnrw.4: a CLI pull can also leave FK cascade violations in the
+	// shared working set (child rows whose parent issue was deleted on the
+	// other clone). Repair them like the SQL route does; unrepaired
+	// violations roll back untouched for the operator.
+	repairedViol, hadViol, violErr := s.tryRepairFKCascadeViolations(ctx, tx)
+	if violErr != nil {
+		_ = tx.Rollback()
+		return false, violErr
 	}
-
-	// Only auto-resolve if ALL conflicts are on the metadata table.
-	for _, c := range conflicts {
-		if c.table != "metadata" {
-			return false, nil
+	if hadViol && !repairedViol {
+		_ = tx.Rollback()
+		return false, nil
+	}
+	if !resolved && !repairedViol {
+		_ = tx.Rollback()
+		return false, nil
+	}
+	// Conclude the merge for resolved conflicts only now, after the FK repair:
+	// DOLT_COMMIT refuses a violated working set, so a merge carrying both
+	// classes could never settle when the resolver committed first (bd-578h9.14).
+	if resolved {
+		if err := versioncontrolops.CommitResolvedConflicts(ctx, tx); err != nil {
+			_ = tx.Rollback()
+			return false, err
 		}
 	}
-
-	// Resolve metadata conflicts with "theirs" — remote values win.
-	if _, err := tx.ExecContext(ctx, "CALL DOLT_CONFLICTS_RESOLVE('--theirs', 'metadata')"); err != nil {
-		return false, fmt.Errorf("failed to resolve metadata conflicts: %w", err)
-	}
-
-	// GH#2455: Stage only metadata (the table we resolved), not all dirty tables.
-	if _, err := tx.ExecContext(ctx, "CALL DOLT_ADD('metadata')"); err != nil {
-		return false, fmt.Errorf("failed to stage metadata: %w", err)
-	}
-	if _, err := tx.ExecContext(ctx, "CALL DOLT_COMMIT('-m', 'auto-resolve metadata merge conflicts (GH#2466)')"); err != nil {
+	if err := tx.Commit(); err != nil {
 		return false, fmt.Errorf("failed to commit resolved conflicts: %w", err)
 	}
-
 	return true, nil
+}
+
+// tryAutoResolveMergeConflicts auto-resolves merge conflicts that are safe to
+// resolve without operator input (GH#2466 metadata, #4259 audit-only
+// dependency edges, bd-6dnrw.29 schema_migrations vintage rows), returning
+// (true, nil) only if ALL conflicts were resolved. The implementation is
+// shared with the embedded pull path (bd-6dnrw.40); see
+// versioncontrolops.TryAutoResolveMergeConflicts for the full contract.
+func (s *DoltStore) tryAutoResolveMergeConflicts(ctx context.Context, tx *sql.Tx) (bool, error) {
+	return versioncontrolops.TryAutoResolveMergeConflicts(ctx, tx)
+}
+
+// tryRepairFKCascadeViolations repairs the post-merge foreign-key constraint
+// violations produced by the delete-vs-insert cascade hazard (bd-6dnrw.4).
+// The caller's transaction must run with @@dolt_force_transaction_commit=1
+// for the merge to survive long enough to be repaired, and must NOT commit
+// when (repaired=false, had=true) — unrepaired violations are the operator's.
+// The implementation is shared with the embedded pull path (bd-6dnrw.40); see
+// versioncontrolops.TryRepairFKCascadeViolations for the full contract.
+func (s *DoltStore) tryRepairFKCascadeViolations(ctx context.Context, tx *sql.Tx) (repaired, had bool, err error) {
+	return versioncontrolops.TryRepairFKCascadeViolations(ctx, tx)
 }
 
 // Branch creates a new branch
@@ -2503,11 +2771,39 @@ func (s *DoltStore) Merge(ctx context.Context, branch string) (conflicts []stora
 	)
 	defer func() { endSpan(span, retErr) }()
 
+	// bd-578h9.11: like every pull path, a branch merge brings in writes that
+	// bypassed the local is_blocked hooks; recompute after a conflict-free
+	// merge. Conflicted merges defer to the caller's post-resolution hook
+	// (Sync, bd vc merge --strategy) — recomputing over unresolved rows would
+	// read garbage.
+	preHead := ""
+	if !s.readOnly {
+		if h, err := s.GetCurrentCommit(ctx); err == nil {
+			preHead = h
+		}
+	}
+
 	conflicts, err := versioncontrolops.Merge(ctx, s.db, branch, s.commitAuthorString())
 	if len(conflicts) > 0 {
 		span.SetAttributes(attribute.Int("dolt.conflicts", len(conflicts)))
 	}
+	if err == nil && len(conflicts) == 0 && !s.readOnly {
+		if rerr := s.recomputeBlockedAfterPull(ctx, preHead); rerr != nil {
+			return conflicts, fmt.Errorf("merge succeeded but is_blocked recompute failed: %w", rerr)
+		}
+	}
 	return conflicts, err
+}
+
+// RecomputeBlockedAfterMerge recomputes the denormalized is_blocked column
+// for the rows changed since fromCommit and commits the result — the hook a
+// caller that resolved merge conflicts itself must run after committing the
+// resolution (bd-578h9.11): conflicted merges skip the automatic recompute
+// because unresolved rows would feed it garbage, and nothing else covers the
+// merged-in writes. fromCommit is the pre-merge HEAD; empty degrades to a
+// full-graph recompute.
+func (s *DoltStore) RecomputeBlockedAfterMerge(ctx context.Context, fromCommit string) error {
+	return s.recomputeBlockedAfterPull(ctx, fromCommit)
 }
 
 // CurrentBranch returns the current branch name

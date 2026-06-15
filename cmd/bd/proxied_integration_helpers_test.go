@@ -45,6 +45,9 @@ func bdProxiedEnv(dir string) []string {
 		"HOME="+dir,
 		"BEADS_DOLT_PROXIED_SERVER=1",
 		"BEADS_NO_DAEMON=1",
+		// Bypass the bd init --proxied-server dark-launch gate (bd-6dnrw.44)
+		// for the bd subprocesses these suites spawn.
+		"BEADS_TEST_PROXIED_SERVER_INIT=1",
 	)
 }
 

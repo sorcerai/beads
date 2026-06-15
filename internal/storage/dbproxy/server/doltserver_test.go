@@ -368,12 +368,11 @@ func TestDoltServer_ConcurrentStart_SameRootDir_OneWins(t *testing.T) {
 	bin := requireDolt(t)
 	t.Setenv("HOME", t.TempDir())
 
-	// Pre-configure dolt's global user.name/email so doltConfigure is a
-	// no-op for every concurrent Start (no JSON-write race on
-	// ~/.dolt/config_global.json).
-	require.NoError(t, exec.Command(bin, "config", "--global", "--add", "user.name", "beads-test").Run())
-	require.NoError(t, exec.Command(bin, "config", "--global", "--add", "user.email", "beads@test").Run())
-
+	// No global dolt config on purpose: init identity comes from the
+	// --name/--email flags and repo-local config, both written under the
+	// rootDir lock, so concurrent Starts have no shared config file to race
+	// on (the old --global write needed pre-seeding here to avoid exactly
+	// that race).
 	rootDir := t.TempDir()
 
 	const n = 10

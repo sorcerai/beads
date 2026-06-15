@@ -88,8 +88,10 @@ Force: Delete and orphan dependents
 		// Single issue deletion (legacy behavior)
 		issueID := issueIDs[0]
 		ctx := rootCtx
-		// Get the issue to be deleted, using prefix-based routing
-		routedResult, err := resolveAndGetIssueWithRouting(ctx, store, issueID)
+		// Get the issue to be deleted, using prefix-based routing. Write-intent:
+		// a prefix-routed target opens writable so the delete commits on the
+		// target head (#4141).
+		routedResult, err := resolveAndGetIssueWithRoutingForWrite(ctx, store, issueID)
 		if err != nil {
 			if isNotFoundErr(err) {
 				FatalError("issue %s not found", issueID)
@@ -252,7 +254,9 @@ func deleteBatch(_ *cobra.Command, issueIDs []string, force bool, dryRun bool, c
 	notFound := []string{}
 	var routedStore storage.DoltStorage
 	for _, id := range issueIDs {
-		result, err := resolveAndGetIssueWithRouting(ctx, store, id)
+		// Write-intent: the batch delete mutates this routed store below, so it
+		// must open writable to commit on the target head (#4141).
+		result, err := resolveAndGetIssueWithRoutingForWrite(ctx, store, id)
 		if err != nil {
 			if isNotFoundErr(err) {
 				notFound = append(notFound, id)

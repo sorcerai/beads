@@ -123,32 +123,23 @@ jobs:
       - name: Check all versions match
         run: ./scripts/check-versions.sh
 
-  # Catch duplicate migration version numbers before any Go build.
-  # Two long-lived branches both claiming 'the next number' produce a silent
-  # under-apply when merged; this job fails at PR time with the conflicting
-  # filenames so it is caught before any test even compiles.
-  check-no-duplicate-migrations:
-    name: Check no duplicate migration versions
+  # Migration hygiene: duplicate version numbers, nondeterministic SQL
+  # (UUID()/NOW()/RAND(), the #4259 root-cause class), and edits to migration
+  # files that already exist on the base branch (shipped migrations are
+  # frozen; fix forward with a new version). Fails at PR time, before any
+  # test even compiles. Details: scripts/check-migration-hygiene.sh.
+  check-migration-hygiene:
+    name: Check migration hygiene
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+        with:
+          fetch-depth: 0
 
-      - name: Check for duplicate migration version numbers
-        run: |
-          dup=$(
-            find internal/storage/schema/migrations -maxdepth 1 -name '*.up.sql' -printf '%f\n' \
-              | sed 's/^\([0-9]*\)_.*/\1/' \
-              | sort | uniq -d
-          )
-          if [ -n "$dup" ]; then
-            echo "Duplicate migration version(s) detected: $dup"
-            echo "Conflicting files:"
-            while IFS= read -r v; do
-              find internal/storage/schema/migrations -name "${v}_*.up.sql" -print
-            done <<< "$dup"
-            echo "Renumber one of the colliding files before merging."
-            exit 1
-          fi
+      - name: Run migration hygiene checks
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.merge_group.base_sha }}
+        run: ./scripts/check-migration-hygiene.sh
 
   # Check documentation references match actual CLI flags
   check-doc-flags:
@@ -156,6 +147,10 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+        with:
+          # Full history so check-cli-docs-drift.sh can regenerate docs at the
+          # merge-base and only fail PRs for drift they actually introduced.
+          fetch-depth: 0
 
       - name: Set up Go
         uses: actions/setup-go@4a3601121dd01d1626a1e23e37211e3254c1c06c # v6
@@ -166,9 +161,22 @@ jobs:
         run: CGO_ENABLED=0 go build -tags gms_pure_go -o bd ./cmd/bd/
 
       - name: Validate docs against CLI
+        env:
+          DOC_DRIFT_PATCH_OUT: ${{ runner.temp }}/cli-docs-freshness.patch
         run: |
           ./scripts/check-doc-flags.sh ./bd
           ./scripts/check-doc-freshness.sh
+
+      # When the drift check fails, it writes the exact regenerated-docs fix
+      # (produced with CI's canonical build) so contributors can apply it with
+      # `git apply` instead of reproducing CI's environment locally.
+      - name: Upload docs fix patch
+        if: failure()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: cli-docs-freshness-patch
+          path: ${{ runner.temp }}/cli-docs-freshness.patch
+          if-no-files-found: ignore
 
   # Fast check to catch accidental .beads/issues.jsonl changes from contributors
   check-no-beads-changes:
@@ -443,7 +451,7 @@ jobs:
       - name: Pull Dolt sql-server image
         # Keep tag in sync with internal/testutil/testdoltcommon.go:DoltDockerImage.
         # Without this, RequireDoltContainer reports doltNoImage and TestDomainDB skips.
-        run: docker pull dolthub/dolt-sql-server:1.88.1
+        run: docker pull dolthub/dolt-sql-server:2.1.0
 
       - name: Download build artifacts
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
@@ -458,10 +466,10 @@ jobs:
           sha256sum -c SHA256SUMS
           chmod +x bd-linux-gms-pure
 
-      - name: Test domain + uow
+      - name: Test domain + uow + tracker
         env:
           BEADS_TEST_BD_BINARY: ${{ github.workspace }}/ci-build-artifacts/bd-linux-gms-pure
-        run: go test -tags gms_pure_go -race -count=1 -v ./internal/storage/domain/... ./internal/storage/uow/...
+        run: go test -tags gms_pure_go -race -count=1 -v ./internal/storage/domain/... ./internal/storage/uow/... ./internal/tracker/...
 
   fmt-check:
     name: Check formatting
@@ -502,7 +510,7 @@ jobs:
       - check-build-tags
       - check-cmd-bd-puregeo-tests
       - check-version-consistency
-      - check-no-duplicate-migrations
+      - check-migration-hygiene
       - check-doc-flags
       - check-no-beads-changes
       - detect-package-gates
@@ -527,7 +535,7 @@ jobs:
             CHECK_BUILD_TAGS
             CHECK_CMD_BD_PUREGEO_TESTS
             CHECK_VERSION_CONSISTENCY
-            CHECK_NO_DUPLICATE_MIGRATIONS
+            CHECK_MIGRATION_HYGIENE
             CHECK_DOC_FLAGS
             CHECK_NO_BEADS_CHANGES
             DETECT_PACKAGE_GATES
@@ -544,7 +552,7 @@ jobs:
           CHECK_BUILD_TAGS: ${{ needs.check-build-tags.result }}
           CHECK_CMD_BD_PUREGEO_TESTS: ${{ needs.check-cmd-bd-puregeo-tests.result }}
           CHECK_VERSION_CONSISTENCY: ${{ needs.check-version-consistency.result }}
-          CHECK_NO_DUPLICATE_MIGRATIONS: ${{ needs.check-no-duplicate-migrations.result }}
+          CHECK_MIGRATION_HYGIENE: ${{ needs.check-migration-hygiene.result }}
           CHECK_DOC_FLAGS: ${{ needs.check-doc-flags.result }}
           CHECK_NO_BEADS_CHANGES: ${{ needs.check-no-beads-changes.result }}
           DETECT_PACKAGE_GATES: ${{ needs.detect-package-gates.result }}

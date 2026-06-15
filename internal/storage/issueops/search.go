@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/steveyegge/beads/internal/storage/sqlbuild"
 	"github.com/steveyegge/beads/internal/types"
 )
 
@@ -81,15 +82,12 @@ func SearchIssuesInTx(ctx context.Context, tx *sql.Tx, query string, filter type
 // Pattern B is equivalent to Pattern A but faster on large corpora where most rows
 // are never needed (mirrors the pattern in scanIssueIDs and GetStaleIssuesInTx).
 func searchTableInTx(ctx context.Context, tx *sql.Tx, query string, filter types.IssueFilter, tables FilterTables) ([]*types.Issue, error) {
-	fromSQL, labelWhere, labelArgs, labelDriven, filterForClauses := buildLabelDrivenSearch(filter, tables)
-	whereClauses, args, err := BuildIssueFilterClauses(query, filterForClauses, tables)
+	plan := sqlbuild.BuildLabelDrivenSearch(filter, tables)
+	whereClauses, args, err := BuildIssueFilterClauses(query, plan.Filter, tables)
 	if err != nil {
 		return nil, err
 	}
-	if len(labelWhere) > 0 {
-		whereClauses = append(labelWhere, whereClauses...)
-		args = append(labelArgs, args...)
-	}
+	whereClauses, args = plan.MergeInto(whereClauses, args)
 
 	whereSQL := ""
 	if len(whereClauses) > 0 {
@@ -98,7 +96,7 @@ func searchTableInTx(ctx context.Context, tx *sql.Tx, query string, filter types
 
 	// Pattern B: when Limit > 0, use a cheap id scan then hydrate in batch.
 	if filter.Limit > 0 && !filter.NoIDShrink {
-		return searchTablePatternB(ctx, tx, fromSQL, whereSQL, args, filter, tables, labelDriven)
+		return searchTablePatternB(ctx, tx, plan.FromSQL, whereSQL, args, filter, tables, plan.Distinct)
 	}
 
 	// Pattern A: full 47-column scan (used for unlimited queries or when NoIDShrink is set).
@@ -108,12 +106,12 @@ func searchTableInTx(ctx context.Context, tx *sql.Tx, query string, filter types
 	}
 
 	selectSQL := "SELECT "
-	if labelDriven {
+	if plan.Distinct {
 		selectSQL = "SELECT DISTINCT "
 	}
 	//nolint:gosec // G201: SQL fragments are built from fixed table/column names and parameterized filters.
 	querySQL := fmt.Sprintf(`%s%s FROM %s %s %s %s`,
-		selectSQL, IssueSelectColumns, fromSQL, whereSQL, issueOpsOrderBy(filter.SortBy, filter.SortDesc, ""), limitSQL)
+		selectSQL, IssueSelectColumns, plan.FromSQL, whereSQL, sqlbuild.OrderBy(filter.SortBy, filter.SortDesc, ""), limitSQL)
 
 	rows, err := tx.QueryContext(ctx, querySQL, args...)
 	if err != nil {
@@ -157,7 +155,7 @@ func searchTablePatternB(ctx context.Context, tx *sql.Tx, fromSQL, whereSQL stri
 	//nolint:gosec // G201: SQL fragments from fixed column/table names and parameterized filters.
 	idQuery := fmt.Sprintf(`%s%s.id FROM %s %s %s LIMIT %d`,
 		idSelect, tables.Main, fromSQL, whereSQL,
-		issueOpsOrderBy(filter.SortBy, filter.SortDesc, tables.Main), filter.Limit)
+		sqlbuild.OrderBy(filter.SortBy, filter.SortDesc, tables.Main), filter.Limit)
 
 	rows, err := tx.QueryContext(ctx, idQuery, args...)
 	if err != nil {
@@ -267,99 +265,4 @@ func hydrateIssues(ctx context.Context, tx *sql.Tx, issues []*types.Issue, table
 	}
 
 	return nil
-}
-
-func buildLabelDrivenSearch(filter types.IssueFilter, tables FilterTables) (string, []string, []interface{}, bool, types.IssueFilter) {
-	labels := compactNonEmptyStrings(filter.Labels)
-	labelsAny := compactNonEmptyStrings(filter.LabelsAny)
-	if len(labels) == 0 && len(labelsAny) == 0 {
-		return tables.Main, nil, nil, false, filter
-	}
-
-	filterForClauses := filter
-	filterForClauses.Labels = nil
-	filterForClauses.LabelsAny = nil
-
-	var joins []string
-	var where []string
-	var args []interface{}
-
-	for i, label := range labels {
-		alias := fmt.Sprintf("label_filter_%d", i)
-		joins = append(joins, fmt.Sprintf("JOIN %s %s ON %s.issue_id = %s.id", tables.Labels, alias, alias, tables.Main))
-		where = append(where, fmt.Sprintf("%s.label = ?", alias))
-		args = append(args, label)
-	}
-
-	if len(labelsAny) > 0 {
-		alias := "label_filter_any"
-		joins = append(joins, fmt.Sprintf("JOIN %s %s ON %s.issue_id = %s.id", tables.Labels, alias, alias, tables.Main))
-		placeholders := make([]string, len(labelsAny))
-		for i, label := range labelsAny {
-			placeholders[i] = "?"
-			args = append(args, label)
-		}
-		where = append(where, fmt.Sprintf("%s.label IN (%s)", alias, strings.Join(placeholders, ", ")))
-	}
-
-	return tables.Main + " " + strings.Join(joins, " "), where, args, true, filterForClauses
-}
-
-func compactNonEmptyStrings(values []string) []string {
-	if len(values) == 0 {
-		return nil
-	}
-	out := make([]string, 0, len(values))
-	for _, value := range values {
-		if value != "" {
-			out = append(out, value)
-		}
-	}
-	return out
-}
-
-var issueOpsSortDefs = map[string]struct {
-	column     string
-	defaultDir string
-}{
-	"":         {"priority", "ASC"},
-	"priority": {"priority", "ASC"},
-	"created":  {"created_at", "DESC"},
-	"updated":  {"updated_at", "DESC"},
-	"closed":   {"closed_at", "DESC"},
-	"status":   {"status", "ASC"},
-	"type":     {"issue_type", "ASC"},
-	"assignee": {"assignee", "ASC"},
-	"title":    {"title", "ASC"},
-}
-
-func issueOpsOrderBy(sortBy string, sortDesc bool, table string) string {
-	if sortBy == "id" {
-		return ""
-	}
-	def, ok := issueOpsSortDefs[sortBy]
-	if !ok {
-		def = issueOpsSortDefs[""]
-		sortBy = ""
-	}
-	qual := ""
-	if table != "" {
-		qual = table + "."
-	}
-	dir := def.defaultDir
-	if sortDesc {
-		if dir == "ASC" {
-			dir = "DESC"
-		} else {
-			dir = "ASC"
-		}
-	}
-	col := qual + def.column
-	if sortBy == "title" {
-		col = "LOWER(" + qual + "title)"
-	}
-	if sortBy == "" || sortBy == "priority" {
-		return fmt.Sprintf("ORDER BY %spriority %s, %screated_at DESC, %sid ASC", qual, dir, qual, qual)
-	}
-	return fmt.Sprintf("ORDER BY %s %s, %sid ASC", col, dir, qual)
 }
