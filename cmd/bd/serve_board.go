@@ -123,18 +123,25 @@ func execBoardJSONIn(ctx context.Context, dir string, timeout time.Duration) ([]
 		args = append([]string{"-C", dir}, args...)
 	}
 	cmd := exec.CommandContext(cctx, self, args...)
+	// Limit child process threads: with many workspaces, concurrent bd board
+	// subprocesses can exhaust the shared host's OS thread pool (errno=11 /
+	// "resource temporarily unavailable"). GOMAXPROCS=1 keeps each child
+	// lightweight without meaningfully slowing single-threaded board queries.
 	// For embedded workspaces, strip inherited BEADS_DOLT_* server credentials
 	// so the subprocess reads its own local metadata.json instead of connecting
 	// to the parent process's remote Dolt server.
 	if embeddedMode(dir) {
 		env := os.Environ()
-		filtered := env[:0]
+		filtered := make([]string, 0, len(env)+1)
+		filtered = append(filtered, "GOMAXPROCS=1")
 		for _, e := range env {
 			if !strings.HasPrefix(e, "BEADS_DOLT_") {
 				filtered = append(filtered, e)
 			}
 		}
 		cmd.Env = filtered
+	} else {
+		cmd.Env = append(os.Environ(), "GOMAXPROCS=1")
 	}
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
@@ -278,23 +285,36 @@ func resolveWorkspaces(explicit, globs []string) []string {
 	return out
 }
 
-// fetchWorkspaces runs bd board --json in each workspace concurrently and
-// merges the results. Workspaces that fail are skipped; error is returned
-// only when all workspaces fail.
-func fetchWorkspaces(ctx context.Context, workspaces []string, timeout time.Duration) ([]byte, error) {
+// fetchWorkspaces runs bd board --json in each workspace and merges the
+// results. Workspaces that fail are skipped; error is returned only when all
+// workspaces fail. Fetch fanout is bounded because each workspace exec starts a
+// Go subprocess; unbounded fanout can exhaust systemd TasksMax / OS thread
+// limits on shared hosts.
+func fetchWorkspaces(ctx context.Context, workspaces []string, timeout time.Duration, concurrency int) ([]byte, error) {
 	if len(workspaces) == 1 {
 		return execBoardJSONIn(ctx, workspaces[0], timeout)
+	}
+	if concurrency < 1 {
+		concurrency = 1
 	}
 	type result struct {
 		data []byte
 		err  error
 	}
 	results := make([]result, len(workspaces))
+	sem := make(chan struct{}, concurrency)
 	var wg sync.WaitGroup
 	for i, ws := range workspaces {
 		wg.Add(1)
 		go func(i int, ws string) {
 			defer wg.Done()
+			select {
+			case sem <- struct{}{}:
+				defer func() { <-sem }()
+			case <-ctx.Done():
+				results[i] = result{err: ctx.Err()}
+				return
+			}
 			data, err := execBoardJSONIn(ctx, ws, timeout)
 			results[i] = result{data, err}
 		}(i, ws)
@@ -1567,13 +1587,13 @@ func explainIssueInWorkspace(ctx context.Context, dir string, issueID string) (E
 	return resp, nil
 }
 
-func serveBoard(addr string, refreshSec int, ttl, timeout time.Duration, explicit, globs []string) error {
+func serveBoard(addr string, refreshSec int, ttl, timeout time.Duration, concurrency int, explicit, globs []string) error {
 	cache := newBoardCache(ttl, func(ctx context.Context) ([]byte, error) {
 		// Resolve per fetch so workspaces created after startup are picked up
 		// live (no restart). Cheap: a few globs + stats.
-		return fetchWorkspaces(ctx, resolveWorkspaces(explicit, globs), timeout)
+		return fetchWorkspaces(ctx, resolveWorkspaces(explicit, globs), timeout, concurrency)
 	})
-	sema := make(chan struct{}, 8) // bounded concurrency (spec C4)
+	sema := make(chan struct{}, concurrency) // bounded concurrency (spec C4)
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("/healthz", func(w http.ResponseWriter, _ *http.Request) {
@@ -1681,13 +1701,14 @@ IP only; never a public interface.`,
 		timeoutSec, _ := cmd.Flags().GetInt("exec-timeout")
 		workspaces, _ := cmd.Flags().GetStringArray("workspace")
 		globs, _ := cmd.Flags().GetStringArray("workspace-glob")
+		concurrency, _ := cmd.Flags().GetInt("concurrency")
 		if addr == "" {
 			return fmt.Errorf("--addr is required (tailnet IP:port, e.g. 100.x.y.z:8099)")
 		}
-		fmt.Printf("serving board on http://%s (refresh=%ds ttl=%ds workspaces=%d globs=%d)\n",
-			addr, refresh, ttlSec, len(workspaces), len(globs))
+		fmt.Printf("serving board on http://%s (refresh=%ds ttl=%ds workspaces=%d globs=%d concurrency=%d)\n",
+			addr, refresh, ttlSec, len(workspaces), len(globs), concurrency)
 		return serveBoard(addr, refresh,
-			time.Duration(ttlSec)*time.Second, time.Duration(timeoutSec)*time.Second, workspaces, globs)
+			time.Duration(ttlSec)*time.Second, time.Duration(timeoutSec)*time.Second, concurrency, workspaces, globs)
 	},
 }
 
@@ -1696,6 +1717,7 @@ func init() {
 	serveBoardCmd.Flags().Int("refresh", 30, "Browser auto-refresh seconds (spec: >=15)")
 	serveBoardCmd.Flags().Int("cache-ttl", 20, "Server cache TTL seconds (<= refresh)")
 	serveBoardCmd.Flags().Int("exec-timeout", 10, "Hard timeout for 'bd board --json' seconds")
+	serveBoardCmd.Flags().Int("concurrency", 4, "Max concurrent workspace fetches")
 	serveBoardCmd.Flags().StringArray("workspace", nil, "Workspace directory to include; repeatable (default: process CWD)")
 	serveBoardCmd.Flags().StringArray("workspace-glob", nil, "Glob for workspace dirs, expanded live on each fetch so new projects appear without a restart; repeatable (e.g. /home/admin/beads-*-workspace)")
 	rootCmd.AddCommand(serveBoardCmd)

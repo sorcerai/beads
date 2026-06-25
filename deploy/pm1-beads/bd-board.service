@@ -31,7 +31,12 @@ ExecStartPre=/bin/sh -c '/usr/local/bin/dolt --host 100.85.126.95 --port 3307 --
 # by the glob, expanded live on each fetch — register.sh just creates the dir and
 # it appears on the board within the cache TTL, no edit/restart here. bd board runs
 # read-only against each (no ReadWritePaths needed for globbed workspaces).
-ExecStart=/usr/local/bin/bd serve-board --addr 100.85.126.95:8099 --refresh 30 --cache-ttl 20 --exec-timeout 10 \
+# exec-timeout raised 10->60 and --concurrency 4 added for large fleets (many
+# workspaces): the parent execs one `bd board --json` Go subprocess per workspace,
+# so unbounded fanout exhausts systemd TasksMax / OS-thread limits on shared hosts.
+# The binary now bounds fetch fanout to --concurrency and sets GOMAXPROCS=1 on each
+# child. Raise exec-timeout if a single workspace's board query exceeds it.
+ExecStart=/usr/local/bin/bd serve-board --addr 100.85.126.95:8099 --refresh 30 --cache-ttl 20 --exec-timeout 60 --concurrency 4 \
   --workspace /home/admin/beads-workspace \
   --workspace-glob '/home/admin/beads-*-workspace'
 Restart=always
