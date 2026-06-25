@@ -206,6 +206,17 @@ func runExport(cmd *cobra.Command, args []string) error {
 			return fmt.Errorf("failed to read config for memories: %w", err)
 		}
 		fullPrefix := kvPrefix + memoryPrefix
+		superPrefix := kvPrefix + memorySupersededPrefix
+
+		// Build superseded map
+		supersededBy := make(map[string]string)
+		for k, v := range allConfig {
+			if strings.HasPrefix(k, superPrefix) {
+				userKey := strings.TrimPrefix(k, superPrefix)
+				supersededBy[userKey] = v
+			}
+		}
+
 		// Sort keys for deterministic output order (GH#3474).
 		var memKeys []string
 		for k := range allConfig {
@@ -221,6 +232,9 @@ func runExport(cmd *cobra.Command, args []string) error {
 				"_type": "memory",
 				"key":   userKey,
 				"value": v,
+			}
+			if replacement, ok := supersededBy[userKey]; ok {
+				record["superseded_by"] = replacement
 			}
 			data, err := json.Marshal(record)
 			if err != nil {
