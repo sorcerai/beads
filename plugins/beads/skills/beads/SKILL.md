@@ -50,6 +50,10 @@ bd --version  # Requires v0.60.0+
 
 `bd ready` → `bd show <id>` → `bd update <id> --claim` → work, adding notes as you go (critical for compaction survival) → `bd close <id> --reason "..."` → `bd dolt push`. `bd prime` is the authoritative version.
 
+## Memory (persistent across sessions)
+
+Store and correct durable project knowledge (`bd remember`/`recall`/`memories`). **Use `bd memory supersede <old-key> --with=<new-key>` to correct a stale memory, not `bd forget`** — `forget` hard-deletes and loses the reasoning; `supersede` tombstones the old while keeping it recoverable (`bd memories --all` shows superseded; `bd recall` prints `[SUPERSEDED by X]`). Run `bd memory --help`.
+
 ## Output
 
 Append `--json` to any command for structured output. Use `bd show <id> --long` for extended metadata. Status icons: `○` open `◐` in_progress `●` blocked `✓` closed `❄` deferred.
@@ -74,6 +78,25 @@ See [TROUBLESHOOTING.md](resources/TROUBLESHOOTING.md) for full details.
 | Agent beads | `bd agent --help` | [AGENTS.md](resources/AGENTS.md) |
 | Async gates | `bd gate --help` | [ASYNC_GATES.md](resources/ASYNC_GATES.md) |
 | Worktrees | `bd worktree --help` | [WORKTREES.md](resources/WORKTREES.md) |
+
+## Architecture blueprints (anti-drift)
+
+`bd init` scaffolds an `ARCH.md` construction blueprint + a `post-close` drift
+hook automatically. ARCH.md is a short file of **negative invariants** ("X must
+not Y") that keeps builder agents aligned to intended architecture.
+
+```bash
+bd arch init     # scaffold ARCH.md + post-close hook (idempotent; never overwrites)
+bd arch draft    # construct a candidate ARCH.md.draft: scout (real dep graph) + agy synthesis
+bd arch check    # run scripts/arch-check.sh if present (deterministic, free)
+```
+
+**`bd close` runs `.beads/hooks/post-close` automatically** (advisory — never
+blocks): nudges if no ARCH.md exists, runs the deterministic gate, and (with
+`BD_ARCH_REVIEW=1`) forks a fresh-context reviewer. Skip with `--no-hooks`.
+Construction is **draft → human approve** (never auto-commit a model-generated
+ARCH.md); enforcement is the automated hook + gate. Keep ARCH.md to negatives —
+they don't rot; positive specs do. Run `bd arch --help`.
 
 ## Resources
 
