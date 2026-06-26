@@ -56,8 +56,15 @@ the flags appear in the command line.`,
 		continueFlag, _ := cmd.Flags().GetBool("continue")
 		noAuto, _ := cmd.Flags().GetBool("no-auto")
 		suggestNext, _ := cmd.Flags().GetBool("suggest-next")
+		noHooks, _ := cmd.Flags().GetBool("no-hooks")
 
 		claimNext, _ := cmd.Flags().GetBool("claim-next")
+
+		// Propagate the --no-hooks opt-out into the env so runPostCloseHook's
+		// double-guard sees it without threading the bool through every call site.
+		if noHooks {
+			_ = os.Setenv("BD_NO_CLOSE_HOOK", "1")
+		}
 
 		// Get session ID from flag or environment variable
 		session, _ := cmd.Flags().GetString("session")
@@ -268,6 +275,11 @@ the flags appear in the command line.`,
 					FatalErrorRespectJSON("failed to commit: %v", err)
 				}
 			}
+
+			// Post-close lifecycle hook (advisory). Fires after the commit so it
+			// can never block or undo the close. Surface architecture-drift
+			// findings without failing the operation.
+			runPostCloseHook(ctx, resolvedIDs)
 		}
 
 		// Exit non-zero if no issues were actually closed (close guard
@@ -293,6 +305,7 @@ func init() {
 	closeCmd.Flags().Bool("no-auto", false, "With --continue, show next step but don't claim it")
 	closeCmd.Flags().Bool("suggest-next", false, "Show newly unblocked issues after closing")
 	closeCmd.Flags().Bool("claim-next", false, "Automatically claim the next highest priority available issue")
+	closeCmd.Flags().Bool("no-hooks", false, "Skip the post-close lifecycle hook (.beads/hooks/post-close)")
 	closeCmd.Flags().String("session", "", "Claude Code session ID (or set CLAUDE_SESSION_ID env var)")
 	closeCmd.ValidArgsFunction = issueIDCompletion
 	rootCmd.AddCommand(closeCmd)
