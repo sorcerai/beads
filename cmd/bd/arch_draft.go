@@ -152,14 +152,69 @@ func scoutRust(repoRoot string) (string, string, error) {
 }
 
 func scoutGo(repoRoot string) (string, string, error) {
-	// `go list -deps` on the main packages gives the import graph.
-	cmd := exec.Command("go", "list", "-deps", "-f", "{{.ImportPath}} <- {{.Imports}}", "./...")
+	// `go list -deps` gives the full transitive import graph — but that includes
+	// the Go standard library and all third-party modules, which drown out the
+	// repo's OWN architecture. Scope to the module path: only emit own-package
+	// lines, and trim each line's imports to module-local ones (internal edges).
+	modPath, _ := readGoModulePath(repoRoot)
+	if modPath == "" {
+		modPath = "github.com/" // fallback: filter conservatively
+	}
+	cmd := exec.Command("go", "list", "-deps", "-f", "{{.ImportPath}}|{{join .Imports \" \"}}", "./...")
 	cmd.Dir = repoRoot
 	out, e := cmd.CombinedOutput()
 	if e != nil {
 		return "", "", fmt.Errorf("go list failed: %v\n%s", e, out)
 	}
-	return truncateForPrompt(string(out), 10000), "Go", nil
+	filtered := filterGoGraphToModule(string(out), modPath)
+	if filtered == "" {
+		return "", "", fmt.Errorf("go list produced no module-local packages under %s", modPath)
+	}
+	return truncateForPrompt(filtered, 10000), "Go", nil
+}
+
+// readGoModulePath returns the `module` line path from go.mod.
+func readGoModulePath(repoRoot string) (string, error) {
+	data, err := os.ReadFile(filepath.Join(repoRoot, "go.mod"))
+	if err != nil {
+		return "", err
+	}
+	for _, line := range strings.Split(string(data), "\n") {
+		line = strings.TrimSpace(line)
+		if strings.HasPrefix(line, "module ") {
+			return strings.TrimSpace(strings.TrimPrefix(line, "module ")), nil
+		}
+	}
+	return "", nil
+}
+
+// filterGoGraphToModule keeps only own-package lines (ImportPath under modPath)
+// and, within each, trims the imported packages to module-local ones so the
+// graph shows internal edges rather than stdlib leaves. Lines with no internal
+// imports are still emitted (they're leaves, which is itself architectural info).
+func filterGoGraphToModule(raw, modPath string) string {
+	var b strings.Builder
+	for _, line := range strings.Split(raw, "\n") {
+		parts := strings.SplitN(line, "|", 2)
+		pkg := parts[0]
+		if !strings.HasPrefix(pkg, modPath) {
+			continue // not a module-own package — skip stdlib + third-party
+		}
+		var internal []string
+		if len(parts) == 2 {
+			for _, imp := range strings.Fields(parts[1]) {
+				if strings.HasPrefix(imp, modPath) {
+					internal = append(internal, imp)
+				}
+			}
+		}
+		if len(internal) > 0 {
+			b.WriteString(fmt.Sprintf("%s -> %s\n", pkg, strings.Join(internal, ", ")))
+		} else {
+			b.WriteString(fmt.Sprintf("%s -> (leaf)\n", pkg))
+		}
+	}
+	return strings.TrimSpace(b.String())
 }
 
 func scoutPython(repoRoot string) (string, string, error) {
