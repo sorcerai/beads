@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"testing"
 
+	"github.com/steveyegge/beads/internal/config"
 	"github.com/steveyegge/beads/internal/configfile"
 	"github.com/steveyegge/beads/internal/storage"
 	"github.com/steveyegge/beads/internal/storage/embeddeddolt"
@@ -65,6 +66,19 @@ func TestWhereCommand_ReadsPrefixFromEmbeddedStore(t *testing.T) {
 	t.Setenv("BD_DB", "")
 	t.Setenv("BEADS_DOLT_SERVER_MODE", "")
 	t.Setenv("BEADS_DOLT_SHARED_SERVER", "")
+
+	// initConfigForTest above ran config.Initialize() against the ambient
+	// BEADS_DIR, loading the real repo's config.yaml (issue-prefix "be"), which
+	// would mask the embedded-store prefix read below (be-j4o). Now that the
+	// environment is isolated, chdir into the temp workspace — whose .beads has
+	// only metadata.json plus the dolt store, no config.yaml — and re-init so
+	// issue-prefix resolves empty and the store lookup runs. result.Path still
+	// resolves via BEADS_DB (selectedNoDBBeadsDir), independent of CWD.
+	t.Chdir(repoDir)
+	config.ResetForTesting()
+	if err := config.Initialize(); err != nil {
+		t.Fatalf("re-init config: %v", err)
+	}
 
 	dbFlag := rootCmd.PersistentFlags().Lookup("db")
 	originalFlagValue := dbFlag.Value.String()

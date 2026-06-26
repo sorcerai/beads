@@ -56,6 +56,18 @@ func TestMain(m *testing.M) {
 
 func testMainInner(m *testing.M) int {
 	os.Setenv("BEADS_TEST_MODE", "1")
+	// Clear any ambient Dolt port env vars before container setup. This package
+	// connects to the isolated test container via an explicit cfg.ServerPort (=
+	// the container port) in initDoctorSharedSchema and via raw DSNs elsewhere.
+	// applyConfigDefaults lets a set BEADS_DOLT_SERVER_PORT (or legacy
+	// BEADS_DOLT_PORT) override that explicit port, so an ambient value — e.g.
+	// the city/production Dolt server in a gc session (BEADS_DOLT_SERVER_PORT=
+	// 50215) — would silently redirect schema init off the container and onto
+	// that server, where doctor_pkg_shared doesn't exist. Unsetting here makes
+	// the container port authoritative for the whole package (matches be-n09's
+	// fix for internal/storage/dolt TestMain).
+	os.Unsetenv("BEADS_DOLT_SERVER_PORT")
+	os.Unsetenv("BEADS_DOLT_PORT")
 	if err := testutil.EnsureDoltContainerForTestMain(); err != nil {
 		fmt.Fprintf(os.Stderr, "WARN: %v, skipping Dolt tests\n", err)
 	} else {
@@ -81,6 +93,7 @@ func testMainInner(m *testing.M) int {
 
 	code := m.Run()
 
+	os.Unsetenv("BEADS_DOLT_SERVER_PORT")
 	os.Unsetenv("BEADS_DOLT_PORT")
 	os.Unsetenv("BEADS_TEST_MODE")
 	if testBDDir != "" {

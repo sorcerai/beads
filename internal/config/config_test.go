@@ -210,6 +210,61 @@ func TestInitialize_IgnoresModuleRootConfigWhenRequested(t *testing.T) {
 	}
 }
 
+// TestInitialize_IgnoresAncestorConfigAboveModuleRootWhenRequested guards
+// against ambient config leaking in from a parent directory ABOVE the Go
+// module root. This is the gastown/worktree scenario (be-jsr): `go test` runs
+// from a worktree nested under a tree (e.g. /home/peter/dipcity) whose
+// .beads/config.yaml sets non-default values. The module root itself has no
+// .beads/config.yaml, so the parent walk used to climb straight past it and
+// load the ancestor's config, breaking tests that assume default values
+// (e.g. TestIsBackupAutoEnabled). Under BEADS_TEST_IGNORE_REPO_CONFIG the walk
+// must stop at the module root.
+func TestInitialize_IgnoresAncestorConfigAboveModuleRootWhenRequested(t *testing.T) {
+	restore := envSnapshot(t)
+	defer restore()
+
+	tmpDir := t.TempDir()
+	homeDir := filepath.Join(tmpDir, "home")
+	configDir := filepath.Join(tmpDir, "xdg-config")
+	ancestorBeads := filepath.Join(tmpDir, ".beads") // config ABOVE the module root
+	repoDir := filepath.Join(tmpDir, "repo")         // module root (has go.mod, no .beads)
+	cwdDir := filepath.Join(repoDir, "cmd", "bd")    // mimics the cmd/bd test CWD
+
+	for _, dir := range []string{homeDir, configDir, ancestorBeads, cwdDir} {
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			t.Fatalf("failed to create %s: %v", dir, err)
+		}
+	}
+	if err := os.WriteFile(filepath.Join(repoDir, "go.mod"), []byte("module example.com/test\n\ngo 1.24.0\n"), 0o644); err != nil {
+		t.Fatalf("failed to write go.mod: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(ancestorBeads, "config.yaml"), []byte("json: true\nactor: ancestor-user\n"), 0o644); err != nil {
+		t.Fatalf("failed to write ancestor config.yaml: %v", err)
+	}
+
+	t.Setenv("HOME", homeDir)
+	t.Setenv("XDG_CONFIG_HOME", configDir)
+	t.Setenv("BEADS_TEST_IGNORE_REPO_CONFIG", "1")
+	t.Chdir(cwdDir)
+
+	ResetForTesting()
+	defer ResetForTesting()
+
+	if err := Initialize(); err != nil {
+		t.Fatalf("Initialize() error = %v", err)
+	}
+
+	if got := GetBool("json"); got {
+		t.Fatalf("GetBool(json) = %v, want false when ancestor config above module root is ignored", got)
+	}
+	if got := GetString("actor"); got != "" {
+		t.Fatalf("GetString(actor) = %q, want empty default when ancestor config above module root is ignored", got)
+	}
+	if got := ConfigFileUsed(); got != "" {
+		t.Fatalf("ConfigFileUsed() = %q, want empty when ancestor config above module root is ignored", got)
+	}
+}
+
 func TestLocalConfigOverride(t *testing.T) {
 	// Isolate from environment variables
 	restore := envSnapshot(t)
