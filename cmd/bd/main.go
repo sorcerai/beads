@@ -1264,7 +1264,7 @@ var rootCmd = &cobra.Command{
 			// Read-only commands must not perform post-run maintenance writes or emit
 			// sync guidance after machine-readable output.
 			if shouldRunPostCommandAutoExport(cmd) {
-				if err := maybeAutoExport(rootCtx, serverMode, commandAllowsEmptyAutoExport(cmd)); err != nil {
+				if err := maybeAutoExport(rootCtx, commandAllowsEmptyAutoExport(cmd)); err != nil {
 					return HandleError("%v", err)
 				}
 			}

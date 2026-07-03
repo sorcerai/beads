@@ -260,6 +260,17 @@ type BlockedRecomputer interface {
 	RecomputeAllBlocked(ctx context.Context) (int, error)
 }
 
+// StateHasher returns a hash covering committed history plus the working set.
+// Unlike GetCurrentCommit (HEAD only), the hash moves on uncommitted writes.
+// Change detection against a SQL server must use this when available: server
+// mode runs with dolt auto-commit off, so writes sit in the working set and
+// HEAD does not advance.
+// Callers should type-assert to this interface and fall back to
+// GetCurrentCommit when the store does not implement it.
+type StateHasher interface {
+	GetStateHash(ctx context.Context) (string, error)
+}
+
 // LifecycleManager provides lifecycle inspection beyond Close().
 type LifecycleManager interface {
 	IsClosed() bool
