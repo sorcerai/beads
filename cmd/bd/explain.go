@@ -15,7 +15,7 @@ var explainCmd = &cobra.Command{
 	Long: `Explain parses the issue details from beads (Description, Design,
 Acceptance Criteria, Notes, Comments) and intersects them with associated
 code changes from git history, git status, and .understand-anything/knowledge-graph.json.`,
-	Args:  cobra.ExactArgs(1),
+	Args: cobra.ExactArgs(1),
 	Run: func(cmd *cobra.Command, args []string) {
 		issueID := args[0]
 		workspaces, _ := cmd.Flags().GetStringArray("workspace")

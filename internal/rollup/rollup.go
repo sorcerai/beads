@@ -36,6 +36,20 @@ type Card struct {
 	Priority int       `json:"priority"`
 	Assignee string    `json:"assignee,omitempty"`
 	Updated  time.Time `json:"updated_at"`
+	// ClosedAt is the close timestamp (zero for open issues). Consumed by the
+	// board's "recently closed" / velocity signals.
+	ClosedAt time.Time `json:"closed_at,omitzero"`
+	// Blocked reports >=1 blocking-edge dependency on a not-done issue.
+	Blocked bool `json:"blocked,omitempty"`
+	// LastDepClosed is the most recent close time among this card's blocking
+	// dependencies that are done — non-zero means the card became unblocked
+	// then, which powers the "newly ready" triage signal.
+	LastDepClosed time.Time `json:"last_dep_closed,omitzero"`
+	// HasUnknownDeps is true when a blocking dependency's target is outside the
+	// fetched issue set (status unknowable here). Blocked stays false because we
+	// can't prove otherwise, but consumers must NOT treat such a card as
+	// confidently unblocked / "newly ready".
+	HasUnknownDeps bool `json:"has_unknown_deps,omitempty"`
 }
 
 type Epic struct {
@@ -64,11 +78,45 @@ type Rollup struct {
 }
 
 func toCard(i *types.Issue, custom map[string]types.StatusCategory) Card {
-	return Card{
+	c := Card{
 		ID: i.ID, Title: i.Title, Status: string(i.Status),
 		Column:   ColumnForStatus(i.Status, custom),
 		Priority: i.Priority, Assignee: i.Assignee, Updated: i.UpdatedAt,
 	}
+	if i.ClosedAt != nil {
+		c.ClosedAt = *i.ClosedAt
+	}
+	return c
+}
+
+// blockSignals inspects issueID's blocking-edge dependencies against the
+// fetched issue set. Blockers outside the fetch window can't be judged (their
+// status is unknown here; the read-only board must not guess) — they're
+// reported via hasUnknown so callers don't mistake the card for confidently
+// unblocked.
+func blockSignals(issueID string, allDeps map[string][]*types.Dependency, byID map[string]*types.Issue, custom map[string]types.StatusCategory) (blocked bool, lastDepClosed time.Time, hasUnknown bool) {
+	for _, d := range allDeps[issueID] {
+		if !d.Type.IsBlockingEdge() {
+			continue
+		}
+		target := byID[d.DependsOnID]
+		if target == nil {
+			hasUnknown = true
+			continue
+		}
+		if ColumnForStatus(target.Status, custom) != ColumnDone {
+			blocked = true
+			continue
+		}
+		closed := target.UpdatedAt
+		if target.ClosedAt != nil {
+			closed = *target.ClosedAt
+		}
+		if closed.After(lastDepClosed) {
+			lastDepClosed = closed
+		}
+	}
+	return blocked, lastDepClosed, hasUnknown
 }
 
 // projectSlug returns the winning slug (first lexicographic project: label)
@@ -121,6 +169,16 @@ func Compute(ctx context.Context, src IssueSource, opts Options) (*Rollup, error
 		return nil, err
 	}
 	parentOf := buildParentMap(allDeps)
+
+	byID := make(map[string]*types.Issue, len(issues))
+	for _, i := range issues {
+		byID[i.ID] = i
+	}
+	mkCard := func(i *types.Issue) Card {
+		c := toCard(i, opts.CustomCategories)
+		c.Blocked, c.LastDepClosed, c.HasUnknownDeps = blockSignals(i.ID, allDeps, byID, opts.CustomCategories)
+		return c
+	}
 
 	r := &Rollup{GeneratedAt: time.Now().UTC()}
 
@@ -179,7 +237,7 @@ func Compute(ctx context.Context, src IssueSource, opts Options) (*Rollup, error
 		}
 		if _, hasParent := parentOf[i.ID]; !hasParent {
 			// Parentless issue => epic row.
-			card := toCard(i, opts.CustomCategories)
+			card := mkCard(i)
 			e := g.epicsByID[i.ID]
 			if e == nil {
 				e = &Epic{Issue: card}
@@ -198,7 +256,7 @@ func Compute(ctx context.Context, src IssueSource, opts Options) (*Rollup, error
 		}
 		slug, _ := projectSlug(i)
 		g := ensure(slug)
-		card := toCard(i, opts.CustomCategories)
+		card := mkCard(i)
 		if e := g.epicsByID[parentID]; e != nil {
 			e.Children = append(e.Children, card)
 		} else {

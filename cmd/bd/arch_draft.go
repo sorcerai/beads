@@ -87,7 +87,7 @@ automatically if the primary errors/times out. Run 'agy models' to see options.`
 		// so we intentionally do NOT pass --model. The --backup flag becomes a
 		// retry/alternate-command escape hatch (BD_ARCH_DRAFT_BACKUP_CMD).
 		fmt.Printf("\n%s Stage 2: synthesizing invariants via agy (default model)...\n", ui.RenderAccent("◆"))
-		_ = model  // accepted for API stability but not passed to agy (--model is broken in print mode)
+		_ = model // accepted for API stability but not passed to agy (--model is broken in print mode)
 		_ = backupModel
 
 		prompt := buildArchDraftPrompt(graph, lang, repoRoot)

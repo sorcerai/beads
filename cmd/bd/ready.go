@@ -51,6 +51,13 @@ This is useful for agents executing molecules to see which steps can run next.`,
 			return nil
 		}
 
+		// Reconciliation sweep (beads-qb7.2): catch closes this machine never
+		// hooked (synced in from another machine, closed by another client, or
+		// closed while the hook was missing). Advisory and silent when idle;
+		// never blocks or perceptibly slows `ready`. Skipped in proxied-server
+		// mode above, where `store` is nil and the sweep can't query.
+		sweepMissedCloses(rootCtx, store)
+
 		if offset, _ := cmd.Flags().GetInt("offset"); offset > 0 {
 			return HandleErrorRespectJSON("--offset is only supported under --proxied-server")
 		}

@@ -29,10 +29,11 @@ type closeProxiedInput struct {
 }
 
 type closeProxiedOutcome struct {
-	id     string
-	before *types.Issue
-	after  *types.Issue
-	closed bool
+	id            string
+	before        *types.Issue
+	after         *types.Issue
+	closed        bool
+	autoClosedIDs []string // molecule roots auto-closed as a side effect
 }
 
 func runCloseProxiedServer(cmd *cobra.Command, ctx context.Context, args []string) {
@@ -103,6 +104,7 @@ func runCloseProxiedServer(cmd *cobra.Command, ctx context.Context, args []strin
 		if err := uw.Commit(ctx, msg); err != nil && !isDoltNothingToCommit(err) {
 			FatalErrorRespectJSON("commit close: %v", err)
 		}
+		var lifecycleClosed []string
 		for _, o := range outcomes {
 			if !o.closed {
 				continue
@@ -110,7 +112,12 @@ func runCloseProxiedServer(cmd *cobra.Command, ctx context.Context, args []strin
 			if err := fireProxiedCloseHooks(ctx, o.before, o.after); err != nil {
 				fmt.Fprintf(os.Stderr, "warning: %s: %v\n", o.id, err)
 			}
+			lifecycleClosed = append(lifecycleClosed, o.id)
+			lifecycleClosed = append(lifecycleClosed, o.autoClosedIDs...)
 		}
+		// Post-close lifecycle hook (advisory). Proxied mode holds a UOW, not a
+		// store, so the hook resolves from cwd (the server's workspace).
+		firePostCloseHook(ctx, nil, lifecycleClosed)
 	}
 
 	if !in.jsonOut {
@@ -234,9 +241,12 @@ func closeProxiedOne(ctx context.Context, uw uow.UnitOfWork, id, reason string, 
 	}
 	audit.LogFieldChange(id, "status", oldStatus, "closed", actor, reason)
 
-	autoCloseProxiedCompletedMolecule(ctx, uw, id, actor, in.session, in.jsonOut)
+	var autoClosedIDs []string
+	if autoClosed := autoCloseProxiedCompletedMolecule(ctx, uw, id, actor, in.session, in.jsonOut); autoClosed != "" {
+		autoClosedIDs = append(autoClosedIDs, autoClosed)
+	}
 
-	return closeProxiedOutcome{id: id, before: current, after: res.Issue, closed: res.Closed}, true
+	return closeProxiedOutcome{id: id, before: current, after: res.Issue, closed: res.Closed, autoClosedIDs: autoClosedIDs}, true
 }
 
 func closeProxiedCommitMessage(outcomes []closeProxiedOutcome, claimed *types.Issue, cont *ContinueResult) string {
@@ -331,39 +341,43 @@ func closeProxiedContinue(ctx context.Context, uw uow.UnitOfWork, closedID strin
 	return result
 }
 
-func autoCloseProxiedCompletedMolecule(ctx context.Context, uw uow.UnitOfWork, closedStepID string, actorName, session string, jsonOut bool) {
+// autoCloseProxiedCompletedMolecule mirrors autoCloseCompletedMolecule for
+// proxied mode. Returns the auto-closed molecule root ID (or "" if nothing was
+// closed) so the caller can route it to the post-close lifecycle hook.
+func autoCloseProxiedCompletedMolecule(ctx context.Context, uw uow.UnitOfWork, closedStepID string, actorName, session string, jsonOut bool) string {
 	moleculeID := proxiedFindParentMolecule(ctx, uw, closedStepID)
 	if moleculeID == "" {
-		return
+		return ""
 	}
 
 	root, err := uw.IssueUseCase().GetIssue(ctx, moleculeID)
 	if err != nil || root == nil || root.Status == types.StatusClosed {
-		return
+		return ""
 	}
 	if labels, err := uw.LabelUseCase().GetLabels(ctx, moleculeID); err == nil {
 		root.Labels = labels
 	}
 	if !shouldAutoCloseCompletedRoot(root) {
-		return
+		return ""
 	}
 
 	progress, err := proxiedGetMoleculeProgress(ctx, uw, moleculeID)
 	if err != nil {
-		return
+		return ""
 	}
 	if progress.Completed < progress.Total {
-		return
+		return ""
 	}
 
 	params := domain.CloseIssueParams{Reason: "all steps complete", Session: session}
 	if _, err := uw.IssueUseCase().CloseIssue(ctx, moleculeID, params, actorName); err != nil {
 		fmt.Fprintf(os.Stderr, "Warning: could not auto-close completed molecule %s: %v\n", moleculeID, err)
-		return
+		return ""
 	}
 	if !jsonOut {
 		fmt.Printf("%s Auto-closed completed molecule %s\n", ui.RenderPass("✓"), formatFeedbackID(moleculeID, root.Title))
 	}
+	return moleculeID
 }
 
 func proxiedFindParentMolecule(ctx context.Context, uw uow.UnitOfWork, issueID string) string {

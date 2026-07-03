@@ -143,6 +143,44 @@ func TestCompute_ChildWithMissingParentEpicGoesLoose(t *testing.T) {
 	}
 }
 
+func TestCompute_BlockSignals(t *testing.T) {
+	closedAt := time.Date(2026, 6, 1, 12, 0, 0, 0, time.UTC)
+	blockerDone := iss("d-1", "done blocker", types.StatusClosed, "project:p")
+	blockerDone.ClosedAt = &closedAt
+	deps := map[string][]*types.Dependency{
+		"b-1": {{IssueID: "b-1", DependsOnID: "o-1", Type: types.DepBlocks}},
+		"r-1": {{IssueID: "r-1", DependsOnID: "d-1", Type: types.DepBlocks}},
+		"u-1": {{IssueID: "u-1", DependsOnID: "gone", Type: types.DepBlocks}}, // blocker outside fetch
+	}
+	src := &fakeSource{issues: []*types.Issue{
+		iss("o-1", "open blocker", types.StatusOpen, "project:p"),
+		blockerDone,
+		iss("b-1", "blocked", types.StatusOpen, "project:p"),
+		iss("r-1", "ready again", types.StatusOpen, "project:p"),
+		iss("u-1", "unknown blocker", types.StatusOpen, "project:p"),
+	}, deps: deps}
+	r, err := Compute(context.Background(), src, Options{})
+	if err != nil {
+		t.Fatalf("Compute: %v", err)
+	}
+	byID := map[string]Card{}
+	for _, e := range projectBySlug(r, "p").Epics {
+		byID[e.Issue.ID] = e.Issue
+	}
+	if !byID["b-1"].Blocked {
+		t.Fatal("b-1 depends on an open issue: must be Blocked")
+	}
+	if c := byID["r-1"]; c.Blocked || !c.LastDepClosed.Equal(closedAt) {
+		t.Fatalf("r-1: want unblocked with LastDepClosed=%v, got %+v", closedAt, c)
+	}
+	if c := byID["u-1"]; c.Blocked || !c.HasUnknownDeps {
+		t.Fatalf("blocker outside the fetch window: want Blocked=false + HasUnknownDeps=true, got %+v", c)
+	}
+	if c := byID["d-1"]; !c.ClosedAt.Equal(closedAt) {
+		t.Fatalf("closed card must carry ClosedAt, got %+v", c)
+	}
+}
+
 // helpers
 func projectBySlug(r *Rollup, slug string) *Project {
 	for i := range r.Projects {

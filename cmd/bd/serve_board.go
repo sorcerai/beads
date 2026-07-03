@@ -176,10 +176,10 @@ func execBoardJSONIn(ctx context.Context, dir string, timeout time.Duration) ([]
 	return out.Bytes(), nil
 }
 
-// workspaceBlob pairs a workspace directory with its bd-board JSON payload.
-type workspaceBlob struct {
-	dir  string
-	data []byte
+// workspaceRollup pairs a workspace directory with its parsed board rollup.
+type workspaceRollup struct {
+	dir string
+	r   rollup.Rollup
 }
 
 // workspaceName derives an implied project slug from a workspace directory
@@ -201,12 +201,13 @@ func workspaceName(dir string) string {
 	return name
 }
 
-// mergeRollups combines rollup JSON blobs from multiple workspaces into one.
+// mergeRollups combines parsed rollups from multiple workspaces into one.
 // Projects with the same slug are merged (their cards combined). Unassigned
 // issues in a named workspace (beads-<project>-workspace) are re-slugged to
 // that project name so they surface under the right column. GeneratedAt is
-// the max across all inputs. Malformed blobs are skipped silently.
-func mergeRollups(wbs []workspaceBlob) ([]byte, error) {
+// the max across all inputs. Malformed blobs never reach here — buildPayload
+// turns them into explicit workspace error entries.
+func mergeRollups(wrs []workspaceRollup) rollup.Rollup {
 	var merged rollup.Rollup
 	bySlug := map[string]*rollup.Project{}
 	var slugOrder []string
@@ -222,15 +223,12 @@ func mergeRollups(wbs []workspaceBlob) ([]byte, error) {
 		slugOrder = append(slugOrder, cp.Slug)
 	}
 
-	for _, wb := range wbs {
-		var r rollup.Rollup
-		if err := json.Unmarshal(wb.data, &r); err != nil {
-			continue
-		}
+	for _, wr := range wrs {
+		r := wr.r
 		if r.GeneratedAt.After(merged.GeneratedAt) {
 			merged.GeneratedAt = r.GeneratedAt
 		}
-		implied := workspaceName(wb.dir)
+		implied := workspaceName(wr.dir)
 		for _, p := range r.Projects {
 			if p.Slug == "Unassigned" && implied != "" {
 				p.Slug = implied
@@ -243,7 +241,7 @@ func mergeRollups(wbs []workspaceBlob) ([]byte, error) {
 	for _, slug := range slugOrder {
 		merged.Projects = append(merged.Projects, *bySlug[slug])
 	}
-	return json.Marshal(merged)
+	return merged
 }
 
 // resolveWorkspaces expands glob patterns into concrete workspace dirs and
@@ -285,23 +283,18 @@ func resolveWorkspaces(explicit, globs []string) []string {
 	return out
 }
 
-// fetchWorkspaces runs bd board --json in each workspace and merges the
-// results. Workspaces that fail are skipped; error is returned only when all
-// workspaces fail. Fetch fanout is bounded because each workspace exec starts a
-// Go subprocess; unbounded fanout can exhaust systemd TasksMax / OS thread
-// limits on shared hosts.
-func fetchWorkspaces(ctx context.Context, workspaces []string, timeout time.Duration, concurrency int) ([]byte, error) {
-	if len(workspaces) == 1 {
-		return execBoardJSONIn(ctx, workspaces[0], timeout)
-	}
+// fetchWorkspaces runs bd board --json (plus bd memories --json) in each
+// workspace and builds the merged payload. Workspaces that fail are NEVER
+// silently dropped: they surface as explicit error entries so the board can
+// render them; an error is returned only when all workspaces fail (the cache
+// then serves last-good). Fetch fanout is bounded because each workspace exec
+// starts a Go subprocess; unbounded fanout can exhaust systemd TasksMax / OS
+// thread limits on shared hosts.
+func fetchWorkspaces(ctx context.Context, workspaces []string, timeout time.Duration, concurrency int, staleAfter time.Duration, showMemories bool) (*boardPayload, error) {
 	if concurrency < 1 {
 		concurrency = 1
 	}
-	type result struct {
-		data []byte
-		err  error
-	}
-	results := make([]result, len(workspaces))
+	results := make([]wsResult, len(workspaces))
 	sem := make(chan struct{}, concurrency)
 	var wg sync.WaitGroup
 	for i, ws := range workspaces {
@@ -312,30 +305,75 @@ func fetchWorkspaces(ctx context.Context, workspaces []string, timeout time.Dura
 			case sem <- struct{}{}:
 				defer func() { <-sem }()
 			case <-ctx.Done():
-				results[i] = result{err: ctx.Err()}
+				results[i] = wsResult{dir: ws, err: ctx.Err()}
 				return
 			}
 			data, err := execBoardJSONIn(ctx, ws, timeout)
-			results[i] = result{data, err}
+			res := wsResult{dir: ws, data: data, err: err}
+			// The memories panel is gated behind --show-memories (default off):
+			// it doubles the subprocess/DB-open pressure per workspace (a second
+			// bd spawn each), and that fanout previously exhausted OS threads on
+			// hosts with many workspaces (see the fetchWorkspaces comment above).
+			if err == nil && showMemories {
+				// Memories are decorative: a failure here must not fail the
+				// workspace, so the error is logged and dropped.
+				if mem, merr := execMemoriesJSONIn(ctx, ws, timeout); merr == nil {
+					res.memories = parseMemoriesJSON(mem)
+				} else {
+					fmt.Fprintf(os.Stderr, "serve-board: memories fetch error in %s: %v\n", ws, merr)
+				}
+			}
+			results[i] = res
 		}(i, ws)
 	}
 	wg.Wait()
 
-	var wbs []workspaceBlob
-	for i, r := range results {
-		if r.err == nil {
-			wbs = append(wbs, workspaceBlob{dir: workspaces[i], data: r.data})
-		} else {
+	failed := 0
+	for _, r := range results {
+		if r.err != nil {
+			failed++
 			fmt.Fprintf(os.Stderr, "serve-board: workspace fetch error: %v\n", r.err)
 		}
 	}
-	if len(wbs) == 0 {
+	if failed == len(results) {
 		return nil, fmt.Errorf("all %d workspace(s) failed to produce board data", len(workspaces))
 	}
-	if len(wbs) == 1 {
-		return wbs[0].data, nil
+	return buildPayload(results, time.Now(), staleAfter), nil
+}
+
+// execMemoriesJSONIn runs `bd memories --json` (this same binary) in dir.
+func execMemoriesJSONIn(ctx context.Context, dir string, timeout time.Duration) ([]byte, error) {
+	self, err := os.Executable()
+	if err != nil {
+		return nil, fmt.Errorf("resolve self: %w", err)
 	}
-	return mergeRollups(wbs)
+	cctx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+	args := []string{"memories", "--json"}
+	if dir != "" {
+		args = append([]string{"-C", dir}, args...)
+	}
+	cmd := exec.CommandContext(cctx, self, args...)
+	if embeddedMode(dir) {
+		env := os.Environ()
+		filtered := make([]string, 0, len(env)+1)
+		filtered = append(filtered, "GOMAXPROCS=1")
+		for _, e := range env {
+			if !strings.HasPrefix(e, "BEADS_DOLT_") {
+				filtered = append(filtered, e)
+			}
+		}
+		cmd.Env = filtered
+	} else {
+		cmd.Env = append(os.Environ(), "GOMAXPROCS=1")
+	}
+	var out, errBuf bytes.Buffer
+	cmd.Stdout = &out
+	cmd.Stderr = &errBuf
+	if err := cmd.Run(); err != nil {
+		return nil, fmt.Errorf("bd memories --json failed: %w (stderr: %s)", err, errBuf.String())
+	}
+	return out.Bytes(), nil
 }
 
 // ---- view model: structured rollup -> premium board render ----
@@ -349,7 +387,7 @@ type vmCard struct {
 	ID, Title, Status, Assignee string
 	Priority                    int
 	PrioClass                   string
-	Conflict, IsEpic            bool
+	Conflict, IsEpic, Stale     bool
 	ChildTotal                  int
 	Segs                        []vmSeg
 }
@@ -365,6 +403,26 @@ type vmProject struct {
 	// Progress (burn-down) over top-level cards (epics + loose):
 	Total, Done, DonePct, Conflicts int
 	Bar                             []vmSeg // proportional segments by status column
+	// Batches: per-epic child progress (closed/total), collapsed section.
+	Batches []vmBatch
+}
+
+// vmBatch is one epic/molecule row in the batch-progress view.
+type vmBatch struct {
+	ID, Title        string
+	Done, Total, Pct int
+	Segs             []vmSeg
+}
+
+// vmWorkspace is one health-dot entry in the workspace strip.
+type vmWorkspace struct {
+	Name, Dot, Title, Err string
+}
+
+// vmMemoryGroup is one workspace's memories panel.
+type vmMemoryGroup struct {
+	Name  string
+	Items []wsMemory
 }
 type vmPage struct {
 	Projects                       []vmProject
@@ -380,8 +438,15 @@ type vmPage struct {
 	// Summary across the projects currently shown (adapts to the switcher filter):
 	ProjectCount                                   int
 	SumTotal, SumDone, SumInProgress, SumConflicts int
-	SumDonePct                                     int
-	SumBar                                         []vmSeg
+	// Velocity signals (replace the burn-down tiles): inline SVG sparklines.
+	ClosedSpark, ReadySpark template.HTML
+	ClosedTotal, ReadyNow   int
+	// "Needs you now" triage panel, aggregated across ALL workspaces:
+	Triage vmTriage
+	// Per-workspace health dots (error entries included, never dropped):
+	Workspaces []vmWorkspace
+	// Per-workspace bd-remember memories (key + first line):
+	Memories []vmMemoryGroup
 	// "Recently active" digest (cards updated within digestWindow):
 	Digest      []vmDigestGroup
 	DigestCount int
@@ -558,7 +623,9 @@ func childSegs(children []rollup.Card) (int, []vmSeg) {
 	return total, segs
 }
 
-func buildPage(r *rollup.Rollup, stale bool, goodAt string, refresh int, selected string) vmPage {
+func buildPage(pl *boardPayload, stale bool, goodAt string, refresh int, selected string, staleAfter time.Duration, readyDepths []int) vmPage {
+	r := &pl.Rollup
+	now := time.Now()
 	p := vmPage{
 		Stale: stale, GoodAt: goodAt, Refresh: refresh, Selected: selected,
 		Diagnostics: r.Diagnostics, DiagCount: len(r.Diagnostics),
@@ -573,6 +640,7 @@ func buildPage(r *rollup.Rollup, stale bool, goodAt string, refresh int, selecte
 		vc := vmCard{
 			ID: c.ID, Title: c.Title, Status: c.Status, Assignee: c.Assignee,
 			Priority: c.Priority, PrioClass: prioClass(c.Priority), IsEpic: isEpic,
+			Stale: isStale(c, now, staleAfter),
 		}
 		if isEpic {
 			vc.ChildTotal, vc.Segs = childSegs(children)
@@ -606,6 +674,19 @@ func buildPage(r *rollup.Rollup, stale bool, goodAt string, refresh int, selecte
 			vc.Conflict = e.Conflict
 			byCol[e.Column] = append(byCol[e.Column], vc)
 			total++
+			if len(e.Children) > 0 {
+				done := 0
+				for _, c := range e.Children {
+					if c.Column == rollup.ColumnDone {
+						done++
+					}
+				}
+				childTotal, segs := childSegs(e.Children)
+				vp.Batches = append(vp.Batches, vmBatch{
+					ID: e.Issue.ID, Title: e.Issue.Title,
+					Done: done, Total: childTotal, Pct: pct(done, childTotal), Segs: segs,
+				})
+			}
 		}
 		for _, lc := range proj.Loose {
 			byCol[lc.Column] = append(byCol[lc.Column], mkCard(lc, false, nil))
@@ -639,9 +720,32 @@ func buildPage(r *rollup.Rollup, stale bool, goodAt string, refresh int, selecte
 	p.SumTotal = total
 	p.SumDone = globalCol["done"]
 	p.SumInProgress = globalCol["in_progress"]
-	p.SumDonePct = pct(p.SumDone, p.SumTotal)
-	p.SumBar = barSegs(globalCol, p.SumTotal)
-	p.Digest, p.DigestCount = buildDigest(r, selected, time.Now(), digestWindow)
+	// Velocity signals (replace burn-down): closed/day over 14d + ready depth.
+	// All scoped to `selected` so they match the summary tiles above.
+	closed := closedPerDay(r, selected, now, velocityDays)
+	p.ClosedTotal = sum(closed)
+	p.ClosedSpark = sparklineSVG(closed, 220, 36)
+	p.ReadyNow = readyDepth(r, selected)
+	if len(readyDepths) == 0 {
+		readyDepths = []int{p.ReadyNow}
+	}
+	p.ReadySpark = sparklineSVG(readyDepths, 220, 36)
+	// Triage honors the switcher filter too (empty = all workspaces).
+	p.Triage = buildTriage(r, selected, now, staleAfter, triageLookback)
+	for _, ws := range pl.Workspaces {
+		vw := vmWorkspace{Name: ws.Name, Dot: classifyHealth(ws, now), Err: ws.Err}
+		if ws.Err != "" {
+			vw.Title = "failed to load: " + ws.Err
+		} else {
+			vw.Title = fmt.Sprintf("blocked %d · stale %d · closes(24h) %d · last activity %s",
+				ws.Blocked, ws.Stale, ws.RecentCloses, relTimeAt(ws.LastActivity, now))
+		}
+		p.Workspaces = append(p.Workspaces, vw)
+		if len(ws.Memories) > 0 {
+			p.Memories = append(p.Memories, vmMemoryGroup{Name: ws.Name, Items: ws.Memories})
+		}
+	}
+	p.Digest, p.DigestCount = buildDigest(r, selected, now, digestWindow)
 	p.DigestSince = "7 days"
 	p.Empty = total == 0
 	return p
@@ -745,15 +849,13 @@ body::after{background:radial-gradient(900px 700px at 50% 120%,rgba(139,149,232,
 
 /* summary — at-a-glance burn-down across the shown projects */
 .summary{margin:8px 0 34px}
-.tiles{display:grid;grid-template-columns:repeat(5,minmax(0,1fr)) 2fr;gap:12px}
-@media (max-width:760px){.tiles{grid-template-columns:repeat(2,1fr)}.tile.big{grid-column:1/-1}}
+.tiles{display:grid;grid-template-columns:repeat(5,minmax(0,1fr));gap:12px}
+@media (max-width:760px){.tiles{grid-template-columns:repeat(2,1fr)}}
 .tile{background:rgba(255,255,255,.022);border:1px solid var(--hair-2);border-radius:16px;padding:15px 17px;display:flex;flex-direction:column;gap:7px;box-shadow:inset 0 1px 1px rgba(255,255,255,.03)}
 .tile .k{font-size:10px;text-transform:uppercase;letter-spacing:.16em;color:var(--ink-3)}
 .tile b{font-size:24px;font-weight:600;letter-spacing:-.02em;font-variant-numeric:tabular-nums}
 .tile b.wip{color:var(--in_progress)} .tile b.ok{color:var(--done)}
 .tile.alert{border-color:rgba(248,81,73,.32)} .tile.alert b{color:var(--p0)}
-.tile.big{justify-content:center;gap:11px}
-.tile.big .bar{height:7px}
 
 /* per-project burn-down row */
 .proj-prog{display:flex;align-items:center;gap:13px;margin:-6px 0 20px;font-size:11px;color:var(--ink-3);font-variant-numeric:tabular-nums}
@@ -779,6 +881,72 @@ body::after{background:radial-gradient(900px 700px at 50% 120%,rgba(139,149,232,
 .dg-item .ti{font-size:12.5px;color:var(--ink);line-height:1.32;letter-spacing:-.01em}
 .dg-item .mt{font-size:10px;color:var(--ink-3);font-family:"Geist Mono","Geist Mono Fallback",ui-monospace,monospace}
 .dg-more{font-size:10px;color:var(--ink-3);padding-top:9px}
+
+/* workspace health strip — one dot per workspace, errors always visible */
+.ws-strip{display:flex;align-items:center;gap:8px;flex-wrap:wrap}
+.ws-pill{display:inline-flex;align-items:center;gap:7px;font-size:11px;font-weight:560;color:var(--ink-2);
+  background:rgba(255,255,255,.04);border:1px solid var(--hair-2);padding:4px 11px;border-radius:9999px}
+.ws-pill .hd{width:7px;height:7px;border-radius:50%;flex:0 0 auto}
+.ws-pill.ok .hd{background:var(--done);box-shadow:0 0 0 3px rgba(63,185,80,.14)}
+.ws-pill.risk .hd{background:var(--in_progress);box-shadow:0 0 0 3px rgba(227,179,65,.14)}
+.ws-pill.idle .hd{background:var(--ink-3)}
+.ws-pill.err{color:#ffb4ad;border-color:rgba(248,81,73,.28);background:rgba(248,81,73,.10)}
+.ws-pill.err .hd{background:var(--p0);box-shadow:0 0 0 3px rgba(248,81,73,.16)}
+
+/* triage — "needs you now", pinned above the kanban */
+.triage{margin:0 0 34px}
+.tg-h{display:flex;align-items:baseline;gap:14px;margin-bottom:16px}
+.tg-h .eyebrow{color:#ffb4ad;background:rgba(248,81,73,.10);border-color:rgba(248,81,73,.26)}
+.tg-h .tg-sub{font-size:10px;text-transform:uppercase;letter-spacing:.16em;color:var(--ink-3)}
+.tg-cols{display:grid;grid-template-columns:repeat(auto-fill,minmax(238px,1fr));gap:14px;align-items:start}
+.tg-col{background:rgba(255,255,255,.018);border:1px solid var(--hair-2);border-radius:16px;padding:13px 15px;box-shadow:inset 0 1px 1px rgba(255,255,255,.025)}
+.tg-cap{display:flex;align-items:center;gap:8px;font-size:10px;text-transform:uppercase;letter-spacing:.13em;color:var(--ink-2);margin-bottom:9px}
+.tg-cap .nm{flex:1} .tg-cap .ct{color:var(--ink-3);font-variant-numeric:tabular-nums}
+.tg-cap .acc{width:7px;height:7px;border-radius:50%;flex:0 0 auto}
+.tg-col[data-k=stale] .acc{background:var(--p0)} .tg-col[data-k=blocked] .acc{background:var(--p1)}
+.tg-col[data-k=review] .acc{background:var(--done)} .tg-col[data-k=ready] .acc{background:var(--p3)}
+.tg-col[data-k=stale]{border-color:rgba(248,81,73,.22)}
+.tg-item{display:flex;flex-direction:column;gap:3px;padding:8px 0;border-top:1px solid var(--hair-2)}
+.tg-item:first-of-type{border-top:0;padding-top:0}
+.tg-item .when{font-size:10px;color:var(--ink-3);font-variant-numeric:tabular-nums}
+.tg-item .ti{font-size:12.5px;color:var(--ink);line-height:1.32;letter-spacing:-.01em}
+.tg-item .mt{font-size:10px;color:var(--ink-3);font-family:"Geist Mono","Geist Mono Fallback",ui-monospace,monospace}
+.tg-more{font-size:10px;color:var(--ink-3);padding-top:9px}
+
+/* stale badge on kanban cards */
+.stale-b{font-size:9.5px;font-weight:600;letter-spacing:.06em;color:#ffb4ad;
+  background:rgba(248,81,73,.12);border:1px solid rgba(248,81,73,.26);padding:3px 9px;border-radius:9999px}
+
+/* velocity sparkline tiles */
+.tiles-spark{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px;margin-top:12px}
+@media (max-width:760px){.tiles-spark{grid-template-columns:1fr}}
+.tile .spark{display:block;width:100%;height:36px;color:var(--done);opacity:.9}
+.tile.spark-ready .spark{color:var(--p3)}
+.tile .sv{display:flex;align-items:baseline;gap:8px}
+.tile .sv b{font-size:24px} .tile .sv span{font-size:11px;color:var(--ink-3)}
+
+/* epic/molecule batch progress (collapsed) */
+.batches{margin:-6px 0 20px}
+.batches summary{cursor:pointer;font-size:11px;color:var(--ink-2);letter-spacing:.08em;text-transform:uppercase;
+  padding:6px 0;list-style:none;display:inline-flex;align-items:center;gap:8px}
+.batches summary::before{content:"";width:6px;height:6px;border-right:1.5px solid var(--ink-3);border-bottom:1.5px solid var(--ink-3);
+  transform:rotate(-45deg);transition:transform .3s var(--ease)}
+.batches[open] summary::before{transform:rotate(45deg)}
+.batch{display:flex;align-items:center;gap:13px;padding:7px 0;font-size:12px;color:var(--ink-2);font-variant-numeric:tabular-nums}
+.batch .bt{flex:0 1 340px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--ink)}
+.batch .bid{font-family:"Geist Mono",ui-monospace,monospace;font-size:10.5px;color:var(--ink-3)}
+.batch .bar{flex:1;max-width:360px}
+.batch .frac{white-space:nowrap;font-size:11px;color:var(--ink-3)}
+
+/* memories panel */
+.mems{margin:14px 0 40px}
+.mem-g{background:rgba(255,255,255,.018);border:1px solid var(--hair-2);border-radius:16px;padding:4px 15px;margin-bottom:10px}
+.mem-g summary{cursor:pointer;font-size:11px;font-weight:600;letter-spacing:.13em;text-transform:uppercase;color:var(--ink-2);
+  padding:10px 0;list-style:none;display:flex;align-items:center;gap:9px}
+.mem-g summary .ct{margin-left:auto;font-size:11px;color:var(--ink-3);font-variant-numeric:tabular-nums;font-weight:400}
+.mem{display:flex;flex-direction:column;gap:2px;padding:8px 0;border-top:1px solid var(--hair-2)}
+.mem .mk{font-family:"Geist Mono",ui-monospace,monospace;font-size:10.5px;color:var(--ink-3)}
+.mem .mv{font-size:12.5px;color:var(--ink-2);line-height:1.4}
 
 /* lanes — domain dictates columns; depth comes from texture/cards/motion */
 .lanes{display:flex;gap:16px;overflow-x:auto;padding:6px 2px 22px;scroll-snap-type:x proximity}
@@ -907,6 +1075,9 @@ body::after{background:radial-gradient(900px 700px at 50% 120%,rgba(139,149,232,
       {{range .AllSlugs}}<option value="{{.}}"{{if eq . $.Selected}} selected{{end}}>{{.}}</option>{{end}}
     </select>
   </form>{{end}}
+  {{if .Workspaces}}<div class="ws-strip">
+    {{range .Workspaces}}<span class="ws-pill {{.Dot}}" title="{{.Title}}"><i class="hd"></i>{{.Name}}{{if .Err}} · failed{{end}}</span>{{end}}
+  </div>{{end}}
   <div class="meta">
     {{if .Stale}}<span class="pill-stale">● Stale — last good {{.GoodAt}}</span>
     {{else}}<span><span class="dot-live"></span> &nbsp;live</span>{{end}}
@@ -924,6 +1095,22 @@ body::after{background:radial-gradient(900px 700px at 50% 120%,rgba(139,149,232,
     </div>{{end}}
   </div>
 
+  {{if .Triage.Count}}
+    <section class="triage">
+      <div class="tg-h"><span class="eyebrow">Needs you now</span><span class="tg-sub">{{.Triage.Count}}{{if .Selected}} in {{.Selected}}{{else}} across all workspaces{{end}}</span></div>
+      <div class="tg-cols">
+        {{range .Triage.Groups}}
+        <div class="tg-col" data-k="{{.Key}}">
+          <div class="tg-cap"><span class="acc"></span><span class="nm">{{.Title}}</span><span class="ct">{{.Count}}</span></div>
+          {{range .Items}}
+          <div class="tg-item"><span class="when">{{.Rel}}</span><span class="ti">{{.Title}}</span><span class="mt">{{.Slug}} · <a href="javascript:void(0)" class="id-link" onclick="showExplain('{{.ID}}', '{{.Slug}}')">{{.ID}}</a></span></div>
+          {{end}}
+          {{if .More}}<div class="tg-more">+{{.More}} more</div>{{end}}
+        </div>
+        {{end}}
+      </div>
+    </section>
+  {{end}}
   {{if .Empty}}
     <div class="proj"><div class="empty" style="padding:60px 0">No issues yet. The board will populate as work is tracked.</div></div>
   {{else}}
@@ -934,8 +1121,15 @@ body::after{background:radial-gradient(900px 700px at 50% 120%,rgba(139,149,232,
         <div class="tile"><span class="k">In progress</span><b class="wip">{{.SumInProgress}}</b></div>
         <div class="tile"><span class="k">Done</span><b class="ok">{{.SumDone}}</b></div>
         <div class="tile{{if .SumConflicts}} alert{{end}}"><span class="k">Conflicts</span><b>{{.SumConflicts}}</b></div>
-        <div class="tile big"><span class="k">Overall · {{.SumDonePct}}% done</span>
-          <div class="bar">{{range .SumBar}}<i class="{{.Class}}" style="width:{{.Width}}%"></i>{{end}}</div>
+      </div>
+      <div class="tiles-spark">
+        <div class="tile"><span class="k">Closed / day · last 14d</span>
+          <div class="sv"><b class="ok">{{.ClosedTotal}}</b><span>closed in window</span></div>
+          {{.ClosedSpark}}
+        </div>
+        <div class="tile spark-ready"><span class="k">Ready queue depth</span>
+          <div class="sv"><b>{{.ReadyNow}}</b><span>ready now · sampled per refresh</span></div>
+          {{.ReadySpark}}
         </div>
       </div>
     </section>
@@ -965,6 +1159,14 @@ body::after{background:radial-gradient(900px 700px at 50% 120%,rgba(139,149,232,
         <div class="bar">{{range .Bar}}<i class="{{.Class}}" style="width:{{.Width}}%"></i>{{end}}</div>
         <span class="frac">{{.Done}}/{{.Total}} done</span>
       </div>{{end}}
+      {{if .Batches}}<details class="batches"><summary>Epic progress · {{len .Batches}}</summary>
+        {{range .Batches}}
+        <div class="batch"><span class="bid">{{.ID}}</span><span class="bt">{{.Title}}</span>
+          <div class="bar">{{range .Segs}}<i class="{{.Class}}" style="width:{{.Width}}%"></i>{{end}}</div>
+          <span class="frac">{{.Done}}/{{.Total}} · {{.Pct}}%</span>
+        </div>
+        {{end}}
+      </details>{{end}}
       <div class="lanes">
         {{range .Lanes}}
         <div class="lane" data-k="{{.Key}}">
@@ -979,6 +1181,7 @@ body::after{background:radial-gradient(900px 700px at 50% 120%,rgba(139,149,232,
               <a href="javascript:void(0)" class="id-link" onclick="showExplain('{{.ID}}', '{{$projSlug}}')">{{.ID}}</a>
               <span class="st">{{.Status}}</span>
               {{if .IsEpic}}<span class="epi">Epic{{if .ChildTotal}} · {{.ChildTotal}}{{end}}</span>{{end}}
+              {{if .Stale}}<span class="stale-b">⏱ stale</span>{{end}}
               {{if .Conflict}}<span class="conf">⚠ closed · open children</span>{{end}}
             </div>
             {{if .Segs}}<div class="prog">
@@ -992,6 +1195,16 @@ body::after{background:radial-gradient(900px 700px at 50% 120%,rgba(139,149,232,
       </div>
     </section>
     {{end}}
+  {{end}}
+  {{if .Memories}}
+  <section class="mems">
+    <div class="dg-h"><span class="eyebrow">Memories</span><span class="dg-sub">bd remember · per workspace</span></div>
+    {{range .Memories}}
+    <details class="mem-g"><summary>{{.Name}}<span class="ct">{{len .Items}}</span></summary>
+      {{range .Items}}<div class="mem"><span class="mk">{{.Key}}</span><span class="mv">{{.Line}}</span></div>{{end}}
+    </details>
+    {{end}}
+  </section>
   {{end}}
 </div>
 <div class="foot">
@@ -1440,7 +1653,7 @@ func explainIssueInWorkspace(ctx context.Context, dir string, issueID string) (E
 			associatedFiles[k] = v
 		}
 	}
-	
+
 	logOut, err := runGitCmd(ctx, dir, "log", "--grep="+issueID, "--name-status", "--pretty=format:", "--max-count=50")
 	if err == nil {
 		for k, v := range parseGitLogNameStatus(logOut) {
@@ -1587,11 +1800,24 @@ func explainIssueInWorkspace(ctx context.Context, dir string, issueID string) (E
 	return resp, nil
 }
 
-func serveBoard(addr string, refreshSec int, ttl, timeout time.Duration, concurrency int, explicit, globs []string) error {
+func serveBoard(addr string, refreshSec int, ttl, timeout time.Duration, concurrency int, explicit, globs []string, staleAfter time.Duration, ntfyURL string, showMemories bool) error {
+	notifier := newNtfyNotifier(ntfyURL)
+	depths := &depthSampler{}
 	cache := newBoardCache(ttl, func(ctx context.Context) ([]byte, error) {
 		// Resolve per fetch so workspaces created after startup are picked up
 		// live (no restart). Cheap: a few globs + stats.
-		return fetchWorkspaces(ctx, resolveWorkspaces(explicit, globs), timeout, concurrency)
+		payload, err := fetchWorkspaces(ctx, resolveWorkspaces(explicit, globs), timeout, concurrency, staleAfter, showMemories)
+		if err != nil {
+			return nil, err
+		}
+		now := time.Now()
+		depths.add(readyDepth(&payload.Rollup, "")) // sampler history is fleet-wide
+		// observe runs synchronously (it feeds BlockedGrew health and snapshots
+		// state under this fetch); the HTTP sends move off-path via notifyAsync so
+		// a slow ntfy host can't stall the refresh. Both are no-ops when
+		// --ntfy-url is unset. The board stays read-only either way.
+		notifier.notifyAsync(notifier.observe(payload, now, staleAfter))
+		return json.Marshal(payload)
 	})
 	sema := make(chan struct{}, concurrency) // bounded concurrency (spec C4)
 
@@ -1667,12 +1893,12 @@ func serveBoard(addr string, refreshSec int, ttl, timeout time.Duration, concurr
 			http.Error(w, "board unavailable: "+err.Error(), http.StatusServiceUnavailable)
 			return
 		}
-		var rl rollup.Rollup
-		if jerr := json.Unmarshal(body, &rl); jerr != nil {
+		var pl boardPayload
+		if jerr := json.Unmarshal(body, &pl); jerr != nil {
 			http.Error(w, "board payload parse error: "+jerr.Error(), http.StatusBadGateway)
 			return
 		}
-		page := buildPage(&rl, stale, cache.goodTimestamp().UTC().Format(time.RFC3339), refreshSec, r.URL.Query().Get("project"))
+		page := buildPage(&pl, stale, cache.goodTimestamp().UTC().Format(time.RFC3339), refreshSec, r.URL.Query().Get("project"), staleAfter, depths.snapshot())
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
 		if terr := boardPageTmpl.Execute(w, page); terr != nil {
 			// headers/body may be partially written; nothing safe left to do
@@ -1702,13 +1928,16 @@ IP only; never a public interface.`,
 		workspaces, _ := cmd.Flags().GetStringArray("workspace")
 		globs, _ := cmd.Flags().GetStringArray("workspace-glob")
 		concurrency, _ := cmd.Flags().GetInt("concurrency")
+		staleAfter, _ := cmd.Flags().GetDuration("stale-after")
+		ntfyURL, _ := cmd.Flags().GetString("ntfy-url")
+		showMemories, _ := cmd.Flags().GetBool("show-memories")
 		if addr == "" {
 			return fmt.Errorf("--addr is required (tailnet IP:port, e.g. 100.x.y.z:8099)")
 		}
-		fmt.Printf("serving board on http://%s (refresh=%ds ttl=%ds workspaces=%d globs=%d concurrency=%d)\n",
-			addr, refresh, ttlSec, len(workspaces), len(globs), concurrency)
+		fmt.Printf("serving board on http://%s (refresh=%ds ttl=%ds workspaces=%d globs=%d concurrency=%d stale-after=%s ntfy=%v memories=%v)\n",
+			addr, refresh, ttlSec, len(workspaces), len(globs), concurrency, staleAfter, ntfyURL != "", showMemories)
 		return serveBoard(addr, refresh,
-			time.Duration(ttlSec)*time.Second, time.Duration(timeoutSec)*time.Second, concurrency, workspaces, globs)
+			time.Duration(ttlSec)*time.Second, time.Duration(timeoutSec)*time.Second, concurrency, workspaces, globs, staleAfter, ntfyURL, showMemories)
 	},
 }
 
@@ -1720,5 +1949,8 @@ func init() {
 	serveBoardCmd.Flags().Int("concurrency", 4, "Max concurrent workspace fetches")
 	serveBoardCmd.Flags().StringArray("workspace", nil, "Workspace directory to include; repeatable (default: process CWD)")
 	serveBoardCmd.Flags().StringArray("workspace-glob", nil, "Glob for workspace dirs, expanded live on each fetch so new projects appear without a restart; repeatable (e.g. /home/admin/beads-*-workspace)")
+	serveBoardCmd.Flags().Duration("stale-after", 2*time.Hour, "Flag in_progress issues as stale after this much inactivity")
+	serveBoardCmd.Flags().String("ntfy-url", "", "ntfy topic URL for push notifications (empty = disabled)")
+	serveBoardCmd.Flags().Bool("show-memories", false, "Fetch and render the per-workspace bd-remember panel (default off: adds a second bd subprocess per workspace)")
 	rootCmd.AddCommand(serveBoardCmd)
 }

@@ -175,10 +175,12 @@ if not violations:
     print("ℹ #8 (cmd/bd is wiring-only) is SEMANTIC — not checked here; that is the opt-in Tier 2 review.")
     sys.exit(0)
 
+# One line per violation, prefixed "violation:" — the machine-readable format
+# the baseline mechanism (scripts/arch-check.sh + bd arch check) diffs against
+# .beads/arch-baseline. Keep it deterministic and stable: sorted, ASCII arrow.
 print(f"✗ arch-check: {len(violations)} architecture-drift violation(s) — see ARCH.md")
-for inv, desc, path in sorted(violations, key=lambda v: v[0]):
-    print(f"  [#{inv}] {desc}")
-    print(f"        {'  →  '.join(path)}")
+for inv, desc, path in sorted(violations, key=lambda v: (v[0], v[2])):
+    print(f"violation: [#{inv}] {desc}: {' -> '.join(path)}")
 print()
 print("A change that breaks an invariant is DRIFT, not a fix: update ARCH.md first")
 print("(with a beads issue + reason), or revert the offending dependency edge.")

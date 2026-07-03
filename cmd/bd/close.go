@@ -44,6 +44,13 @@ the flags appear in the command line.`,
 			}
 		}()
 
+		// Propagate the --no-hooks opt-out into the env before dispatch so
+		// firePostCloseHook's guard sees it on every path — including the proxied
+		// branch below, which returns before the direct-mode flag reads.
+		if noHooks, _ := cmd.Flags().GetBool("no-hooks"); noHooks {
+			_ = os.Setenv("BD_NO_CLOSE_HOOK", "1")
+		}
+
 		if usesProxiedServer() {
 			runCloseProxiedServer(cmd, rootCtx, args)
 			return nil
@@ -71,15 +78,8 @@ the flags appear in the command line.`,
 		continueFlag, _ := cmd.Flags().GetBool("continue")
 		noAuto, _ := cmd.Flags().GetBool("no-auto")
 		suggestNext, _ := cmd.Flags().GetBool("suggest-next")
-		noHooks, _ := cmd.Flags().GetBool("no-hooks")
 
 		claimNext, _ := cmd.Flags().GetBool("claim-next")
-
-		// Propagate the --no-hooks opt-out into the env so runPostCloseHook's
-		// double-guard sees it without threading the bool through every call site.
-		if noHooks {
-			_ = os.Setenv("BD_NO_CLOSE_HOOK", "1")
-		}
 
 		// Get session ID from flag or environment variable
 		session, _ := cmd.Flags().GetString("session")
@@ -110,6 +110,12 @@ the flags appear in the command line.`,
 		// Track which stores were mutated so routed closes can commit before
 		// cleanup closes the routed handle. Deduped by pointer.
 		mutatedStores := map[storage.DoltStorage][]string{}
+
+		// Track IDs that actually transitioned to closed, per store, so the
+		// post-close lifecycle hook fires in the workspace of the store that
+		// performed the close. Kept separate from mutatedStores, which also
+		// includes non-close mutations like --claim-next.
+		closedByStore := map[storage.DoltStorage][]string{}
 
 		// Direct mode
 		closedIssues := []*types.Issue{}
@@ -162,6 +168,7 @@ the flags appear in the command line.`,
 				continue
 			}
 			mutatedStores[activeStore] = append(mutatedStores[activeStore], id)
+			closedByStore[activeStore] = append(closedByStore[activeStore], id)
 
 			// Audit log the close (survives Dolt GC flatten)
 			oldStatus := "open"
@@ -173,8 +180,11 @@ the flags appear in the command line.`,
 			closedCount++
 
 			// Auto-close parent molecule if all steps are now complete.
-			// Runs against the same store the step was closed in.
-			autoCloseCompletedMolecule(ctx, activeStore, id, actor, session)
+			// Runs against the same store the step was closed in. An auto-closed
+			// parent is a close too, so route its ID to the post-close hook.
+			if moleculeID := autoCloseCompletedMolecule(ctx, activeStore, id, actor, session); moleculeID != "" {
+				closedByStore[activeStore] = append(closedByStore[activeStore], moleculeID)
+			}
 
 			// Re-fetch for display
 			closedIssue, _ := activeStore.GetIssue(ctx, id)
@@ -289,8 +299,11 @@ the flags appear in the command line.`,
 
 			// Post-close lifecycle hook (advisory). Fires after the commit so it
 			// can never block or undo the close. Surface architecture-drift
-			// findings without failing the operation.
-			runPostCloseHook(ctx, resolvedIDs)
+			// findings without failing the operation. Dispatched per store so a
+			// routed close fires the hook in the workspace it actually landed in.
+			for s, ids := range closedByStore {
+				firePostCloseHook(ctx, s, ids)
+			}
 		}
 
 		totalAttempted := len(resolvedIDs)
@@ -502,37 +515,42 @@ func checkGateSatisfaction(issue *types.Issue) error {
 // parent molecule, and if so, closes the molecule root. Ordinary epics remain
 // open when all children finish so they can become explicitly close-eligible
 // instead of being closed as a side effect of the final child close.
-func autoCloseCompletedMolecule(ctx context.Context, s storage.DoltStorage, closedStepID, actorName, session string) {
+//
+// Returns the auto-closed molecule root ID (or "" if nothing was closed) so the
+// caller can route it to the post-close lifecycle hook — an auto-closed parent
+// transitions to closed just like an explicit close.
+func autoCloseCompletedMolecule(ctx context.Context, s storage.DoltStorage, closedStepID, actorName, session string) string {
 	moleculeID := findParentMolecule(ctx, s, closedStepID)
 	if moleculeID == "" {
-		return // Not part of a molecule
+		return "" // Not part of a molecule
 	}
 
 	// Check if molecule root is already closed
 	root, err := s.GetIssue(ctx, moleculeID)
 	if err != nil || root == nil || root.Status == types.StatusClosed || !shouldAutoCloseCompletedRoot(root) {
-		return
+		return ""
 	}
 
 	// Load progress to check completion
 	progress, err := getMoleculeProgress(ctx, s, moleculeID)
 	if err != nil {
-		return // Best effort — don't fail the close
+		return "" // Best effort — don't fail the close
 	}
 
 	if progress.Completed < progress.Total {
-		return // Not all steps complete yet
+		return "" // Not all steps complete yet
 	}
 
 	// All steps complete — auto-close the molecule root
 	if err := s.CloseIssue(ctx, moleculeID, "all steps complete", actorName, session); err != nil {
 		fmt.Fprintf(os.Stderr, "Warning: could not auto-close completed molecule %s: %v\n", moleculeID, err)
-		return
+		return ""
 	}
 
 	if !jsonOutput {
 		fmt.Printf("%s Auto-closed completed molecule %s\n", ui.RenderPass("✓"), formatFeedbackID(moleculeID, root.Title))
 	}
+	return moleculeID
 }
 
 // shouldAutoCloseCompletedRoot returns true for molecule roots that should

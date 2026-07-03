@@ -93,29 +93,93 @@ architecture. Filling it in is the work; this just makes the empty form visible.
 	},
 }
 
-// archCheckCmd runs the deterministic gate if present.
+// archCheckCmd runs the deterministic gate if present, plus the ARCH.md
+// staleness check. Supports a diff-scoped baseline (see arch_baseline.go).
 var archCheckCmd = &cobra.Command{
 	Use:   "check",
 	Short: "Run the deterministic architecture gate",
-	Long: `Run the deterministic architecture gate (scripts/arch-check.sh) if it exists.
+	Long: `Run the deterministic architecture gate (scripts/arch-check.sh) if it exists,
+then a deterministic ARCH.md staleness check.
 
 This is the free (0-token) tier of the drift checkpoint: it checks structural
 invariants against the code graph. The hard-block version runs in pre-commit;
-this is the on-demand / post-close version. Exits non-zero on a violation.`,
+this is the on-demand / post-close version. Exits non-zero on a violation.
+
+Baseline (opt-in, for legacy repos): --update-baseline grandfathers the current
+violations into .beads/arch-baseline (committed, sorted, stable). Subsequent
+runs fail ONLY on violations not in the baseline and print the grandfathered
+count. No baseline file = every violation fails (default behavior).
+
+Gate exit-code convention: scripts/arch-check.sh exits 1 when it ran fine and
+FOUND violations (grandfatherable via the baseline); any OTHER non-zero exit is
+a crash the baseline cannot grandfather, so it fails the gate regardless.
+
+Staleness: backtick-quoted paths/packages/identifiers in ARCH.md are verified
+to still exist in the repo. Dangling references are ADVISORY (they print in
+their own section but do not fail the gate) unless --strict is set.`,
 	Args: cobra.NoArgs,
 	Run: func(cmd *cobra.Command, args []string) {
+		updateBaseline, _ := cmd.Flags().GetBool("update-baseline")
+		strict, _ := cmd.Flags().GetBool("strict")
 		repoRoot := findRepoRootForArch()
 		if repoRoot == "" {
 			FatalErrorRespectJSON("not in a git repository")
 		}
+
+		// --- Tier 1: the deterministic gate script ---
+		var scriptOut string
+		var scriptErr error
 		checkPath := filepath.Join(repoRoot, "scripts", "arch-check.sh")
-		if _, err := os.Stat(checkPath); err != nil {
-			fmt.Fprintf(os.Stderr, "No scripts/arch-check.sh — nothing to check deterministically.\n")
+		if _, err := os.Stat(checkPath); err == nil {
+			scriptOut, scriptErr = runScriptCapture(checkPath, repoRoot)
+		} else {
+			fmt.Fprintf(os.Stderr, "No scripts/arch-check.sh — skipping the structural gate.\n")
 			fmt.Fprintf(os.Stderr, "Create one (see 'bd arch init') or rely on the LLM post-close tier.\n")
-			return
 		}
-		if err := runScriptInDir(checkPath, repoRoot); err != nil {
-			FatalErrorRespectJSON("%v", err)
+
+		// --- Baseline: grandfather known violations (opt-in) ---
+		current := extractViolations(scriptOut)
+		baselinePath := archBaselinePath(repoRoot)
+		gateFailed := false
+		if updateBaseline {
+			if gateCrashed(scriptErr) || (scriptErr != nil && len(current) == 0) {
+				FatalErrorRespectJSON("arch-check crashed (exit != 1) or produced no machine-readable violations — not writing a baseline: %v", scriptErr)
+			}
+			if err := writeBaseline(baselinePath, current); err != nil {
+				FatalErrorRespectJSON("writing baseline: %v", err)
+			}
+			fmt.Printf("%s Baseline updated: %s\n", ui.RenderPass("✓"), summarizeGrandfathered(len(current)))
+		} else if baseline, err := readBaseline(baselinePath); err == nil {
+			newViolations, grandfathered := diffBaseline(current, baseline)
+			if len(newViolations) > 0 {
+				fmt.Printf("%s %d new violation(s) not in baseline (%s):\n",
+					ui.RenderFail("✗"), len(newViolations), summarizeGrandfathered(grandfathered))
+				for _, v := range newViolations {
+					fmt.Printf("  %s\n", v)
+				}
+			} else {
+				fmt.Printf("%s No new violations (%s)\n", ui.RenderPass("✓"), summarizeGrandfathered(grandfathered))
+			}
+			// A crash (exit != 1) is not grandfatherable — see archGateFailed.
+			gateFailed = archGateFailed(newViolations, scriptErr)
+		} else if scriptErr != nil {
+			gateFailed = true // no baseline: current behavior — any failure fails the gate
+		}
+
+		// --- ARCH.md staleness (advisory unless --strict) ---
+		stale := checkArchStaleness(repoRoot)
+		if len(stale) > 0 {
+			fmt.Printf("\n%s ARCH.md staleness (advisory — use --strict to fail on these):\n", ui.RenderWarn("⚠"))
+			for _, s := range stale {
+				fmt.Printf("  %s\n", s)
+			}
+		}
+
+		if gateFailed {
+			FatalErrorRespectJSON("architecture gate failed (see violations above)")
+		}
+		if strict && len(stale) > 0 {
+			FatalErrorRespectJSON("ARCH.md is stale (%d dangling reference(s); --strict)", len(stale))
 		}
 	},
 }
@@ -137,16 +201,6 @@ func runGitOutput(args ...string) (string, error) {
 	cmd := exec.CommandContext(rootCtx, "git", args...)
 	out, err := cmd.Output()
 	return string(out), err
-}
-
-// runScriptInDir executes a script in dir, streaming stdout/stderr to the parent.
-// Returns an error if it exits non-zero. Used by 'bd arch check'.
-func runScriptInDir(scriptPath, dir string) error {
-	cmd := exec.CommandContext(rootCtx, scriptPath)
-	cmd.Dir = dir
-	cmd.Stdout = os.Stdout
-	cmd.Stderr = os.Stderr
-	return cmd.Run()
 }
 
 // seedPostCloseHook installs .beads/hooks/post-close if absent. Idempotent.
@@ -174,6 +228,8 @@ func seedPostCloseHook(repoRoot string) bool {
 
 func init() {
 	archInitCmd.Flags().Bool("force", false, "Reserved (ARCH.md is never overwritten)")
+	archCheckCmd.Flags().Bool("update-baseline", false, "Grandfather current violations into .beads/arch-baseline")
+	archCheckCmd.Flags().Bool("strict", false, "Fail on ARCH.md staleness findings (advisory by default)")
 	archCmd.AddCommand(archInitCmd)
 	archCmd.AddCommand(archCheckCmd)
 	rootCmd.AddCommand(archCmd)
@@ -256,7 +312,10 @@ const postCloseHookTemplate = `#!/usr/bin/env sh
 # No ARCH.md yet? Run 'bd arch init' to scaffold the construction blueprint.
 # Args: $@ = closed issue IDs. cwd = repo root.
 
-set -euo pipefail
+# POSIX sh only — no bashisms here. (A pipe-failure option under this sh shebang
+# aborts dash at startup — dash is the default /bin/sh on Debian/Ubuntu — which
+# silently skips the checkpoint.)
+set -eu
 
 # --- nudge: no ARCH.md means no blueprint to check against ---
 if [ ! -f ARCH.md ]; then

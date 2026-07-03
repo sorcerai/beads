@@ -19,19 +19,19 @@ import (
 	"github.com/steveyegge/beads/internal/types"
 )
 
-func wb(dir, data string) workspaceBlob { return workspaceBlob{dir: dir, data: []byte(data)} }
+// wb parses a board JSON blob into a workspaceRollup (test helper).
+func wb(dir, data string) workspaceRollup {
+	var r rollup.Rollup
+	if err := json.Unmarshal([]byte(data), &r); err != nil {
+		panic("wb: bad test JSON: " + err.Error())
+	}
+	return workspaceRollup{dir: dir, r: r}
+}
 
 func TestMergeRollups_CombinesProjects(t *testing.T) {
 	a := `{"generated_at":"2026-01-01T10:00:00Z","projects":[{"slug":"alpha","epics":[],"loose":[]}],"diagnostics":[]}`
 	b := `{"generated_at":"2026-01-01T11:00:00Z","projects":[{"slug":"beta","epics":[],"loose":[]}],"diagnostics":[]}`
-	out, err := mergeRollups([]workspaceBlob{wb("", a), wb("", b)})
-	if err != nil {
-		t.Fatal(err)
-	}
-	var r rollup.Rollup
-	if err := json.Unmarshal(out, &r); err != nil {
-		t.Fatal(err)
-	}
+	r := mergeRollups([]workspaceRollup{wb("", a), wb("", b)})
 	if len(r.Projects) != 2 {
 		t.Fatalf("want 2 projects, got %d: %+v", len(r.Projects), r.Projects)
 	}
@@ -47,11 +47,7 @@ func TestMergeRollups_CombinesProjects(t *testing.T) {
 func TestMergeRollups_DeduplicatesSameSlug(t *testing.T) {
 	a := `{"generated_at":"2026-01-01T00:00:00Z","projects":[{"slug":"Unassigned","epics":[],"loose":[{"id":"x","title":"x","status":"open","column":"todo","priority":0,"updated_at":"2026-01-01T00:00:00Z"}]}],"diagnostics":[]}`
 	b := `{"generated_at":"2026-01-01T00:00:00Z","projects":[{"slug":"Unassigned","epics":[],"loose":[{"id":"y","title":"y","status":"open","column":"todo","priority":0,"updated_at":"2026-01-01T00:00:00Z"}]}],"diagnostics":[]}`
-	out, _ := mergeRollups([]workspaceBlob{wb("", a), wb("", b)})
-	var r rollup.Rollup
-	if err := json.Unmarshal(out, &r); err != nil {
-		t.Fatal(err)
-	}
+	r := mergeRollups([]workspaceRollup{wb("", a), wb("", b)})
 	if len(r.Projects) != 1 {
 		t.Fatalf("same-slug projects must merge into one, got %d", len(r.Projects))
 	}
@@ -62,11 +58,7 @@ func TestMergeRollups_DeduplicatesSameSlug(t *testing.T) {
 
 func TestMergeRollups_RenamesUnassignedToWorkspaceName(t *testing.T) {
 	data := `{"generated_at":"2026-01-01T00:00:00Z","projects":[{"slug":"Unassigned","epics":[],"loose":[]}],"diagnostics":[]}`
-	out, _ := mergeRollups([]workspaceBlob{wb("/home/admin/beads-myproject-workspace", data)})
-	var r rollup.Rollup
-	if err := json.Unmarshal(out, &r); err != nil {
-		t.Fatal(err)
-	}
+	r := mergeRollups([]workspaceRollup{wb("/home/admin/beads-myproject-workspace", data)})
 	if len(r.Projects) != 1 || r.Projects[0].Slug != "myproject" {
 		t.Fatalf("want slug=myproject, got %+v", r.Projects)
 	}
@@ -76,9 +68,9 @@ func TestWorkspaceName(t *testing.T) {
 	cases := []struct{ dir, want string }{
 		{"/home/admin/beads-creator-kb-factory-workspace", "creator-kb-factory"},
 		{"/home/admin/beads-KreatorFlow-workspace", "KreatorFlow"},
-		{"/home/admin/beads-workspace", ""},  // generic, no project name
-		{"", ""},                              // CWD default
-		{"/home/admin/other-dir", ""},         // doesn't match convention
+		{"/home/admin/beads-workspace", ""}, // generic, no project name
+		{"", ""},                            // CWD default
+		{"/home/admin/other-dir", ""},       // doesn't match convention
 	}
 	for _, c := range cases {
 		if got := workspaceName(c.dir); got != c.want {
@@ -138,11 +130,7 @@ func TestResolveWorkspaces_DedupAndEmptyFallback(t *testing.T) {
 func TestMergeRollups_UsesMaxGeneratedAt(t *testing.T) {
 	a := `{"generated_at":"2026-01-01T10:00:00Z","projects":[],"diagnostics":[]}`
 	b := `{"generated_at":"2026-01-01T11:00:00Z","projects":[],"diagnostics":[]}`
-	out, _ := mergeRollups([]workspaceBlob{wb("", a), wb("", b)})
-	var r rollup.Rollup
-	if err := json.Unmarshal(out, &r); err != nil {
-		t.Fatal(err)
-	}
+	r := mergeRollups([]workspaceRollup{wb("", a), wb("", b)})
 	if got := r.GeneratedAt.UTC().Format(time.RFC3339); got != "2026-01-01T11:00:00Z" {
 		t.Fatalf("want max GeneratedAt, got %s", got)
 	}
@@ -151,29 +139,15 @@ func TestMergeRollups_UsesMaxGeneratedAt(t *testing.T) {
 func TestMergeRollups_MergesDiagnostics(t *testing.T) {
 	a := `{"generated_at":"2026-01-01T00:00:00Z","projects":[],"diagnostics":[{"kind":"multi_project","issue_id":"a-1"}]}`
 	b := `{"generated_at":"2026-01-01T00:00:00Z","projects":[],"diagnostics":[{"kind":"invalid_graph","issue_id":"b-2"}]}`
-	out, _ := mergeRollups([]workspaceBlob{wb("", a), wb("", b)})
-	var r rollup.Rollup
-	if err := json.Unmarshal(out, &r); err != nil {
-		t.Fatal(err)
-	}
+	r := mergeRollups([]workspaceRollup{wb("", a), wb("", b)})
 	if len(r.Diagnostics) != 2 {
 		t.Fatalf("want 2 diagnostics, got %d", len(r.Diagnostics))
 	}
 }
 
-func TestMergeRollups_SkipsMalformedBlobs(t *testing.T) {
-	good := `{"generated_at":"2026-01-01T00:00:00Z","projects":[{"slug":"ok","epics":[],"loose":[]}],"diagnostics":[]}`
-	out, err := mergeRollups([]workspaceBlob{wb("", "not json"), wb("", good)})
-	if err != nil {
-		t.Fatal(err)
-	}
-	var r rollup.Rollup
-	if err := json.Unmarshal(out, &r); err != nil {
-		t.Fatal(err)
-	}
-	if len(r.Projects) != 1 || r.Projects[0].Slug != "ok" {
-		t.Fatalf("want one good project, got %+v", r.Projects)
-	}
+// pageOf wraps buildPage for tests that only care about the rollup.
+func pageOf(r *rollup.Rollup, stale bool, goodAt string, refresh int, selected string) vmPage {
+	return buildPage(&boardPayload{Rollup: *r}, stale, goodAt, refresh, selected, 2*time.Hour, nil)
 }
 
 func TestBuildPage_BurndownAndSummary(t *testing.T) {
@@ -191,7 +165,7 @@ func TestBuildPage_BurndownAndSummary(t *testing.T) {
 		},
 		{Slug: "q", Loose: []rollup.Card{{ID: "q-1", Column: rollup.ColumnDone}}},
 	}}
-	p := buildPage(r, false, "", 30, "")
+	p := pageOf(r, false, "", 30, "")
 
 	// project p: 4 placed cards, 2 done => 50%, 1 conflict, bar has todo+wip+done.
 	pp := p.Projects[0]
@@ -201,19 +175,26 @@ func TestBuildPage_BurndownAndSummary(t *testing.T) {
 	if len(pp.Bar) != 3 {
 		t.Fatalf("project p bar should have 3 non-empty segments, got %d", len(pp.Bar))
 	}
-	// page summary across both shown projects: 5 total, 3 done => 60%.
+	// page summary across both shown projects: 5 total, 3 done.
 	if p.ProjectCount != 2 || p.SumTotal != 5 || p.SumDone != 3 || p.SumInProgress != 1 ||
-		p.SumConflicts != 1 || p.SumDonePct != 60 {
-		t.Fatalf("page summary wrong: count=%d total=%d done=%d wip=%d conf=%d pct=%d",
-			p.ProjectCount, p.SumTotal, p.SumDone, p.SumInProgress, p.SumConflicts, p.SumDonePct)
+		p.SumConflicts != 1 {
+		t.Fatalf("page summary wrong: count=%d total=%d done=%d wip=%d conf=%d",
+			p.ProjectCount, p.SumTotal, p.SumDone, p.SumInProgress, p.SumConflicts)
+	}
+	// velocity signals replace the burn-down tiles: sparklines always render.
+	if p.ClosedSpark == "" || p.ReadySpark == "" {
+		t.Fatal("velocity sparklines must be rendered")
+	}
+	if p.ReadyNow != 1 { // p-4 is the only unblocked todo card
+		t.Fatalf("ReadyNow: want 1, got %d", p.ReadyNow)
 	}
 }
 
 func TestBuildDigest(t *testing.T) {
 	now := time.Date(2026, 6, 4, 12, 0, 0, 0, time.UTC)
-	recent := now.Add(-2 * time.Hour)      // in window
-	yesterday := now.Add(-26 * time.Hour)  // in window
-	old := now.Add(-10 * 24 * time.Hour)   // outside 7d window
+	recent := now.Add(-2 * time.Hour)     // in window
+	yesterday := now.Add(-26 * time.Hour) // in window
+	old := now.Add(-10 * 24 * time.Hour)  // outside 7d window
 	r := &rollup.Rollup{Projects: []rollup.Project{
 		{
 			Slug: "alpha",
@@ -365,7 +346,7 @@ func TestBuildPage_PlacementAndSegs(t *testing.T) {
 		},
 		Diagnostics: []rollup.Diagnostic{{Kind: "multi_project", IssueID: "x-9"}},
 	}
-	p := buildPage(r, false, "2026-01-01T00:00:00Z", 30, "")
+	p := pageOf(r, false, "2026-01-01T00:00:00Z", 30, "")
 
 	if p.Empty || len(p.Projects) != 2 || p.DiagCount != 1 {
 		t.Fatalf("page shape wrong: %#v", p)
@@ -395,18 +376,18 @@ func TestBuildPage_ProjectSwitcher(t *testing.T) {
 		{Slug: "alpha", Loose: []rollup.Card{{ID: "a", Column: rollup.ColumnTodo}}},
 		{Slug: "Unassigned", Loose: []rollup.Card{{ID: "u", Column: rollup.ColumnTodo}}},
 	}}
-	all := buildPage(r, false, "", 30, "")
+	all := pageOf(r, false, "", 30, "")
 	if len(all.AllSlugs) != 2 || all.Selected != "" || len(all.Projects) != 2 {
 		t.Fatalf("unfiltered: %#v", all)
 	}
-	sel := buildPage(r, false, "", 30, "alpha")
+	sel := pageOf(r, false, "", 30, "alpha")
 	if sel.Selected != "alpha" || len(sel.Projects) != 1 || sel.Projects[0].Slug != "alpha" {
 		t.Fatalf("filtered to alpha wrong: %#v", sel)
 	}
 	if len(sel.AllSlugs) != 2 {
 		t.Fatalf("switcher must still list ALL slugs when filtered: %#v", sel.AllSlugs)
 	}
-	bogus := buildPage(r, false, "", 30, "does-not-exist")
+	bogus := pageOf(r, false, "", 30, "does-not-exist")
 	if bogus.Selected != "" || len(bogus.Projects) != 2 {
 		t.Fatalf("unknown project must fall back to all: %#v", bogus)
 	}
@@ -426,7 +407,7 @@ func TestBoardTemplate_RendersAndEscapes(t *testing.T) {
 		}},
 	}
 	var buf bytes.Buffer
-	if err := boardPageTmpl.Execute(&buf, buildPage(r, true, "2026-01-01T00:00:00Z", 30, "")); err != nil {
+	if err := boardPageTmpl.Execute(&buf, pageOf(r, true, "2026-01-01T00:00:00Z", 30, "")); err != nil {
 		t.Fatalf("template execute: %v", err)
 	}
 	out := buf.String()
@@ -613,4 +594,3 @@ func TestParseShowIssueJSON(t *testing.T) {
 		t.Errorf("incorrect fields parsed from object JSON: %+v", issue)
 	}
 }
-

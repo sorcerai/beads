@@ -106,6 +106,16 @@ func applyUpdateProxiedOne(ctx context.Context, id string, in *updateInput) (*ty
 	if err := fireProxiedUpdateHooks(ctx, current, updated); err != nil {
 		fmt.Fprintf(os.Stderr, "warning: %s: %v\n", id, err)
 	}
+
+	// Post-close lifecycle hook on an actual open→closed transition, mirroring
+	// direct-mode `bd update --status closed`. Proxied mode holds a UOW, not a
+	// store, so the hook resolves from cwd. --no-hooks has no proxied flag; the
+	// BD_NO_CLOSE_HOOK env guard inside firePostCloseHook is the opt-out.
+	if current != nil && updated != nil &&
+		current.Status != types.StatusClosed &&
+		updated.Status == types.StatusClosed {
+		firePostCloseHook(ctx, nil, []string{updated.ID})
+	}
 	return updated, true
 }
 

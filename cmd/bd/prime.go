@@ -126,6 +126,11 @@ Config options:
 			return nil
 		}
 
+		// Reconciliation sweep (beads-qb7.2): fire the post-close hook for closes
+		// this machine never hooked. Advisory and silent; opens a store only when
+		// a hook actually exists, since prime is otherwise a no-DB command.
+		maybeSweepMissedClosesForPrime(rootCtx)
+
 		// Detect MCP mode (unless overridden by flags)
 		mcpMode := isMCPActive()
 		if primeFullMode {
