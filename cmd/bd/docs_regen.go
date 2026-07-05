@@ -11,6 +11,7 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/steveyegge/beads/internal/config"
 	"github.com/steveyegge/beads/internal/debug"
 )
 
@@ -40,6 +41,10 @@ var docsRegenCmd = &cobra.Command{
 		docsDir := docsDirName()
 		complete, _ := cmd.Flags().GetBool("complete")
 		execCLI, _ := cmd.Flags().GetString("exec")
+		// Bare `--exec` (no value) resolves to the configured default CLI.
+		if execCLI == docsRegenExecAutoSentinel {
+			execCLI = docsRegenExecCLI()
+		}
 
 		switch {
 		case complete:
@@ -68,6 +73,39 @@ var docsRegenExecArgPrefix = map[string][]string{
 	"codex":  {"exec"},
 }
 
+// docsRegenExecAutoSentinel is the value cobra assigns when `--exec` is passed
+// with no argument (NoOptDefVal). It is resolved to the configured default CLI.
+const docsRegenExecAutoSentinel = "@auto"
+
+// defaultDocsRegenModel is the model injected for pi by default: GLM-5.2 is
+// cheap and more than enough for doc prose (nothing complex here). Override via
+// config `docs.regen-model`. Only pi takes --model (see docsRegenExecModelArgs).
+const defaultDocsRegenModel = "z-ai/glm-5.2"
+
+// docsRegenExecCLI is the default headless CLI for a bare `--exec`
+// (config `docs.regen-exec`, default "pi" — always available, unlike
+// token-limited claude/codex).
+func docsRegenExecCLI() string {
+	if v := strings.TrimSpace(config.GetString("docs.regen-exec")); v != "" {
+		return v
+	}
+	return "pi"
+}
+
+// docsRegenExecModelArgs returns the model-selection args to inject for cli.
+// pi gets `--model <docs.regen-model|glm-5.2>`; agy NEVER gets --model (broken
+// in print mode); claude/codex/unknown use their own defaults (nil).
+func docsRegenExecModelArgs(cli string) []string {
+	if cli != "pi" {
+		return nil
+	}
+	model := strings.TrimSpace(config.GetString("docs.regen-model"))
+	if model == "" {
+		model = defaultDocsRegenModel
+	}
+	return []string{"--model", model}
+}
+
 // runDocsRegenExec spawns cli with the regen prompt as its final argument,
 // BD_DOCS_RUNNING=1 set (reentrancy guard: if the headless run itself closes
 // issues, its own post-close hook must not recurse into another regen). On
@@ -75,7 +113,9 @@ var docsRegenExecArgPrefix = map[string][]string{
 // left untouched so a retry sees the same inbox.
 func runDocsRegenExec(repoRoot, docsDir, cli string) error {
 	prompt := buildDocsRegenPrompt(repoRoot, docsDir)
-	args := append(append([]string{}, docsRegenExecArgPrefix[cli]...), prompt)
+	args := append([]string{}, docsRegenExecArgPrefix[cli]...)
+	args = append(args, docsRegenExecModelArgs(cli)...)
+	args = append(args, prompt)
 	cmd := exec.Command(cli, args...) // #nosec G204 -- cli is an operator-supplied trusted tool name (--exec flag).
 	cmd.Dir = repoRoot
 	cmd.Env = append(os.Environ(), "BD_DOCS_RUNNING=1")
@@ -83,6 +123,14 @@ func runDocsRegenExec(repoRoot, docsDir, cli string) error {
 	cmd.Stderr = os.Stderr
 	if err := cmd.Run(); err != nil {
 		return fmt.Errorf("%s exited non-zero, inbox left untouched: %w", cli, err)
+	}
+	// The prompt instructs the agent to run `bd docs regen --complete` itself.
+	// A capable agent (e.g. pi) does, which clears RegenStarted. Only complete
+	// here if the agent didn't — otherwise a second --complete would fail with
+	// "no regen in flight". Either way the regen is done and the inbox consumed.
+	if st, ok := readDocsState(docsStatePath(repoRoot, docsDir)); ok && st.RegenStarted.IsZero() {
+		fmt.Println("bd docs regen --exec: agent completed the regen (inbox consumed)")
+		return nil
 	}
 	if err := runDocsRegenComplete(repoRoot, docsDir); err != nil {
 		return err
@@ -227,7 +275,9 @@ func runDocsRegenComplete(repoRoot, docsDir string) error {
 
 func init() {
 	docsRegenCmd.Flags().Bool("complete", false, "Consume the inbox and advance the regen watermark")
-	docsRegenCmd.Flags().String("exec", "", "Run the regen prompt through <cli> headlessly, then --complete on success")
+	docsRegenCmd.Flags().String("exec", "", "Run the regen prompt through <cli> headlessly, then --complete on success (bare --exec uses config docs.regen-exec, default pi+glm-5.2)")
+	// Bare `--exec` with no value resolves to the configured default CLI.
+	docsRegenCmd.Flags().Lookup("exec").NoOptDefVal = docsRegenExecAutoSentinel
 	docsRegenCmd.MarkFlagsMutuallyExclusive("complete", "exec")
 	docsCmd.AddCommand(docsRegenCmd)
 }

@@ -123,3 +123,50 @@ func TestDocsRegenCompleteConsumesBacklog(t *testing.T) {
 		t.Fatal("backlog.md must be consumed by --complete")
 	}
 }
+
+func TestDocsRegenExecModelArgs(t *testing.T) {
+	t.Parallel()
+	// pi gets the default glm-5.2 model injected.
+	got := docsRegenExecModelArgs("pi")
+	if len(got) != 2 || got[0] != "--model" || got[1] != defaultDocsRegenModel {
+		t.Fatalf("pi model args = %v, want [--model %s]", got, defaultDocsRegenModel)
+	}
+	// agy must NEVER get --model (broken in print mode).
+	if got := docsRegenExecModelArgs("agy"); got != nil {
+		t.Fatalf("agy must get no model args, got %v", got)
+	}
+	// claude/codex/unknown use their own defaults.
+	for _, cli := range []string{"claude", "codex", "somethingelse"} {
+		if got := docsRegenExecModelArgs(cli); got != nil {
+			t.Errorf("%s model args = %v, want nil", cli, got)
+		}
+	}
+	// Default exec CLI is pi.
+	if got := docsRegenExecCLI(); got != "pi" {
+		t.Errorf("default exec CLI = %q, want pi", got)
+	}
+}
+
+func TestDocsRegenExecTolerantOfAgentComplete(t *testing.T) {
+	t.Parallel()
+	repo := docsTestRepo(t)
+	iss := testIssueForEntry()
+	writeDocsEntryForIssue(nil, repo, "wiki", iss, "", nil, nil)
+	// Simulate: prompt built (regen in flight), then the exec'd agent ran
+	// --complete itself (RegenStarted cleared, inbox consumed).
+	if err := runDocsRegenComplete(repo, "wiki"); err == nil {
+		// runDocsRegenComplete refuses without a snapshot; set one first.
+	}
+	st, _ := readDocsState(docsStatePath(repo, "wiki"))
+	st.RegenStarted = time.Now().UTC()
+	writeDocsState(docsStatePath(repo, "wiki"), st)
+	if err := runDocsRegenComplete(repo, "wiki"); err != nil {
+		t.Fatalf("agent-side complete failed: %v", err)
+	}
+	// Now the wrapper's post-run reconciliation must see "already completed"
+	// and NOT error. Assert RegenStarted is zero (the condition the wrapper checks).
+	final, ok := readDocsState(docsStatePath(repo, "wiki"))
+	if !ok || !final.RegenStarted.IsZero() {
+		t.Fatalf("expected RegenStarted cleared after agent complete; got ok=%v %+v", ok, final)
+	}
+}
