@@ -44,11 +44,17 @@ issue↔git-history intersection), created/closed timestamps.
 **Idempotent by construction (resolves the global-once problem):** a wiki
 write is a global-once effect riding per-machine hook infra. Machine A closes
 and writes the entry; machine B's sweep later fires for the same synced-in
-close. Because content derives only from Dolt data, B either sees the file
-exists with identical bytes (no-op) or writes byte-identical content (git
-merges clean). One-file-per-issue (the ADR-tools lesson) avoids the
-append-to-one-CHANGELOG design, which is both non-idempotent and a guaranteed
-git merge conflict (two machines appending at EOF).
+close. Idempotence is a **file-existence check** (same-close ts), not byte
+equality: the issue-data core is deterministic from Dolt, but the
+touched-files section derives from local git state and may differ between
+checkouts. Accepted residual risk: two machines independently *creating* the
+same entry before either syncs git can produce a trivial one-file conflict —
+rare (requires both to fire before either pushes) and mechanically resolvable.
+A **reclose** (existing file's closed ts ≠ issue's ClosedAt) overwrites; both
+machines see the same Dolt ClosedAt and converge. One-file-per-issue (the
+ADR-tools lesson) avoids the append-to-one-CHANGELOG design, which is both
+non-idempotent and a guaranteed git merge conflict (two machines appending at
+EOF).
 
 **Weak `bd explain` association** (no issue IDs in commit messages) degrades
 the entry to issue-data-only, noted inline in the entry.
@@ -97,11 +103,35 @@ The hook only writes Tier-1 entries, bumps the counter, and nudges.
 
 ### State: `wiki/.docs-state` (committed — travels with the wiki)
 
-Regen watermark (timestamp docs are current through) + dirty counter. Committed
-because it must travel with the wiki via git; the opposite choice from the
-post-close fired-ledger (machine-local, correct for per-machine effects). The
-two sync channels (git for wiki, Dolt for issues) run at different cadences;
-lag is harmless, and the in-wiki watermark is what makes regens converge.
+Regen watermark (timestamp docs are current through) + `regen_started`
+(snapshot taken when a regen prompt is built; zero when no regen in flight).
+Committed because it must travel with the wiki via git; the opposite choice
+from the post-close fired-ledger (machine-local, correct for per-machine
+effects). The two sync channels (git for wiki, Dolt for issues) run at
+different cadences; lag is harmless, and the in-wiki watermark is what makes
+regens converge.
+
+**No stored dirty counter** (review finding): the dirty count is *derived* —
+the number of unconsumed `log/*.md` entries. The filesystem is the counter,
+which eliminates the read-modify-write race between concurrent updates.
+
+**Lost-update protection** (review finding): `--complete` consumes only
+entries closed ≤ `regen_started` and advances the watermark to
+`regen_started`, never to now — entries written while a regen was in flight
+survive to the next cycle. `backlog.md` is included in the prompt and consumed
+with the inbox. An issue that syncs in with a ClosedAt older than an
+already-advanced watermark and no existing entry is skipped **visibly**
+(stderr warning naming the recovery command), not silently.
+
+**Guard scope** (review finding): `BD_DOCS_RUNNING=1` suppresses only the
+nudge — entries are still written, because during `--exec` the fired-ledger
+means the sweep never replays the agent's own closes; a full skip would lose
+them permanently. `BD_NO_DOCS=1` remains the full opt-out.
+
+**Prompt injection** (review finding): inbox content is fenced as untrusted
+DATA in the regen prompt; `--exec` retains residual indirect-injection risk on
+repos where outsiders can influence issue text — documented in the command
+help, acceptable for this internal single-user fleet.
 
 ### Commit model (decided): leave dirty; session-close commits
 
