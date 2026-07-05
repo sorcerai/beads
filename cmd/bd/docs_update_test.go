@@ -178,3 +178,42 @@ func TestCompactDocsInbox(t *testing.T) {
 		}
 	}
 }
+
+// TestDocsStalenessOnWiki covers checkMarkdownStaleness + docsWikiMarkdownFiles
+// together: a dangling backtick ref is flagged, a real one is not, and log/
+// entries (which are per-issue records, not wiki pages) are excluded from the
+// scan entirely.
+func TestDocsStalenessOnWiki(t *testing.T) {
+	t.Parallel()
+	repo := t.TempDir()
+	wikiDir := filepath.Join(repo, "wiki")
+	if err := os.MkdirAll(filepath.Join(wikiDir, "log"), 0o750); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(repo, "README.md"), []byte("# hi\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	mdPath := filepath.Join(wikiDir, "architecture.md")
+	content := "See `cmd/nonexistent/thing.go` and `README.md`.\n"
+	if err := os.WriteFile(mdPath, []byte(content), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	// log/ entries are per-issue records, not wiki pages — must be excluded.
+	logEntry := filepath.Join(wikiDir, "log", "bx-1.md")
+	if err := os.WriteFile(logEntry, []byte("`cmd/nonexistent/other.go`"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	files := docsWikiMarkdownFiles(repo, "wiki")
+	if len(files) != 1 || files[0] != mdPath {
+		t.Fatalf("docsWikiMarkdownFiles = %v, want [%s]", files, mdPath)
+	}
+
+	findings := checkMarkdownStaleness(repo, files)
+	if len(findings) != 1 {
+		t.Fatalf("want 1 finding, got %d: %v", len(findings), findings)
+	}
+	if !strings.Contains(findings[0], "cmd/nonexistent/thing.go") {
+		t.Fatalf("finding doesn't name the dangling ref: %v", findings)
+	}
+}
