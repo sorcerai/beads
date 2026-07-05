@@ -16,7 +16,7 @@ import (
 func docsTestRepo(t *testing.T) (repoRoot string) {
 	t.Helper()
 	repoRoot = t.TempDir()
-	st := docsState{RegenWatermark: time.Date(2026, 7, 1, 0, 0, 0, 0, time.UTC), Dirty: 0}
+	st := docsState{RegenWatermark: time.Date(2026, 7, 1, 0, 0, 0, 0, time.UTC)}
 	if err := writeDocsState(docsStatePath(repoRoot, "wiki"), st); err != nil {
 		t.Fatal(err)
 	}
@@ -43,6 +43,44 @@ func TestWriteDocsEntryIdempotent(t *testing.T) {
 	after, _ := os.ReadFile(p)
 	if string(before) != string(after) {
 		t.Fatal("existing entry was rewritten")
+	}
+}
+
+// TestWriteDocsEntryOverwritesOnReclose covers F4: a reopen + reclose (new
+// ClosedAt) must overwrite the existing entry so every machine converges on
+// the same Dolt-derived decision, instead of freezing the first close forever.
+func TestWriteDocsEntryOverwritesOnReclose(t *testing.T) {
+	t.Parallel()
+	repo := docsTestRepo(t)
+	iss := testIssueForEntry()
+
+	if wrote := writeDocsEntryForIssue(context.Background(), repo, "wiki", iss, "", nil, []string{"a.go"}); !wrote {
+		t.Fatal("first write should write")
+	}
+	p := docsEntryPath(repo, "wiki", iss.ID)
+
+	// Same ClosedAt, different files: still a no-op (existing behavior).
+	if wrote := writeDocsEntryForIssue(context.Background(), repo, "wiki", iss, "", nil, []string{"different.go"}); wrote {
+		t.Fatal("unchanged ClosedAt must stay a no-op")
+	}
+
+	// Reopen + reclose: ClosedAt moves forward. Must overwrite.
+	recloseTime := iss.ClosedAt.Add(24 * time.Hour)
+	reclosed := *iss
+	reclosed.ClosedAt = &recloseTime
+	reclosed.CloseReason = "done: fixed for real this time"
+	if wrote := writeDocsEntryForIssue(context.Background(), repo, "wiki", &reclosed, "", nil, []string{"a.go"}); !wrote {
+		t.Fatal("differing ClosedAt (reopen+reclose) must overwrite, not no-op")
+	}
+	after, err := os.ReadFile(p)
+	if err != nil {
+		t.Fatalf("entry missing after overwrite: %v", err)
+	}
+	if !strings.Contains(string(after), recloseTime.UTC().Format(time.RFC3339)) {
+		t.Fatalf("overwritten entry doesn't reflect the new closed time:\n%s", after)
+	}
+	if !strings.Contains(string(after), "fixed for real this time") {
+		t.Fatalf("overwritten entry doesn't reflect the new close reason:\n%s", after)
 	}
 }
 
@@ -176,6 +214,154 @@ func TestCompactDocsInbox(t *testing.T) {
 		if _, err := os.Stat(docsEntryPath(repo, "wiki", id)); err == nil {
 			t.Errorf("oldest %s still in log/", id)
 		}
+	}
+}
+
+// TestDocsUpdateRunNoDocsWritesNothing covers F9(a): BD_NO_DOCS=1 must return
+// before any store access or entry write. store is left nil here — if the
+// guard didn't hold, the first store.GetIssue call would panic, so a clean
+// return (and an empty inbox) proves the guard fired.
+func TestDocsUpdateRunNoDocsWritesNothing(t *testing.T) {
+	repo := docsInitTestRepo(t)
+	if err := runDocsInit(repo, "wiki"); err != nil {
+		t.Fatalf("init: %v", err)
+	}
+	t.Setenv("BD_NO_DOCS", "1")
+	docsUpdateCmd.Run(docsUpdateCmd, []string{"bx-1"})
+	if docsInboxCount(repo, "wiki") != 0 {
+		t.Fatal("BD_NO_DOCS=1 must write nothing")
+	}
+}
+
+// TestDocsUpdateCoreGuardScope covers F9(b) and F9(d) together: the
+// BD_DOCS_RUNNING scope suppresses only the stderr nudge, never the entry
+// write, and an epic close nudges immediately even one entry below threshold.
+func TestDocsUpdateCoreGuardScope(t *testing.T) {
+	t.Parallel()
+
+	// (b) suppressNudge=true: entry written, no nudge — even for an epic
+	// close, which would otherwise nudge unconditionally (proves suppression
+	// actually took effect rather than just not having met the threshold).
+	repo := docsTestRepo(t)
+	epic := testIssueForEntry()
+	epic.ID = "bx-epic"
+	epic.Status = types.StatusClosed
+	epic.IssueType = types.TypeEpic
+	stderr := captureStderr(t, func() {
+		runDocsUpdateCore(repo, "wiki", []docsUpdateEntry{{issue: epic}}, true)
+	})
+	if _, err := os.Stat(docsEntryPath(repo, "wiki", epic.ID)); err != nil {
+		t.Fatalf("entry not written despite BD_DOCS_RUNNING scope: %v", err)
+	}
+	if stderr != "" {
+		t.Fatalf("nudge must be suppressed under BD_DOCS_RUNNING, got %q", stderr)
+	}
+
+	// (d) suppressNudge=false, epic close, inbox count (1) well below the
+	// default threshold (10): nudge must still fire immediately.
+	repo2 := docsTestRepo(t)
+	epic2 := testIssueForEntry()
+	epic2.ID = "bx-epic2"
+	epic2.Status = types.StatusClosed
+	epic2.IssueType = types.TypeEpic
+	stderr2 := captureStderr(t, func() {
+		runDocsUpdateCore(repo2, "wiki", []docsUpdateEntry{{issue: epic2}}, false)
+	})
+	if !strings.Contains(stderr2, "run 'bd docs regen'") {
+		t.Fatalf("epic close below threshold must nudge immediately, got %q", stderr2)
+	}
+}
+
+// TestDocsUpdateCoreNudgeAtThreshold covers F9(c): the nudge fires once
+// the inbox count reaches docsRegenThreshold(), reporting that count.
+func TestDocsUpdateCoreNudgeAtThreshold(t *testing.T) {
+	t.Parallel()
+	repo := docsTestRepo(t)
+	threshold := docsRegenThreshold()
+
+	// Seed threshold-1 pre-existing entries directly (not via the core, to
+	// avoid nudging prematurely while seeding).
+	for i := 0; i < threshold-1; i++ {
+		iss := testIssueForEntry()
+		iss.ID = fmt.Sprintf("bx-seed-%02d", i)
+		if !writeDocsEntryForIssue(context.Background(), repo, "wiki", iss, "", nil, nil) {
+			t.Fatalf("seed write %d failed", i)
+		}
+	}
+
+	last := testIssueForEntry()
+	last.ID = "bx-last"
+	last.Status = types.StatusClosed
+	stderr := captureStderr(t, func() {
+		runDocsUpdateCore(repo, "wiki", []docsUpdateEntry{{issue: last}}, false)
+	})
+	want := fmt.Sprintf("wiki: %d closes since last regen — run 'bd docs regen'", threshold)
+	if !strings.Contains(stderr, want) {
+		t.Fatalf("nudge at threshold = %q, want to contain %q", stderr, want)
+	}
+}
+
+// TestDocsNoteOfflineSkip covers F8: an issue closed before the watermark
+// and never recorded gets one visible stderr line; a replay of an
+// already-recorded entry stays silent.
+func TestDocsNoteOfflineSkip(t *testing.T) {
+	t.Parallel()
+	repo := docsTestRepo(t)
+	st, _ := readDocsState(docsStatePath(repo, "wiki"))
+
+	iss := testIssueForEntry()
+	iss.ID = "bx-neverrecorded"
+	iss.Status = types.StatusClosed
+	old := time.Date(2026, 6, 1, 0, 0, 0, 0, time.UTC) // before the watermark
+	iss.ClosedAt = &old
+
+	stderr := captureStderr(t, func() {
+		docsNoteOfflineSkip(repo, "wiki", iss, st)
+	})
+	if !strings.Contains(stderr, iss.ID) || !strings.Contains(stderr, "never recorded") {
+		t.Fatalf("expected a visible skip line naming %s, got %q", iss.ID, stderr)
+	}
+
+	// Already recorded (existing entry file): must stay silent.
+	recorded := testIssueForEntry()
+	recorded.ID = "bx-replay"
+	recorded.Status = types.StatusClosed
+	recorded.ClosedAt = &old
+	if !writeDocsEntryForIssue(context.Background(), repo, "wiki", recorded, "", nil, nil) {
+		t.Fatal("seed write failed")
+	}
+	stderr2 := captureStderr(t, func() {
+		docsNoteOfflineSkip(repo, "wiki", recorded, st)
+	})
+	if stderr2 != "" {
+		t.Fatalf("replay of an already-recorded entry must stay silent, got %q", stderr2)
+	}
+}
+
+// TestDocsWireHookMarkerDetection covers F5: detection keys on the exact
+// managed marker line, not a loose "bd docs update" substring — a stray
+// comment mentioning that phrase must not be mistaken for an already-wired hook.
+func TestDocsWireHookMarkerDetection(t *testing.T) {
+	repo := docsInitTestRepo(t)
+	hookPath := filepath.Join(repo, ".beads", "hooks", "post-close")
+	if err := os.MkdirAll(filepath.Dir(hookPath), 0o750); err != nil {
+		t.Fatal(err)
+	}
+	preseeded := "#!/usr/bin/env sh\nset -eu\n# note: someone should wire bd docs update here later\nexit 0\n"
+	if err := os.WriteFile(hookPath, []byte(preseeded), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	created, wired, err := wireDocsHook(repo)
+	if err != nil {
+		t.Fatalf("wireDocsHook: %v", err)
+	}
+	if created || !wired {
+		t.Fatalf("a stray 'bd docs update' comment must not count as wired: created=%v wired=%v", created, wired)
+	}
+	hook, _ := os.ReadFile(hookPath)
+	if strings.Count(string(hook), docsHookMarker) != 1 {
+		t.Fatalf("managed marker must be spliced in exactly once:\n%s", hook)
 	}
 }
 

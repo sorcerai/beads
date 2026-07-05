@@ -24,7 +24,7 @@ var docsUpdateCmd = &cobra.Command{
 	Args:   cobra.MinimumNArgs(1),
 	Hidden: true, // plumbing: invoked by the post-close hook, not by hand
 	Run: func(cmd *cobra.Command, args []string) {
-		if os.Getenv("BD_NO_DOCS") == "1" || os.Getenv("BD_DOCS_RUNNING") == "1" {
+		if os.Getenv("BD_NO_DOCS") == "1" {
 			return
 		}
 		repoRoot := findRepoRootForArch()
@@ -32,45 +32,95 @@ var docsUpdateCmd = &cobra.Command{
 			return
 		}
 		docsDir := docsDirName()
-		statePath := docsStatePath(repoRoot, docsDir)
-		st, ok := readDocsState(statePath)
-		if !ok {
-			debug.Logf("docs update: no %s — repo not opted in (run 'bd docs init')\n", statePath)
-			return
-		}
 
-		wrote := 0
-		epicClosed := false
+		entries := make([]docsUpdateEntry, 0, len(args))
 		for _, id := range args {
 			issue, err := store.GetIssue(rootCtx, id)
 			if err != nil || issue == nil {
 				debug.Logf("docs update: %s: %v\n", id, err)
 				continue
 			}
-			if !docsIssueEligible(issue, st) {
-				continue
-			}
 			parentID, deps := docsIssueLinks(rootCtx, issue)
 			files := docsIssueFiles(rootCtx, repoRoot, id)
-			if writeDocsEntryForIssue(rootCtx, repoRoot, docsDir, issue, parentID, deps, files) {
-				wrote++
-				if issue.IssueType == types.TypeEpic {
-					epicClosed = true
-				}
+			entries = append(entries, docsUpdateEntry{issue: issue, parentID: parentID, deps: deps, files: files})
+		}
+		// BD_DOCS_RUNNING scopes to the nudge only (reentrancy guard, F3): a
+		// headless regen (--exec) sets this while it runs so its own bd calls
+		// don't re-trigger a nested regen. But entries must still be written —
+		// skipping the write here meant the agent's own closes during --exec
+		// got no entry, and since the post-close fired-ledger already marks
+		// the hook as run, the sweep never replays it: a permanent loss, not
+		// a deferral. Only the stderr nudge (which would otherwise talk back
+		// at the very session already mid-regen) is suppressed.
+		runDocsUpdateCore(repoRoot, docsDir, entries, os.Getenv("BD_DOCS_RUNNING") == "1")
+	},
+}
+
+// docsUpdateEntry bundles one already-resolved issue plus the links/files
+// docsUpdateCmd.Run gathered for it via store, so runDocsUpdateCore stays
+// store-free and unit-testable without a Dolt store.
+type docsUpdateEntry struct {
+	issue    *types.Issue
+	parentID string
+	deps     []string
+	files    []string
+}
+
+// runDocsUpdateCore is the testable heart of Tier 1: writes entries for
+// already-resolved issues, then — unless suppressNudge (BD_DOCS_RUNNING,
+// F3) — prints the regen nudge derived from the current inbox size.
+func runDocsUpdateCore(repoRoot, docsDir string, entries []docsUpdateEntry, suppressNudge bool) {
+	statePath := docsStatePath(repoRoot, docsDir)
+	st, ok := readDocsState(statePath)
+	if !ok {
+		debug.Logf("docs update: no %s — repo not opted in (run 'bd docs init')\n", statePath)
+		return
+	}
+
+	wrote := 0
+	epicClosed := false
+	for _, e := range entries {
+		if !docsIssueEligible(e.issue, st) {
+			docsNoteOfflineSkip(repoRoot, docsDir, e.issue, st)
+			continue
+		}
+		if writeDocsEntryForIssue(context.Background(), repoRoot, docsDir, e.issue, e.parentID, e.deps, e.files) {
+			wrote++
+			if e.issue.IssueType == types.TypeEpic {
+				epicClosed = true
 			}
 		}
-		if wrote == 0 {
-			return
-		}
-		st.Dirty += wrote
-		if err := writeDocsState(statePath, st); err != nil {
-			debug.Logf("docs update: state write: %v\n", err)
-		}
-		compactDocsInbox(repoRoot, docsDir) // Task 5; stub as no-op until then
-		if st.Dirty >= docsRegenThreshold() || epicClosed {
-			fmt.Fprintf(os.Stderr, "wiki: %d closes since last regen — run 'bd docs regen'\n", st.Dirty)
-		}
-	},
+	}
+	if wrote == 0 {
+		return
+	}
+	compactDocsInbox(repoRoot, docsDir)
+	if suppressNudge {
+		return
+	}
+	count := docsInboxCount(repoRoot, docsDir)
+	if count >= docsRegenThreshold() || epicClosed {
+		fmt.Fprintf(os.Stderr, "wiki: %d closes since last regen — run 'bd docs regen'\n", count)
+	}
+}
+
+// docsNoteOfflineSkip prints one visible stderr line (F8) when an issue is
+// excluded from the wiki log solely because it closed before the regen
+// watermark AND was never recorded here — e.g. a close synced in from
+// another machine after this machine's own regen already advanced past it.
+// That closure will never be written by Tier 1, unlike an existing-file
+// replay (the ordinary post-close-hook re-fire case), which stays silent.
+func docsNoteOfflineSkip(repoRoot, docsDir string, issue *types.Issue, st docsState) {
+	if issue == nil || issue.Status != types.StatusClosed || issue.ClosedAt == nil {
+		return
+	}
+	if issue.ClosedAt.After(st.RegenWatermark) {
+		return // eligible; not the watermark-skip case
+	}
+	if _, err := os.Stat(docsEntryPath(repoRoot, docsDir, issue.ID)); err == nil {
+		return // already recorded — silent replay
+	}
+	fmt.Fprintf(os.Stderr, "wiki: skipping %s (closed before last regen and never recorded) — recover with 'bd docs log --write --since <ts>'\n", issue.ID)
 }
 
 // docsIssueEligible: closed, and not already consumed by a past regen.
@@ -85,13 +135,21 @@ func docsIssueEligible(issue *types.Issue, st docsState) bool {
 	return true
 }
 
-// writeDocsEntryForIssue writes the entry unless it already exists.
-// Existence (not byte equality) is the idempotence check: the files section
-// derives from local git state and may differ across machines.
+// writeDocsEntryForIssue writes the entry. Idempotence check (F4): if the
+// entry already exists, compare its recorded closed timestamp against the
+// issue's current ClosedAt — identical means this exact close event was
+// already recorded (no-op, even if the files section would render
+// differently: that section derives from local git state and may differ
+// across machines). Different means the issue was reopened and reclosed
+// since; overwrite so every machine converges on the same Dolt-derived
+// decision instead of freezing the first close forever.
 func writeDocsEntryForIssue(_ context.Context, repoRoot, docsDir string, issue *types.Issue, parentID string, deps, files []string) bool {
 	p := docsEntryPath(repoRoot, docsDir, issue.ID)
-	if _, err := os.Stat(p); err == nil {
-		return false
+	if data, err := os.ReadFile(p); err == nil { // #nosec G304 -- p is <docsDir>/log/<issueID>.md, constructed by docsEntryPath.
+		_, _, existingClosed := parseDocsEntryHeader(string(data))
+		if docsClosedTimesMatch(existingClosed, issue.ClosedAt) {
+			return false
+		}
 	}
 	if err := os.MkdirAll(filepath.Dir(p), 0o750); err != nil {
 		debug.Logf("docs update: mkdir: %v\n", err)
@@ -102,6 +160,16 @@ func writeDocsEntryForIssue(_ context.Context, repoRoot, docsDir string, issue *
 		return false
 	}
 	return true
+}
+
+// docsClosedTimesMatch compares a parsed entry's closed timestamp against an
+// issue's current ClosedAt, nil-safe: renderDocsEntry writes "-" for a nil
+// ClosedAt, which parseDocsEntryHeader reads back as the zero time.Time.
+func docsClosedTimesMatch(existingClosed time.Time, issueClosedAt *time.Time) bool {
+	if issueClosedAt == nil {
+		return existingClosed.IsZero()
+	}
+	return existingClosed.Equal(issueClosedAt.UTC())
 }
 
 // docsIssueLinks extracts the parent epic + non-parent dependency IDs.
@@ -140,6 +208,26 @@ func docsIssueFiles(ctx context.Context, repoRoot, issueID string) []string {
 		out = append(out, f.Path)
 	}
 	return out
+}
+
+// docsInboxCount is the dirty count (F1): the number of log/*.md entries,
+// excluding backlog.md. Deriving it from the filesystem instead of a stored
+// counter removes the unsynchronized read-modify-write race between
+// concurrent 'bd docs update' invocations — the inbox itself is the counter.
+func docsInboxCount(repoRoot, docsDir string) int {
+	entries, err := os.ReadDir(filepath.Join(repoRoot, docsDir, "log"))
+	if err != nil {
+		return 0
+	}
+	n := 0
+	for _, de := range entries {
+		name := de.Name()
+		if de.IsDir() || name == "backlog.md" || !strings.HasSuffix(name, ".md") {
+			continue
+		}
+		n++
+	}
+	return n
 }
 
 // docsInboxCap is the entry-file ceiling for <docsDir>/log/ before the oldest

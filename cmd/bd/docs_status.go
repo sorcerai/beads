@@ -37,23 +37,16 @@ func printDocsStatus(repoRoot, docsDir string) {
 	}
 	fmt.Printf("docs dir: %s\n", docsDir)
 	fmt.Printf("regen watermark: %s\n", st.RegenWatermark.Format(time.RFC3339))
-	fmt.Printf("dirty: %d\n", st.Dirty)
 
-	entries, _ := os.ReadDir(filepath.Join(repoRoot, docsDir, "log"))
-	inboxCount, backlogPresent := 0, false
-	for _, de := range entries {
-		if de.IsDir() {
-			continue
-		}
-		if de.Name() == "backlog.md" {
-			backlogPresent = true
-			continue
-		}
-		if strings.HasSuffix(de.Name(), ".md") {
-			inboxCount++
-		}
-	}
+	// Dirty is derived from the inbox itself (F1), not a stored counter.
+	inboxCount := docsInboxCount(repoRoot, docsDir)
+	fmt.Printf("dirty: %d\n", inboxCount)
 	fmt.Printf("inbox entries: %d\n", inboxCount)
+
+	backlogPresent := false
+	if _, err := os.Stat(filepath.Join(repoRoot, docsDir, "log", "backlog.md")); err == nil {
+		backlogPresent = true
+	}
 	fmt.Printf("backlog present: %v\n", backlogPresent)
 
 	findings := checkMarkdownStaleness(repoRoot, docsWikiMarkdownFiles(repoRoot, docsDir))
