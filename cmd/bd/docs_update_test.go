@@ -3,6 +3,8 @@ package main
 import (
 	"context"
 	"os"
+	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -60,5 +62,85 @@ func TestDocsUpdateSkipsPreWatermarkClose(t *testing.T) {
 func TestDocsRegenThresholdDefault(t *testing.T) {
 	if got := docsRegenThreshold(); got != 10 {
 		t.Fatalf("default threshold = %d, want 10", got)
+	}
+}
+
+// docsInitTestRepo isolates wireDocsHook's beads.FindBeadsDir() (which walks
+// from BEADS_DIR/cwd, not the repoRoot argument) so it can't wander off into
+// this checkout's own .beads dir. Not t.Parallel(): Setenv/Chdir forbid it.
+func docsInitTestRepo(t *testing.T) (repoRoot string) {
+	t.Helper()
+	repoRoot = t.TempDir()
+	t.Setenv("BEADS_DIR", "")
+	t.Chdir(repoRoot)
+	return repoRoot
+}
+
+func TestDocsInitIdempotent(t *testing.T) {
+	repo := docsInitTestRepo(t)
+	if err := runDocsInit(repo, "wiki"); err != nil {
+		t.Fatalf("first init: %v", err)
+	}
+	st1, ok := readDocsState(docsStatePath(repo, "wiki"))
+	if !ok {
+		t.Fatal("state not created")
+	}
+	hook, err := os.ReadFile(filepath.Join(repo, ".beads", "hooks", "post-close"))
+	if err != nil || !strings.Contains(string(hook), "bd docs update") {
+		t.Fatalf("hook not wired: %v\n%s", err, hook)
+	}
+	if strings.Contains(string(hook), "pipefail") {
+		t.Fatal("hook must be POSIX sh — no pipefail")
+	}
+	// Second init: nothing resets, docs block not duplicated.
+	if err := runDocsInit(repo, "wiki"); err != nil {
+		t.Fatalf("second init: %v", err)
+	}
+	st2, _ := readDocsState(docsStatePath(repo, "wiki"))
+	if !st1.RegenWatermark.Equal(st2.RegenWatermark) {
+		t.Fatal("re-init must not reset the watermark")
+	}
+	hook2, _ := os.ReadFile(filepath.Join(repo, ".beads", "hooks", "post-close"))
+	if strings.Count(string(hook2), "bd docs update") != 1 {
+		t.Fatal("docs block duplicated on re-init")
+	}
+}
+
+// TestDocsInitSplicesBeforeExistingExit0 covers the case 'bd arch init' (or
+// anything else) seeded a hook first: the docs block must land BEFORE a
+// trailing "exit 0", since sh's exit terminates the script immediately —
+// appending after it would silently make Tier 1 dead code.
+func TestDocsInitSplicesBeforeExistingExit0(t *testing.T) {
+	repo := docsInitTestRepo(t)
+	hookPath := filepath.Join(repo, ".beads", "hooks", "post-close")
+	if err := os.MkdirAll(filepath.Dir(hookPath), 0o750); err != nil {
+		t.Fatal(err)
+	}
+	preseeded := "#!/usr/bin/env sh\nset -eu\necho hi\nexit 0\n"
+	if err := os.WriteFile(hookPath, []byte(preseeded), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := runDocsInit(repo, "wiki"); err != nil {
+		t.Fatalf("init: %v", err)
+	}
+	hook, err := os.ReadFile(hookPath)
+	if err != nil {
+		t.Fatalf("hook missing: %v", err)
+	}
+	content := string(hook)
+	markerIdx := strings.Index(content, "bd docs update")
+	exitIdx := strings.LastIndex(content, "exit 0")
+	if markerIdx == -1 || exitIdx == -1 || markerIdx > exitIdx {
+		t.Fatalf("docs block must precede the trailing exit 0:\n%s", content)
+	}
+
+	// Re-init: still not duplicated.
+	if err := runDocsInit(repo, "wiki"); err != nil {
+		t.Fatalf("second init: %v", err)
+	}
+	hook2, _ := os.ReadFile(hookPath)
+	if strings.Count(string(hook2), "bd docs update") != 1 {
+		t.Fatal("docs block duplicated on re-init")
 	}
 }
