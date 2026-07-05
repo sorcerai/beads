@@ -5,6 +5,9 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
+	"strings"
+	"time"
 
 	"github.com/spf13/cobra"
 
@@ -139,9 +142,109 @@ func docsIssueFiles(ctx context.Context, repoRoot, issueID string) []string {
 	return out
 }
 
-// compactDocsInbox is a temporary no-op; Task 5 replaces it with the
-// 200-entry cap -> backlog.md digest backstop.
-func compactDocsInbox(repoRoot, docsDir string) {}
+// docsInboxCap is the entry-file ceiling for <docsDir>/log/ before the oldest
+// overflow gets digested into backlog.md. Backstop only: Tier 2 regen is the
+// normal way the inbox drains; this exists for repos where regen lags.
+const docsInboxCap = 200
+
+// docsInboxEntry is one parsed log/ file, just enough to sort and digest it.
+type docsInboxEntry struct {
+	path   string
+	id     string
+	title  string
+	closed time.Time
+}
+
+// compactDocsInbox keeps wiki/log/ bounded: once more than docsInboxCap
+// entries accumulate, the oldest overflow (by closed timestamp, then ID) is
+// appended as one digest line each to log/backlog.md and the original files
+// removed. Advisory: any error just debug-logs and returns.
+func compactDocsInbox(repoRoot, docsDir string) {
+	logDir := filepath.Join(repoRoot, docsDir, "log")
+	dirEntries, err := os.ReadDir(logDir)
+	if err != nil {
+		debug.Logf("docs compact: readdir %s: %v\n", logDir, err)
+		return
+	}
+
+	var all []docsInboxEntry
+	for _, de := range dirEntries {
+		name := de.Name()
+		if de.IsDir() || name == "backlog.md" || !strings.HasSuffix(name, ".md") {
+			continue
+		}
+		p := filepath.Join(logDir, name)
+		data, err := os.ReadFile(p) // #nosec G304 -- p is under <docsDir>/log/, just listed by ReadDir.
+		if err != nil {
+			continue
+		}
+		id, title, closed := parseDocsEntryHeader(string(data))
+		all = append(all, docsInboxEntry{path: p, id: id, title: title, closed: closed})
+	}
+
+	overflow := len(all) - docsInboxCap
+	if overflow <= 0 {
+		return
+	}
+	sort.Slice(all, func(i, j int) bool {
+		if !all[i].closed.Equal(all[j].closed) {
+			return all[i].closed.Before(all[j].closed)
+		}
+		return all[i].id < all[j].id
+	})
+	oldest := all[:overflow]
+
+	var digest strings.Builder
+	for _, e := range oldest {
+		fmt.Fprintf(&digest, "- %s: %s (closed %s)\n", e.id, e.title, e.closed.UTC().Format(time.RFC3339))
+	}
+	backlogPath := filepath.Join(logDir, "backlog.md")
+	f, err := os.OpenFile(backlogPath, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o600) // #nosec G304 -- backlogPath is <docsDir>/log/backlog.md, constructed by us.
+	if err != nil {
+		debug.Logf("docs compact: open %s: %v\n", backlogPath, err)
+		return
+	}
+	_, writeErr := f.WriteString(digest.String())
+	closeErr := f.Close()
+	if writeErr != nil {
+		debug.Logf("docs compact: write %s: %v\n", backlogPath, writeErr)
+		return
+	}
+	if closeErr != nil {
+		debug.Logf("docs compact: close %s: %v\n", backlogPath, closeErr)
+		return
+	}
+
+	for _, e := range oldest {
+		if err := os.Remove(e.path); err != nil {
+			debug.Logf("docs compact: remove %s: %v\n", e.path, err)
+		}
+	}
+}
+
+// parseDocsEntryHeader pulls the id/title from a renderDocsEntry "# id: title"
+// header line and the timestamp from its "- closed: <RFC3339>" line. Missing
+// or unparseable fields degrade to zero values (advisory: worst case the
+// entry sorts as oldest and gets digested with a blank title).
+func parseDocsEntryHeader(content string) (id, title string, closed time.Time) {
+	lines := strings.Split(content, "\n")
+	if len(lines) > 0 {
+		if rest, ok := strings.CutPrefix(lines[0], "# "); ok {
+			if i, t, ok := strings.Cut(rest, ": "); ok {
+				id, title = i, t
+			}
+		}
+	}
+	for _, line := range lines {
+		if rest, ok := strings.CutPrefix(line, "- closed: "); ok {
+			if t, err := time.Parse(time.RFC3339, strings.TrimSpace(rest)); err == nil {
+				closed = t
+			}
+			break
+		}
+	}
+	return id, title, closed
+}
 
 func init() {
 	docsCmd.AddCommand(docsUpdateCmd)

@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -142,5 +143,38 @@ func TestDocsInitSplicesBeforeExistingExit0(t *testing.T) {
 	hook2, _ := os.ReadFile(hookPath)
 	if strings.Count(string(hook2), "bd docs update") != 1 {
 		t.Fatal("docs block duplicated on re-init")
+	}
+}
+
+func TestCompactDocsInbox(t *testing.T) {
+	t.Parallel()
+	repo := docsTestRepo(t)
+	base := time.Date(2026, 7, 2, 0, 0, 0, 0, time.UTC)
+	for i := 0; i < 205; i++ {
+		iss := testIssueForEntry()
+		iss.ID = fmt.Sprintf("bx-%03d", i)
+		c := base.Add(time.Duration(i) * time.Minute)
+		iss.ClosedAt = &c
+		if !writeDocsEntryForIssue(context.Background(), repo, "wiki", iss, "", nil, nil) {
+			t.Fatalf("seed write %d failed", i)
+		}
+	}
+	compactDocsInbox(repo, "wiki")
+	entries, _ := filepath.Glob(filepath.Join(repo, "wiki", "log", "bx-*.md"))
+	if len(entries) != 200 {
+		t.Fatalf("want 200 entries after compaction, got %d", len(entries))
+	}
+	backlog, err := os.ReadFile(filepath.Join(repo, "wiki", "log", "backlog.md"))
+	if err != nil {
+		t.Fatalf("backlog.md missing: %v", err)
+	}
+	for i := 0; i < 5; i++ {
+		id := fmt.Sprintf("bx-%03d", i)
+		if !strings.Contains(string(backlog), id) {
+			t.Errorf("oldest %s not in backlog", id)
+		}
+		if _, err := os.Stat(docsEntryPath(repo, "wiki", id)); err == nil {
+			t.Errorf("oldest %s still in log/", id)
+		}
 	}
 }
