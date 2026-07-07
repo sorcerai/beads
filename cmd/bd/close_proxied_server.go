@@ -29,12 +29,13 @@ type closeProxiedInput struct {
 }
 
 type closeProxiedOutcome struct {
-	id          string
-	before      *types.Issue
-	after       *types.Issue
-	closed      bool
-	auditOld    string
-	auditReason string
+	id            string
+	before        *types.Issue
+	after         *types.Issue
+	closed        bool
+	auditOld      string
+	auditReason   string
+	autoClosedIDs []string // molecule roots auto-closed as a side effect
 }
 
 type closeProxiedTxResult struct {
@@ -85,6 +86,7 @@ func runCloseProxiedServer(cmd *cobra.Command, ctx context.Context, args []strin
 				mol := autoCloseProxiedCompletedMolecule(ctx, uw, id, actor, in.session, &result.warnings)
 				if mol != nil {
 					result.autoClosedMol = mol
+					outcome.autoClosedIDs = append(outcome.autoClosedIDs, mol.ID)
 				}
 				result.outcomes = append(result.outcomes, outcome)
 				result.reasons = append(result.reasons, reason)
@@ -132,16 +134,23 @@ func runCloseProxiedServer(cmd *cobra.Command, ctx context.Context, args []strin
 		fmt.Fprintf(os.Stderr, "Warning: %s\n", w)
 	}
 
+	lifecycleClosed := make([]string, 0, len(res.outcomes))
 	for i, o := range res.outcomes {
 		if o.closed {
 			audit.LogFieldChange(o.id, "status", o.auditOld, "closed", actor, o.auditReason)
 			if err := fireProxiedCloseHooks(ctx, o.before, o.after); err != nil {
 				fmt.Fprintf(os.Stderr, "warning: %s: %v\n", o.id, err)
 			}
+			lifecycleClosed = append(lifecycleClosed, o.id)
+			lifecycleClosed = append(lifecycleClosed, o.autoClosedIDs...)
 		}
 		if !in.jsonOut {
 			fmt.Printf("%s Closed %s: %s\n", ui.RenderPass("✓"), formatFeedbackID(o.after.ID, o.after.Title), res.reasons[i])
 		}
+	}
+
+	if len(lifecycleClosed) > 0 {
+		firePostCloseHook(ctx, nil, lifecycleClosed)
 	}
 
 	if !in.jsonOut {

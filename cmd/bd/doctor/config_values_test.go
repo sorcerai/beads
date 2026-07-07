@@ -370,6 +370,7 @@ func TestExpandPath(t *testing.T) {
 	if err != nil {
 		t.Skip("Cannot get home directory")
 	}
+	homeDir = filepath.Clean(homeDir)
 
 	tests := []struct {
 		name     string

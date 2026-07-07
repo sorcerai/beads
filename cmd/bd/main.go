@@ -859,6 +859,7 @@ var rootCmd = &cobra.Command{
 			"codex-hook",
 			"cursor-hook", // shells out to `bd prime`; never opens the store itself
 			"doctor",
+			"explain",
 			"dolt", // bare "bd dolt" shows help only; subcommands handled below
 			"fish",
 			"formula", // parser-only subcommands; add a store-needed guard before adding DB-backed formula subcommands
@@ -873,6 +874,7 @@ var rootCmd = &cobra.Command{
 			"powershell",
 			"prime",
 			"quickstart",
+			"serve-board",
 			metrics.SendMetricsSubcommand,
 			"setup",
 			"version",

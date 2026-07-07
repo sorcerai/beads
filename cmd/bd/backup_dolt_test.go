@@ -202,8 +202,21 @@ func TestDirSize(t *testing.T) {
 }
 
 func TestShowDoltBackupStatusJSON_NilWhenNotConfigured(t *testing.T) {
-	t.Parallel()
-	// When no .beads dir exists, should return configured=false
+	// Not parallel: uses t.Setenv to isolate workspace discovery. The ambient
+	// BEADS_DIR points at a configured checkout whose .beads has a real
+	// dolt-backup.json, which would otherwise make this report configured=true
+	// (be-j4o). Point discovery at an empty .beads sandbox containing only
+	// metadata.json (so FindBeadsDir accepts it) and no dolt-backup.json.
+	beadsDir := filepath.Join(t.TempDir(), ".beads")
+	if err := os.MkdirAll(beadsDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(beadsDir, "metadata.json"), []byte(`{"database":"beads.db"}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("BEADS_DIR", beadsDir)
+
+	// With no dolt-backup.json in the workspace, should return configured=false.
 	result := showDoltBackupStatusJSON()
 	configured, ok := result["configured"].(bool)
 	if !ok || configured {

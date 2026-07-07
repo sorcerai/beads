@@ -60,6 +60,11 @@ func newGitRepo(t *testing.T) string {
 		t.Fatalf("Git template initialization failed: %v", gitTemplateErr)
 	}
 
+	fakeHome := t.TempDir()
+	t.Setenv("HOME", fakeHome)
+	t.Setenv("XDG_CONFIG_HOME", filepath.Join(fakeHome, ".config"))
+	t.Setenv("GIT_CONFIG_GLOBAL", filepath.Join(fakeHome, ".gitconfig"))
+
 	dir := t.TempDir()
 	if err := copyGitDir(gitTemplateDir, dir); err != nil {
 		t.Fatalf("Failed to copy git template: %v", err)

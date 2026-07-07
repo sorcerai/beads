@@ -215,20 +215,15 @@ func TestGetAdaptiveIDLength_QueryError(t *testing.T) {
 // BEADS_DOLT_PORT is not set, preventing accidental connections to
 // the production server while allowing tests to handle connection errors.
 func TestApplyConfigDefaults_TestModeUseSentinelPort(t *testing.T) {
-	// Save and restore env vars.
-	origTestMode := os.Getenv("BEADS_TEST_MODE")
-	origPort := os.Getenv("BEADS_DOLT_PORT")
-	defer func() {
-		os.Setenv("BEADS_TEST_MODE", origTestMode)
-		if origPort == "" {
-			os.Unsetenv("BEADS_DOLT_PORT")
-		} else {
-			os.Setenv("BEADS_DOLT_PORT", origPort)
-		}
-	}()
-
-	os.Setenv("BEADS_TEST_MODE", "1")
-	os.Unsetenv("BEADS_DOLT_PORT")
+	// Isolate every env var applyConfigDefaults reads for port resolution.
+	// t.Setenv restores them after the test and forbids parallel execution,
+	// so an ambient BEADS_DOLT_SERVER_PORT (a running dev/test Dolt server, or
+	// the shared test container that TestMain sets process-wide) cannot leak in.
+	// BEADS_DOLT_SERVER_PORT outranks the legacy BEADS_DOLT_PORT, so clearing
+	// only BEADS_DOLT_PORT is insufficient — both must be cleared.
+	t.Setenv("BEADS_TEST_MODE", "1")
+	t.Setenv("BEADS_DOLT_PORT", "")
+	t.Setenv("BEADS_DOLT_SERVER_PORT", "")
 
 	cfg := &Config{} // ServerPort defaults to 0
 	applyConfigDefaults(cfg)
@@ -241,19 +236,11 @@ func TestApplyConfigDefaults_TestModeUseSentinelPort(t *testing.T) {
 // TestApplyConfigDefaults_TestModeWithPort verifies that applyConfigDefaults
 // does NOT panic when BEADS_TEST_MODE=1 and BEADS_DOLT_PORT is properly set.
 func TestApplyConfigDefaults_TestModeWithPort(t *testing.T) {
-	origTestMode := os.Getenv("BEADS_TEST_MODE")
-	origPort := os.Getenv("BEADS_DOLT_PORT")
-	defer func() {
-		os.Setenv("BEADS_TEST_MODE", origTestMode)
-		if origPort == "" {
-			os.Unsetenv("BEADS_DOLT_PORT")
-		} else {
-			os.Setenv("BEADS_DOLT_PORT", origPort)
-		}
-	}()
-
-	os.Setenv("BEADS_TEST_MODE", "1")
-	os.Setenv("BEADS_DOLT_PORT", "13307")
+	// Clear BEADS_DOLT_SERVER_PORT so the legacy BEADS_DOLT_PORT fallback is
+	// what gets exercised; otherwise an ambient server port would outrank it.
+	t.Setenv("BEADS_TEST_MODE", "1")
+	t.Setenv("BEADS_DOLT_PORT", "13307")
+	t.Setenv("BEADS_DOLT_SERVER_PORT", "")
 
 	cfg := &Config{}
 	applyConfigDefaults(cfg)
@@ -268,23 +255,9 @@ func TestApplyConfigDefaults_TestModeWithPort(t *testing.T) {
 // This is the fix for Clown Show #14: The orchestrator's beads module injects
 // BEADS_DOLT_PORT=3307 from metadata.json, bypassing the test mode guard.
 func TestApplyConfigDefaults_TestModeBlocksProdPort(t *testing.T) {
-	origTestMode := os.Getenv("BEADS_TEST_MODE")
-	origPort := os.Getenv("BEADS_DOLT_PORT")
-	defer func() {
-		if origTestMode == "" {
-			os.Unsetenv("BEADS_TEST_MODE")
-		} else {
-			os.Setenv("BEADS_TEST_MODE", origTestMode)
-		}
-		if origPort == "" {
-			os.Unsetenv("BEADS_DOLT_PORT")
-		} else {
-			os.Setenv("BEADS_DOLT_PORT", origPort)
-		}
-	}()
-
-	os.Setenv("BEADS_TEST_MODE", "1")
-	os.Setenv("BEADS_DOLT_PORT", "3307") // Production port
+	t.Setenv("BEADS_TEST_MODE", "1")
+	t.Setenv("BEADS_DOLT_PORT", "3307") // Production port
+	t.Setenv("BEADS_DOLT_SERVER_PORT", "")
 
 	cfg := &Config{}
 	applyConfigDefaults(cfg)
@@ -299,23 +272,9 @@ func TestApplyConfigDefaults_TestModeBlocksProdPort(t *testing.T) {
 // This is the fix for hq-27t (test pollution): callers like the orchestrator set
 // BEADS_DOLT_PORT to route bd to a test server instead of production.
 func TestApplyConfigDefaults_EnvOverridesConfig(t *testing.T) {
-	origTestMode := os.Getenv("BEADS_TEST_MODE")
-	origPort := os.Getenv("BEADS_DOLT_PORT")
-	defer func() {
-		if origTestMode == "" {
-			os.Unsetenv("BEADS_TEST_MODE")
-		} else {
-			os.Setenv("BEADS_TEST_MODE", origTestMode)
-		}
-		if origPort == "" {
-			os.Unsetenv("BEADS_DOLT_PORT")
-		} else {
-			os.Setenv("BEADS_DOLT_PORT", origPort)
-		}
-	}()
-
-	os.Unsetenv("BEADS_TEST_MODE") // NOT in test mode
-	os.Setenv("BEADS_DOLT_PORT", "19999")
+	t.Setenv("BEADS_TEST_MODE", "") // NOT in test mode
+	t.Setenv("BEADS_DOLT_PORT", "19999")
+	t.Setenv("BEADS_DOLT_SERVER_PORT", "")
 
 	// Simulate metadata.json having set port to production default
 	cfg := &Config{ServerPort: DefaultSQLPort}
@@ -331,23 +290,9 @@ func TestApplyConfigDefaults_EnvOverridesConfig(t *testing.T) {
 // BEADS_TEST_MODE and no env port, ServerPort stays 0 (ephemeral).
 // Auto-start (EnsureRunning) will allocate the port at connection time.
 func TestApplyConfigDefaults_ProductionFallback(t *testing.T) {
-	origTestMode := os.Getenv("BEADS_TEST_MODE")
-	origPort := os.Getenv("BEADS_DOLT_PORT")
-	defer func() {
-		if origTestMode == "" {
-			os.Unsetenv("BEADS_TEST_MODE")
-		} else {
-			os.Setenv("BEADS_TEST_MODE", origTestMode)
-		}
-		if origPort == "" {
-			os.Unsetenv("BEADS_DOLT_PORT")
-		} else {
-			os.Setenv("BEADS_DOLT_PORT", origPort)
-		}
-	}()
-
-	os.Unsetenv("BEADS_TEST_MODE")
-	os.Unsetenv("BEADS_DOLT_PORT")
+	t.Setenv("BEADS_TEST_MODE", "")
+	t.Setenv("BEADS_DOLT_PORT", "")
+	t.Setenv("BEADS_DOLT_SERVER_PORT", "")
 
 	cfg := &Config{}
 	applyConfigDefaults(cfg)
