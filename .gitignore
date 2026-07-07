@@ -146,3 +146,6 @@ bd_test
 # Multi-agent skill wiring (npx skills) — local install state
 .claude/skills/
 skills-lock.json
+
+# Internal deploy/infra — never commit (privacy: contains infra topology)
+deploy/pm1-beads/
