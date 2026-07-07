@@ -348,6 +348,9 @@ pointless).`,
 		}
 		mutatedStores := map[storage.DoltStorage][]string{}
 		notesOverwriteWarnings := map[storage.DoltStorage][]string{}
+		// IDs that transitioned open→closed via --status closed, per store, so
+		// the post-close lifecycle hook fires just as it does for `bd close`.
+		closedByStore := map[storage.DoltStorage][]string{}
 		mutatedResults := map[*RoutedResult]bool{}
 		pendingCloseResults := []*RoutedResult{}
 		trackMutation := func(result *RoutedResult) {
@@ -485,6 +488,12 @@ pointless).`,
 				// Audit log key field changes (survives Dolt GC flatten)
 				if s, ok := regularUpdates["status"].(string); ok {
 					audit.LogFieldChange(result.ResolvedID, "status", string(issue.Status), s, actor, "")
+					// Fire the post-close hook only on an actual open→closed
+					// transition (issue is the pre-update state), mirroring the
+					// on_close symmetry guard so re-closing a closed issue no-ops.
+					if s == string(types.StatusClosed) && issue.Status != types.StatusClosed {
+						closedByStore[issueStore] = append(closedByStore[issueStore], result.ResolvedID)
+					}
 				}
 				if a, ok := regularUpdates["assignee"].(string); ok {
 					audit.LogFieldChange(result.ResolvedID, "assignee", issue.Assignee, a, actor, "")
@@ -622,6 +631,13 @@ pointless).`,
 			}
 		}
 		closePendingResults()
+
+		// Post-close lifecycle hook (advisory). Fires after the commit, per store,
+		// so `bd update --status closed` reaches the same drift checkpoint as
+		// `bd close`.
+		for s, ids := range closedByStore {
+			firePostCloseHook(ctx, s, ids)
+		}
 
 		// Set last touched after all updates complete
 		if firstUpdatedID != "" {

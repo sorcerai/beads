@@ -137,11 +137,29 @@ func Initialize() error {
 					break
 				}
 			}
+			// Under BEADS_TEST_IGNORE_REPO_CONFIG, never walk above the module
+			// root. Ancestors there (e.g. a parent checkout's or town's
+			// .beads/config.yaml when `go test` runs from a worktree nested
+			// under one) are ambient host config, not this repo's, and must not
+			// leak into tests. The moduleRoot config itself is already skipped by
+			// tryProjectConfig above; stop before climbing past it. Tests that
+			// load config from a temp repo are unaffected: those have no go.mod
+			// ancestor, so moduleRoot is empty and the walk stays unbounded.
+			if ignoreRepoConfig && moduleRoot != "" && filepath.Clean(dir) == filepath.Clean(moduleRoot) {
+				break
+			}
 		}
 
 		// Worktree/shared fallback: the active workspace may live outside the
 		// worktree tree, so the parent walk above won't find it.
-		if primaryConfigPath == "" && beadsEnvConfigPath == "" {
+		//
+		// Suppressed under BEADS_TEST_IGNORE_REPO_CONFIG when running inside the
+		// module tree: there the fallback resolves via the shared git common dir
+		// to the canonical repo's .beads/config.yaml — exactly the repo config
+		// tests must ignore. (In CI the checkout is a plain clone, not a
+		// worktree, so this fallback already no-ops there; suppressing it only
+		// makes nested/worktree checkouts match that clean baseline.)
+		if primaryConfigPath == "" && beadsEnvConfigPath == "" && !(ignoreRepoConfig && moduleRoot != "") {
 			p := worktreeFallbackConfigPath(cwd)
 			_ = tryProjectConfig(p)
 		}

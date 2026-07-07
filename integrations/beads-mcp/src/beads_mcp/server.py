@@ -43,6 +43,7 @@ from beads_mcp.tools import (
     beads_add_comment,
     beads_add_dependency,
     beads_add_note,
+    beads_board,
     beads_blocked,
     beads_claim_issue,
     beads_close_issue,
@@ -1323,6 +1324,20 @@ async def note(
 ) -> str:
     """Append a note to an issue's notes field."""
     return await beads_add_note(issue_id=issue_id, text=text)
+
+
+@mcp.tool(
+    name="board",
+    description="Read-only project board rollup: issues grouped by their project:<slug> label, nested under epics, bucketed into todo/in_progress/done/deferred columns. Use to answer 'what is the state of project X'. Optional args: project (slug), limit (int).",
+)
+@with_workspace
+async def board(
+    workspace_root: str | None = None,
+    project: str | None = None,
+    limit: int | None = None,
+) -> dict[str, Any]:
+    """Get the project board rollup."""
+    return await beads_board(project=project, limit=limit)
 
 
 @mcp.tool(

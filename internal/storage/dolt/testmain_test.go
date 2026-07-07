@@ -57,6 +57,9 @@ func testMainInner(m *testing.M) int {
 	// sql-server (testcontainer or external port). The new database-name
 	// firewall in dolt.New refuses test-named DBs unless this opt-in is set.
 	os.Setenv("BEADS_TEST_SERVER", "1")
+	// An ambient server port must not redirect the isolated suite container.
+	os.Unsetenv("BEADS_DOLT_SERVER_PORT")
+	os.Unsetenv("BEADS_DOLT_PORT")
 	if err := testutil.EnsureDoltContainerForTestMain(); err != nil {
 		fmt.Fprintf(os.Stderr, "WARN: %v, skipping Dolt tests\n", err)
 	} else {
@@ -90,6 +93,7 @@ func testMainInner(m *testing.M) int {
 	doltserver.SweepOrphanedTestServers(suiteTempRoot)
 
 	testServerPort = 0
+	os.Unsetenv("BEADS_DOLT_SERVER_PORT")
 	os.Unsetenv("BEADS_DOLT_PORT")
 	os.Unsetenv("BEADS_TEST_MODE")
 	os.Unsetenv("BEADS_TEST_PDEATHSIG")
