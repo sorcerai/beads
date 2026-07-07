@@ -814,6 +814,7 @@ var rootCmd = &cobra.Command{
 			"context", // reads config files directly, does not need DB open
 			"codex-hook",
 			"doctor",
+			"explain",
 			"dolt", // bare "bd dolt" shows help only; subcommands handled below
 			"fish",
 			"formula", // parser-only subcommands; add a store-needed guard before adding DB-backed formula subcommands
@@ -828,6 +829,7 @@ var rootCmd = &cobra.Command{
 			"powershell",
 			"prime",
 			"quickstart",
+			"serve-board",
 			metrics.SendMetricsSubcommand,
 			"setup",
 			"version",

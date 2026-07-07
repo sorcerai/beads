@@ -810,3 +810,38 @@ async def test_detect_pollution_clean_adds_flags(bd_client):
     with patch.object(bd_client, "_run_command", new=AsyncMock(return_value={})) as run:
         await bd_client.detect_pollution(clean=True)
     run.assert_awaited_once_with("doctor", "--check=pollution", "--clean", "--yes")
+
+
+@pytest.mark.asyncio
+async def test_board_returns_parsed_json(bd_client, monkeypatch):
+    async def fake_run_command(*args, cwd=None):
+        assert args[0] == "board"
+        return {"projects": [], "diagnostics": [], "generated_at": "2026-05-17T00:00:00Z"}
+
+    monkeypatch.setattr(bd_client, "_run_command", fake_run_command)
+    result = await bd_client.board()
+    assert result["projects"] == []
+    assert "generated_at" in result
+
+
+@pytest.mark.asyncio
+async def test_board_passes_project_and_limit_args(bd_client, monkeypatch):
+    seen: list[str] = []
+
+    async def fake_run_command(*args, cwd=None):
+        seen.extend(args)
+        return {"projects": []}
+
+    monkeypatch.setattr(bd_client, "_run_command", fake_run_command)
+    await bd_client.board(project="alpha", limit=5)
+    assert seen == ["board", "--project", "alpha", "--limit", "5"]
+
+
+@pytest.mark.asyncio
+async def test_board_non_dict_response_raises(bd_client, monkeypatch):
+    async def fake_run_command(*args, cwd=None):
+        return ["not", "a", "dict"]
+
+    monkeypatch.setattr(bd_client, "_run_command", fake_run_command)
+    with pytest.raises(BdCommandError):
+        await bd_client.board()

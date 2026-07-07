@@ -16,6 +16,10 @@ import (
 // memoryPrefix is prepended (after kvPrefix) to all memory keys.
 const memoryPrefix = kvkeys.MemoryPrefix
 
+// memorySupersededPrefix stores supersession edges.
+// When memory A is superseded by B: kv.memory-superseded.A = B
+const memorySupersededPrefix = "memory-superseded."
+
 // memoryKeyFlag allows explicit key override for bd remember.
 var memoryKeyFlag string
 
@@ -153,16 +157,21 @@ Examples:
 	},
 }
 
+var memoriesAllFlag bool
+
 // memoriesCmd lists and searches memories.
 var memoriesCmd = &cobra.Command{
 	Use:   "memories [search]",
 	Short: "List or search persistent memories",
 	Long: `List all memories, or search by keyword.
 
+Superseded memories are hidden by default; use --all to include them.
+
 Examples:
-  bd memories              # list all memories
+  bd memories              # list active memories
   bd memories dolt         # search for memories about dolt
-  bd memories "race flag"  # search for a phrase`,
+  bd memories "race flag"  # search for a phrase
+  bd memories --all        # include superseded memories`,
 	GroupID:       "setup",
 	Args:          cobra.MaximumNArgs(1),
 	SilenceUsage:  true,
@@ -185,13 +194,20 @@ Examples:
 			return HandleErrorRespectJSON("listing memories: %v", err)
 		}
 
+		// Build superseded map for filtering
+		supersededMap := getSupersededMap()
+
 		// Filter for kv.memory.* keys
 		fullPrefix := kvkeys.MemoryConfigKeyPrefix
 		memories := make(map[string]string)
+		memSupersededBy := make(map[string]string)
 		for k, v := range allConfig {
 			if strings.HasPrefix(k, fullPrefix) {
 				userKey := strings.TrimPrefix(k, fullPrefix)
 				memories[userKey] = v
+				if replacement, ok := supersededMap[userKey]; ok {
+					memSupersededBy[userKey] = replacement
+				}
 			}
 		}
 
@@ -211,7 +227,36 @@ Examples:
 		}
 
 		if jsonOutput {
-			return outputJSON(memories)
+			// JSON output: include all memories (or filtered by search).
+			// For --all, always include superseded. Without --all, filter them out.
+			outputMap := make(map[string]interface{})
+			for k, v := range memories {
+				if !memoriesAllFlag {
+					if _, ok := supersededMap[k]; ok {
+						continue
+					}
+				}
+				record := map[string]interface{}{
+					"key":   k,
+					"value": v,
+				}
+				if replacement, ok := memSupersededBy[k]; ok {
+					record["superseded_by"] = replacement
+				}
+				outputMap[k] = record
+			}
+			return outputJSON(outputMap)
+		}
+
+		// Text output: filter out superseded unless --all
+		if !memoriesAllFlag {
+			visible := make(map[string]string)
+			for k, v := range memories {
+				if _, ok := supersededMap[k]; !ok {
+					visible[k] = v
+				}
+			}
+			memories = visible
 		}
 
 		if len(memories) == 0 {
@@ -236,7 +281,12 @@ Examples:
 		}
 		for _, k := range keys {
 			v := memories[k]
-			fmt.Printf("  %s\n", k)
+			if replacement, ok := memSupersededBy[k]; ok {
+				fmt.Printf("  %s  ← superseded by %s\n", k, replacement)
+			} else {
+				fmt.Printf("  %s\n", k)
+			}
+			// Indent the value, wrapping long lines
 			fmt.Printf("    %s\n\n", truncateMemory(v, 120))
 		}
 		return nil
@@ -343,11 +393,15 @@ Examples:
 		}
 
 		if jsonOutput {
-			if jerr := outputJSON(map[string]interface{}{
+			result := map[string]interface{}{
 				"key":   key,
 				"value": value,
 				"found": value != "",
-			}); jerr != nil {
+			}
+			if replacement := isSuperseded(key); replacement != "" {
+				result["superseded_by"] = replacement
+			}
+			if jerr := outputJSON(result); jerr != nil {
 				return jerr
 			}
 			if value == "" {
@@ -359,7 +413,11 @@ Examples:
 			fmt.Fprintf(os.Stderr, "No memory with key %q\n", key)
 			return SilentExit()
 		}
-		fmt.Printf("%s\n", value)
+		if replacement := isSuperseded(key); replacement != "" {
+			fmt.Printf("[SUPERSEDED by %s]\n%s\n", replacement, value)
+		} else {
+			fmt.Printf("%s\n", value)
+		}
 		return nil
 	},
 }
@@ -374,11 +432,129 @@ func truncateMemory(s string, maxLen int) string {
 	return s[:maxLen-3] + "..."
 }
 
+// isSuperseded checks if a memory key has been superseded.
+// Returns the replacement key if superseded, empty string otherwise.
+func isSuperseded(key string) string {
+	storageKey := kvPrefix + memorySupersededPrefix + key
+	ctx := rootCtx
+	value, err := store.GetConfig(ctx, storageKey)
+	if err != nil || value == "" {
+		return ""
+	}
+	return value
+}
+
+// getSupersededMap returns a map of superseded key -> replacement key.
+func getSupersededMap() map[string]string {
+	ctx := rootCtx
+	allConfig, err := store.GetAllConfig(ctx)
+	if err != nil {
+		return nil
+	}
+	fullPrefix := kvPrefix + memorySupersededPrefix
+	m := make(map[string]string)
+	for k, v := range allConfig {
+		if strings.HasPrefix(k, fullPrefix) {
+			userKey := strings.TrimPrefix(k, fullPrefix)
+			m[userKey] = v
+		}
+	}
+	return m
+}
+
+// memoryCmd is the parent command for memory subcommands.
+var memoryCmd = &cobra.Command{
+	Use:     "memory",
+	Short:   "Memory management commands",
+	Long:    `Commands for managing persistent memories.`,
+	GroupID: "setup",
+	Run: func(cmd *cobra.Command, args []string) {
+		_ = cmd.Help()
+	},
+}
+
+// memorySupersedeCmd marks a memory as superseded by another.
+var memorySupersedeCmd = &cobra.Command{
+	Use:   "supersede <old-key> --with=<new-key>",
+	Short: "Supersede a memory with a newer version",
+	Long: `Mark a memory as superseded by a newer memory.
+
+The superseded memory is hidden from default listings (bd memories)
+but remains recoverable via 'bd recall' and 'bd memories --all'.
+
+This is safer than 'bd forget' because the old reasoning is preserved.
+
+Examples:
+  bd memory supersede auth-old --with auth-new
+  bd memory supersede deploy-notes-v1 --with deploy-notes-v2`,
+	Args: cobra.ExactArgs(1),
+	Run: func(cmd *cobra.Command, args []string) {
+		CheckReadonly("memory supersede")
+
+		if err := ensureDirectMode("memory supersede requires direct database access"); err != nil {
+			FatalError("%v", err)
+		}
+
+		oldKey := args[0]
+		newKey := memorySupersedeWithFlag
+
+		if newKey == "" {
+			FatalErrorRespectJSON("--with flag is required: bd memory supersede <old-key> --with=<new-key>")
+		}
+
+		ctx := rootCtx
+
+		// Verify old memory exists
+		oldStorageKey := kvPrefix + memoryPrefix + oldKey
+		oldValue, err := store.GetConfig(ctx, oldStorageKey)
+		if err != nil {
+			FatalErrorRespectJSON("reading memory %q: %v", oldKey, err)
+		}
+		if oldValue == "" {
+			FatalErrorRespectJSON("no memory with key %q", oldKey)
+		}
+
+		// Verify new memory exists
+		newStorageKey := kvPrefix + memoryPrefix + newKey
+		newValue, err := store.GetConfig(ctx, newStorageKey)
+		if err != nil {
+			FatalErrorRespectJSON("reading memory %q: %v", newKey, err)
+		}
+		if newValue == "" {
+			FatalErrorRespectJSON("no memory with key %q (use --with to specify an existing memory)", newKey)
+		}
+
+		// Store the supersession edge
+		superStorageKey := kvPrefix + memorySupersededPrefix + oldKey
+		if err := store.SetConfig(ctx, superStorageKey, newKey); err != nil {
+			FatalErrorRespectJSON("storing supersession: %v", err)
+		}
+		commandDidWrite.Store(true)
+
+		if jsonOutput {
+			outputJSON(map[string]string{
+				"action":        "superseded",
+				"key":           oldKey,
+				"superseded_by": newKey,
+			})
+		} else {
+			fmt.Printf("Superseded [%s] -> [%s]\n", oldKey, newKey)
+		}
+	},
+}
+
+var memorySupersedeWithFlag string
+
 func init() {
 	rememberCmd.Flags().StringVar(&memoryKeyFlag, "key", "", "Explicit key for the memory (auto-generated from content if not set). If a memory with this key already exists, it will be updated in place")
+	memoriesCmd.Flags().BoolVar(&memoriesAllFlag, "all", false, "Include superseded memories")
 
 	rootCmd.AddCommand(rememberCmd)
 	rootCmd.AddCommand(memoriesCmd)
 	rootCmd.AddCommand(forgetCmd)
 	rootCmd.AddCommand(recallCmd)
+
+	memorySupersedeCmd.Flags().StringVar(&memorySupersedeWithFlag, "with", "", "Replacement memory key (required)")
+	memoryCmd.AddCommand(memorySupersedeCmd)
+	rootCmd.AddCommand(memoryCmd)
 }

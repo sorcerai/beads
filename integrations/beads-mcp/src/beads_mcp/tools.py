@@ -634,6 +634,12 @@ async def beads_stats() -> Stats:
     return await client.stats()
 
 
+async def beads_board(project: str | None = None, limit: int | None = None) -> dict[str, Any]:
+    """Get the project board rollup (projects -> epics -> status columns)."""
+    client = await _get_client()
+    return await client.board(project=project, limit=limit)
+
+
 async def beads_blocked(
     parent: Annotated[str | None, "Filter to descendants of this bead/epic"] = None,
 ) -> list[BlockedIssue]:

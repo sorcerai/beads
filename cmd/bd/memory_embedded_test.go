@@ -95,6 +95,34 @@ func bdForget(t *testing.T, bd, dir string, args ...string) string {
 	return stdout.String()
 }
 
+// bdMemorySupersede runs "bd memory supersede" with the given args and returns stdout.
+func bdMemorySupersede(t *testing.T, bd, dir string, args ...string) string {
+	t.Helper()
+	fullArgs := append([]string{"memory", "supersede"}, args...)
+	cmd := exec.Command(bd, fullArgs...)
+	cmd.Dir = dir
+	cmd.Env = bdEnv(dir)
+	stdout, stderr, err := runCommandBuffers(t, cmd)
+	if err != nil {
+		t.Fatalf("bd memory supersede %s failed: %v\nstdout:\n%s\nstderr:\n%s", strings.Join(args, " "), err, stdout.String(), stderr.String())
+	}
+	return stdout.String()
+}
+
+// bdMemorySupersedeFail runs "bd memory supersede" expecting failure.
+func bdMemorySupersedeFail(t *testing.T, bd, dir string, args ...string) string {
+	t.Helper()
+	fullArgs := append([]string{"memory", "supersede"}, args...)
+	cmd := exec.Command(bd, fullArgs...)
+	cmd.Dir = dir
+	cmd.Env = bdEnv(dir)
+	out, err := cmd.CombinedOutput()
+	if err == nil {
+		t.Fatalf("expected bd memory supersede %s to fail, but succeeded:\n%s", strings.Join(args, " "), out)
+	}
+	return string(out)
+}
+
 // bdForgetFail runs "bd forget" expecting failure.
 func bdForgetFail(t *testing.T, bd, dir string, args ...string) string {
 	t.Helper()
@@ -227,6 +255,76 @@ func TestEmbeddedMemory(t *testing.T) {
 		bdForget(t, bd, dir, "forget-me")
 		// After forget, recall should fail
 		bdRecallFail(t, bd, dir, "forget-me")
+	})
+
+	// ===== Supersede =====
+
+	t.Run("supersede_hides_from_memories", func(t *testing.T) {
+		bdRemember(t, bd, dir, "original insight", "--key", "old-key")
+		bdRemember(t, bd, dir, "revised insight", "--key", "new-key")
+
+		bdMemorySupersede(t, bd, dir, "old-key", "--with", "new-key")
+
+		// Default memories should NOT show old-key
+		out := bdMemories(t, bd, dir)
+		if strings.Contains(out, "old-key") {
+			t.Errorf("expected 'old-key' to be hidden from default memories:\n%s", out)
+		}
+		// But new-key should still be visible
+		if !strings.Contains(out, "new-key") {
+			t.Errorf("expected 'new-key' in memories:\n%s", out)
+		}
+	})
+
+	t.Run("supersede_still_recallable", func(t *testing.T) {
+		bdRemember(t, bd, dir, "old content v1", "--key", "recall-source")
+		bdRemember(t, bd, dir, "old content v2", "--key", "recall-target")
+
+		bdMemorySupersede(t, bd, dir, "recall-source", "--with", "recall-target")
+
+		// Recall of superseded memory should still work
+		out := bdRecall(t, bd, dir, "recall-source")
+		if !strings.Contains(out, "old content v1") {
+			t.Errorf("expected recall of superseded memory to return content:\n%s", out)
+		}
+	})
+
+	t.Run("supersede_all_shows_both", func(t *testing.T) {
+		bdRemember(t, bd, dir, "all-test source", "--key", "all-source")
+		bdRemember(t, bd, dir, "all-test target", "--key", "all-target")
+
+		bdMemorySupersede(t, bd, dir, "all-source", "--with", "all-target")
+
+		// --all should show superseded memories too
+		out := bdMemories(t, bd, dir, "--all")
+		if !strings.Contains(out, "all-source") {
+			t.Errorf("expected 'all-source' in --all memories:\n%s", out)
+		}
+		if !strings.Contains(out, "all-target") {
+			t.Errorf("expected 'all-target' in --all memories:\n%s", out)
+		}
+	})
+
+	t.Run("supersede_nonexistent_source_fails", func(t *testing.T) {
+		bdMemorySupersedeFail(t, bd, dir, "nonexistent-key", "--with", "some-target")
+	})
+
+	t.Run("supersede_nonexistent_target_fails", func(t *testing.T) {
+		bdRemember(t, bd, dir, "valid source", "--key", "valid-source")
+		bdMemorySupersedeFail(t, bd, dir, "valid-source", "--with", "nonexistent-target")
+	})
+
+	t.Run("supersede_json_carries_edge", func(t *testing.T) {
+		bdRemember(t, bd, dir, "export source", "--key", "export-src")
+		bdRemember(t, bd, dir, "export target", "--key", "export-tgt")
+
+		bdMemorySupersede(t, bd, dir, "export-src", "--with", "export-tgt")
+
+		// JSON output from memories --all should include superseded_by
+		out := bdMemories(t, bd, dir, "--json", "--all")
+		if !strings.Contains(out, `"superseded_by"`) || !strings.Contains(out, `"export-tgt"`) {
+			t.Errorf("expected JSON output to include superseded_by edge:\n%s", out)
+		}
 	})
 
 	// ===== Error Cases =====

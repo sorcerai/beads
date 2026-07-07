@@ -1689,6 +1689,13 @@ Non-interactive mode (--non-interactive or BD_NON_INTERACTIVE=1):
 		fmt.Printf("  Issues will be named: %s\n\n", ui.RenderAccent(prefix+"-<hash> (e.g., "+prefix+"-a3f2dd)"))
 		fmt.Printf("Run %s to get started.\n\n", ui.RenderAccent("bd quickstart"))
 
+		// Scaffold the construction blueprint (ARCH.md) + post-close drift hook
+		// if absent. Idempotent and advisory: gives new projects the negative-
+		// invariant shape from day one. See 'bd arch --help'.
+		if !quiet {
+			scaffoldArchBlueprint()
+		}
+
 		// Detect backup files from a previous session (GH#2327).
 		// This catches the branch-switch scenario: user ran bd init on a new
 		// branch and the database was created fresh, but backup JSONL files

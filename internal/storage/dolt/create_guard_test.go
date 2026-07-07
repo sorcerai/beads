@@ -116,11 +116,24 @@ func containsAny(s string, substrs ...string) bool {
 
 // skipIfNoServer skips the test if the shared test Dolt server is not running.
 // Acquires a semaphore slot (released via t.Cleanup) to limit container load.
+//
+// It also isolates the test from an ambient BEADS_DOLT_SERVER_PORT (or legacy
+// BEADS_DOLT_PORT) — e.g. a city/dev Dolt server exported into the environment.
+// applyConfigDefaults() lets that env var override an explicitly-set
+// cfg.ServerPort, so without this New() would silently connect to the ambient
+// server while the raw helpers (createTestDatabase/databaseExists) still talk to
+// testServerPort. A database created on one port is then invisible on the other,
+// producing "database not found on Dolt server" failures and, worse, leaking
+// test databases onto whatever server the env var points at. Clearing both
+// vars makes cfg.ServerPort (= testServerPort) authoritative. Same class as
+// be-7sd / be-r82.
 func skipIfNoServer(t *testing.T) {
 	t.Helper()
 	if testServerPort == 0 {
 		t.Skip("no test Dolt server running")
 	}
+	t.Setenv("BEADS_DOLT_SERVER_PORT", "")
+	t.Setenv("BEADS_DOLT_PORT", "")
 	acquireTestSlot()
 	t.Cleanup(releaseTestSlot)
 }
