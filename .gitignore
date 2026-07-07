@@ -149,3 +149,5 @@ skills-lock.json
 
 # Internal deploy/infra — never commit (privacy: contains infra topology)
 deploy/pm1-beads/
+.audit-privacy-review.md
+.pi-subagents/
