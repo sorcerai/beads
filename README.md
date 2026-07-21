@@ -28,7 +28,8 @@ flowchart LR
 
 ```bash
 # Install beads CLI (system-wide - don't clone this repo into your project)
-curl -fsSL https://raw.githubusercontent.com/gastownhall/beads/main/scripts/install.sh | bash
+brew install beads                 # macOS/Linux
+# Or: npm install -g @beads/bd     # Any platform with Node.js
 
 # Initialize in YOUR project
 cd your-project

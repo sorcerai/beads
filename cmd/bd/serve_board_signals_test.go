@@ -142,6 +142,32 @@ func TestBuildPayload_ErrorEntriesNeverDropped(t *testing.T) {
 	}
 }
 
+func TestBuildPayload_TracksProjectOwners(t *testing.T) {
+	const alphaDir = "/w/beads-alpha-workspace"
+	const arbitraryDir = "/w/custom-checkout"
+	results := []wsResult{
+		{
+			dir:  alphaDir,
+			data: []byte(`{"generated_at":"2026-07-03T10:00:00Z","projects":[{"slug":"Unassigned","epics":[],"loose":[]}],"diagnostics":[]}`),
+		},
+		{
+			dir:  arbitraryDir,
+			data: []byte(`{"generated_at":"2026-07-03T10:00:00Z","projects":[{"slug":"beta","epics":[],"loose":[]}],"diagnostics":[]}`),
+		},
+	}
+
+	p := buildPayload(results, sigNow, 2*time.Hour)
+	if len(p.projectOwners) != 2 {
+		t.Fatalf("project owners = %#v, want exactly alpha and beta", p.projectOwners)
+	}
+	if got := p.projectOwners["alpha"]; len(got) != 1 || got[0] != alphaDir {
+		t.Errorf("implied Unassigned owner = %v, want [%s]", got, alphaDir)
+	}
+	if got := p.projectOwners["beta"]; len(got) != 1 || got[0] != arbitraryDir {
+		t.Errorf("arbitrary-directory owner = %v, want [%s]", got, arbitraryDir)
+	}
+}
+
 func TestNtfy_DiffAndDebounce(t *testing.T) {
 	var mu sync.Mutex
 	var posts []string

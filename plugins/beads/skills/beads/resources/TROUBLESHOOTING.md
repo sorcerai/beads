@@ -53,11 +53,11 @@ bd version
 # Via Homebrew (macOS/Linux)
 brew upgrade beads
 
-# Via install script
-curl -fsSL https://raw.githubusercontent.com/gastownhall/beads/main/scripts/install.sh | bash
+# Via npm
+npm update -g @beads/bd
 
-# Via package manager
-# See https://github.com/gastownhall/beads#installing
+# Other supported methods
+# See https://github.com/gastownhall/beads#installation
 ```
 
 **3. Restart Dolt server after upgrade:**

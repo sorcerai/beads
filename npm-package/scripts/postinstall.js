@@ -300,7 +300,7 @@ async function install() {
     console.error('');
     console.error('Installation failed. You can try:');
     console.error('1. Installing manually from: https://github.com/gastownhall/beads/releases');
-    console.error('2. Using the install script: curl -fsSL https://raw.githubusercontent.com/gastownhall/beads/main/scripts/install.sh | bash');
+    console.error('2. Using another supported method: https://github.com/gastownhall/beads#installation');
     console.error('3. Opening an issue: https://github.com/gastownhall/beads/issues');
     process.exit(1);
   }

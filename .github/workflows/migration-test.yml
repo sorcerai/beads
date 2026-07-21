@@ -45,7 +45,7 @@ jobs:
 
       - name: Install Dolt
         run: |
-          curl -fsSL https://github.com/dolthub/dolt/releases/latest/download/install.sh | sudo bash
+          ./scripts/install-dolt-ci.sh
           dolt version
 
       - name: Configure Git

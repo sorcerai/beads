@@ -38,7 +38,10 @@ var docsRegenCmd = &cobra.Command{
 		if repoRoot == "" {
 			FatalErrorRespectJSON("not in a git repository")
 		}
-		docsDir := docsDirName()
+		docsDir, err := validatedDocsDir(repoRoot)
+		if err != nil {
+			FatalErrorRespectJSON("bd docs regen: %v", err)
+		}
 		complete, _ := cmd.Flags().GetBool("complete")
 		execCLI, _ := cmd.Flags().GetString("exec")
 		// Bare `--exec` (no value) resolves to the configured default CLI.

@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -66,11 +67,11 @@ func TestMergeRollups_RenamesUnassignedToWorkspaceName(t *testing.T) {
 
 func TestWorkspaceName(t *testing.T) {
 	cases := []struct{ dir, want string }{
-		{"WORKSPACE_A", "creator-kb-factory"},
-		{"WORKSPACE_B", "KreatorFlow"},
-		{"/tmp/beads-workspace", ""}, // generic, no project name
-		{"", ""},                            // CWD default
-		{"/home/admin/other-dir", ""},       // doesn't match convention
+		{"beads-creator-kb-factory-workspace", "creator-kb-factory"},
+		{"beads-KreatorFlow-workspace", "KreatorFlow"},
+		{"/tmp/beads-workspace", ""},  // generic, no project name
+		{"", ""},                      // CWD default
+		{"/home/admin/other-dir", ""}, // doesn't match convention
 	}
 	for _, c := range cases {
 		if got := workspaceName(c.dir); got != c.want {
@@ -592,5 +593,179 @@ func TestParseShowIssueJSON(t *testing.T) {
 	}
 	if issue.ID != "bd-123" || issue.Title != "Test Issue Obj" || issue.Status != "todo" {
 		t.Errorf("incorrect fields parsed from object JSON: %+v", issue)
+	}
+}
+
+func TestExplainIssue_UncommittedFilesRequireIssueBranch(t *testing.T) {
+	gitPath, err := exec.LookPath("git")
+	if err != nil {
+		t.Skip("git is required for explain workspace tests")
+	}
+
+	dir := t.TempDir()
+	runGit := func(args ...string) {
+		t.Helper()
+		cmd := exec.Command(gitPath, args...)
+		cmd.Dir = dir
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("git %s: %v\n%s", strings.Join(args, " "), err, out)
+		}
+	}
+
+	runGit("init")
+	runGit("config", "user.email", "board-test@example.com")
+	runGit("config", "user.name", "Board Test")
+	if err := os.WriteFile(filepath.Join(dir, "base.txt"), []byte("base\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	runGit("add", "base.txt")
+	runGit("commit", "-m", "initial state")
+	if err := os.WriteFile(filepath.Join(dir, "uncommitted.txt"), []byte("work in progress\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	tests := []struct {
+		name     string
+		branch   string
+		wantFile bool
+	}{
+		{name: "unrelated branch excludes ambient worktree", branch: "work/unrelated", wantFile: false},
+		{name: "issue branch includes ambient worktree", branch: "work/bd-123", wantFile: true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			runGit("checkout", "-B", tt.branch)
+			resp, err := explainIssueInWorkspace(context.Background(), dir, "bd-123")
+			if err != nil {
+				t.Fatal(err)
+			}
+			found := false
+			for _, file := range resp.Files {
+				if file.Path == "uncommitted.txt" {
+					found = true
+					break
+				}
+			}
+			if found != tt.wantFile {
+				t.Errorf("uncommitted.txt present = %v, want %v on branch %q; files=%+v", found, tt.wantFile, tt.branch, resp.Files)
+			}
+		})
+	}
+}
+
+func TestValidateBoardBind(t *testing.T) {
+	tests := []struct {
+		name    string
+		addr    string
+		token   string
+		wantErr bool
+	}{
+		{name: "IPv4 loopback needs no token", addr: "127.0.0.1:8099"},
+		{name: "IPv6 loopback needs no token", addr: "[::1]:8099"},
+		{name: "Tailscale IPv4 lower bound with token", addr: "100.64.0.1:8099", token: "board-secret"},
+		{name: "Tailscale IPv4 upper bound with token", addr: "100.127.255.254:8099", token: "board-secret"},
+		{name: "Tailscale IPv6 with token", addr: "[fd7a:115c:a1e0::1]:8099", token: "board-secret"},
+		{name: "Tailscale IPv4 requires token", addr: "100.64.0.1:8099", wantErr: true},
+		{name: "Tailscale IPv6 requires token", addr: "[fd7a:115c:a1e0::1]:8099", wantErr: true},
+		{name: "IPv4 wildcard rejected with token", addr: "0.0.0.0:8099", token: "board-secret", wantErr: true},
+		{name: "IPv6 wildcard rejected with token", addr: "[::]:8099", token: "board-secret", wantErr: true},
+		{name: "public address rejected with token", addr: "203.0.113.10:8099", token: "board-secret", wantErr: true},
+		{name: "other private address rejected with token", addr: "192.168.1.10:8099", token: "board-secret", wantErr: true},
+		{name: "address above Tailscale range rejected", addr: "100.128.0.1:8099", token: "board-secret", wantErr: true},
+		{name: "other IPv6 address rejected", addr: "[fd7a:115c:a1e1::1]:8099", token: "board-secret", wantErr: true},
+		{name: "hostname rejected even when loopback-named", addr: "localhost:8099", token: "board-secret", wantErr: true},
+		{name: "public hostname rejected", addr: "example.com:8099", token: "board-secret", wantErr: true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := validateBoardBind(tt.addr, tt.token)
+			if (err != nil) != tt.wantErr {
+				t.Errorf("validateBoardBind(%q, token present=%v) error = %v, wantErr %v", tt.addr, tt.token != "", err, tt.wantErr)
+			}
+		})
+	}
+}
+
+func TestBoardAuth(t *testing.T) {
+	const token = "board-secret"
+	tests := []struct {
+		name          string
+		authorization string
+		basicUser     string
+		basicPassword string
+		wantAllowed   bool
+	}{
+		{name: "valid Basic credentials", basicUser: "beads", basicPassword: token, wantAllowed: true},
+		{name: "valid Bearer token", authorization: "Bearer " + token, wantAllowed: true},
+		{name: "missing credentials"},
+		{name: "wrong Basic username", basicUser: "admin", basicPassword: token},
+		{name: "wrong Basic password", basicUser: "beads", basicPassword: "wrong"},
+		{name: "wrong Bearer token", authorization: "Bearer wrong"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			called := false
+			next := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				called = true
+				w.WriteHeader(http.StatusNoContent)
+			})
+			req := httptest.NewRequest(http.MethodGet, "/", nil)
+			if tt.basicUser != "" || tt.basicPassword != "" {
+				req.SetBasicAuth(tt.basicUser, tt.basicPassword)
+			} else if tt.authorization != "" {
+				req.Header.Set("Authorization", tt.authorization)
+			}
+			w := httptest.NewRecorder()
+
+			boardAuth(token, next).ServeHTTP(w, req)
+
+			if tt.wantAllowed {
+				if !called || w.Code != http.StatusNoContent {
+					t.Errorf("valid credentials: next called=%v status=%d, want called=true status=%d", called, w.Code, http.StatusNoContent)
+				}
+				return
+			}
+			if called || w.Code != http.StatusUnauthorized {
+				t.Errorf("invalid credentials: next called=%v status=%d, want called=false status=%d", called, w.Code, http.StatusUnauthorized)
+			}
+		})
+	}
+}
+
+func TestSelectExplainWorkspace(t *testing.T) {
+	root := t.TempDir()
+	alpha := filepath.Join(root, "beads-alpha-workspace")
+	beta := filepath.Join(root, "arbitrary-checkout")
+	owners := map[string][]string{
+		"alpha":      {alpha},
+		"beta":       {beta},
+		"duplicated": {alpha, beta},
+	}
+	tests := []struct {
+		name    string
+		project string
+		want    string
+		wantErr bool
+	}{
+		{name: "single owner in conventional workspace", project: "alpha", want: alpha},
+		{name: "single owner in arbitrary directory", project: "beta", want: beta},
+		{name: "project is required", wantErr: true},
+		{name: "unknown project is rejected", project: "missing", wantErr: true},
+		{name: "project match is case sensitive", project: "Alpha", wantErr: true},
+		{name: "duplicate owners are ambiguous", project: "duplicated", wantErr: true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := selectExplainWorkspace(tt.project, owners)
+			if (err != nil) != tt.wantErr {
+				t.Fatalf("selectExplainWorkspace(%q) error = %v, wantErr %v", tt.project, err, tt.wantErr)
+			}
+			if got != tt.want {
+				t.Errorf("selectExplainWorkspace(%q) = %q, want %q", tt.project, got, tt.want)
+			}
+		})
 	}
 }

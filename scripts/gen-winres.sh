@@ -9,7 +9,7 @@
 #   ./scripts/gen-winres.sh              # Use version from version.go
 #   ./scripts/gen-winres.sh 0.49.4       # Explicit version
 #
-# Requires: go-winres (go install github.com/tc-hib/go-winres@latest)
+# Requires: go-winres (go install github.com/tc-hib/go-winres@v0.3.3)
 
 set -euo pipefail
 
@@ -31,7 +31,7 @@ PE_VERSION="${VERSION%%-*}"
 # Check for go-winres
 if ! command -v go-winres &> /dev/null; then
     echo "[winres] Installing go-winres..."
-    go install github.com/tc-hib/go-winres@latest
+    go install github.com/tc-hib/go-winres@v0.3.3
 fi
 
 # Generate .syso files

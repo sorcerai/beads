@@ -20,22 +20,27 @@ def get_git_workspace_roots(path: str) -> tuple[str, str] | None:
             text=True,
             check=False,
             shell=sys.platform == "win32",
+            timeout=5,
             stdin=subprocess.DEVNULL,
         )
-        if result.returncode == 0:
-            lines = [line.strip() for line in result.stdout.splitlines() if line.strip()]
-            if len(lines) >= 2:
-                worktree_root = os.path.realpath(lines[0])
-                common_dir = lines[1]
+        if result.returncode != 0:
+            return None
 
-                if not os.path.isabs(common_dir):
-                    common_dir = os.path.join(path, common_dir)
-                common_dir = os.path.realpath(common_dir)
+        lines = [line.strip() for line in result.stdout.splitlines() if line.strip()]
+        if len(lines) < 2:
+            return None
 
-                main_repo_root = (
-                    os.path.dirname(common_dir) if os.path.basename(common_dir) == ".git" else common_dir
-                )
-                return (worktree_root, main_repo_root)
+        worktree_root = os.path.realpath(lines[0])
+        common_dir = lines[1]
+
+        if not os.path.isabs(common_dir):
+            common_dir = os.path.join(path, common_dir)
+        common_dir = os.path.realpath(common_dir)
+
+        main_repo_root = (
+            os.path.dirname(common_dir) if os.path.basename(common_dir) == ".git" else common_dir
+        )
+        return (worktree_root, main_repo_root)
 
     except Exception as exc:
         logger.debug("Git detection failed for %s: %s", path, exc)

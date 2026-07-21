@@ -10,6 +10,7 @@ permissions:
 
 jobs:
   update-flake-lock:
+    if: ${{ github.repository == 'gastownhall/beads' }}
     runs-on: ubuntu-latest
     steps:
       - name: Mint flake update token

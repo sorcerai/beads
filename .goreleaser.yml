@@ -225,15 +225,14 @@ release:
     brew install beads
     ```
 
-    **Quick Install (macOS/Linux/FreeBSD):**
+    **npm (macOS/Linux/Windows):**
     ```bash
-    curl -sSL https://raw.githubusercontent.com/gastownhall/beads/main/scripts/install.sh | bash
+    npm install -g @beads/bd
     ```
 
-    **Windows (PowerShell):**
-    ```powershell
-    irm https://raw.githubusercontent.com/gastownhall/beads/main/install.ps1 | iex
-    ```
+    **Other supported methods:**
+    See the [installation guide](https://github.com/gastownhall/beads/blob/main/docs/INSTALLING.md).
+
 
     **Manual Install:**
     Download the appropriate binary for your platform below, extract it, and place it in your PATH.

@@ -64,11 +64,11 @@ func CheckCLIVersionLocalOnly(cliVersion string) DoctorCheck {
 	}
 }
 
-// installScriptCommand is the default upgrade/install command for non-Homebrew installations.
-const installScriptCommand = "curl -fsSL https://raw.githubusercontent.com/steveyegge/beads/main/scripts/install.sh | bash"
+// installScriptCommand is the default cross-platform package-manager upgrade command.
+const installScriptCommand = "npm update -g @beads/bd"
 
 // getUpgradeCommand returns the appropriate upgrade command based on how bd was installed.
-// Detects Homebrew on macOS/Linux, and falls back to the install script on all platforms.
+// It detects Homebrew on macOS/Linux and otherwise recommends the npm package.
 func getUpgradeCommand() string {
 	execPath, err := os.Executable()
 	if err != nil {
@@ -97,7 +97,7 @@ func upgradeCommandForPath(execPath string) string {
 		return "brew upgrade beads"
 	}
 
-	// Default to install script (works on all platforms including Windows via WSL/Git Bash)
+	// Default to the cross-platform npm package rather than executing a remote script.
 	return installScriptCommand
 }
 

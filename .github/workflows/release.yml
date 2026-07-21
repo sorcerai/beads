@@ -65,10 +65,12 @@ jobs:
       - name: Set up Python
         uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
         with:
-          python-version: '3.14'
+          python-version: '3.13'
 
       - name: Install uv
-        run: python -m pip install uv==0.11.16
+        uses: astral-sh/setup-uv@11f9893b081a58869d3b5fccaea48c9e9e46f990 # v8.3.2
+        with:
+          version: '0.11.16'
 
       - name: Run MCP package gate
         run: make ci-package-mcp
@@ -128,13 +130,13 @@ jobs:
           sudo apt-get install -y gcc-mingw-w64-x86-64 gcc-aarch64-linux-gnu osslsigncode
 
       - name: Install go-winres for Windows PE resource embedding
-        run: go install github.com/tc-hib/go-winres@latest
+        run: go install github.com/tc-hib/go-winres@v0.3.3
 
       - name: Run GoReleaser
         uses: goreleaser/goreleaser-action@f06c13b6b1a9625abc9e6e439d9c05a8f2190e94 # v7
         with:
           distribution: goreleaser
-          version: '~> v2'
+          version: 'v2.17.0'
           args: >
             release --clean --parallelism 1
             ${{ github.repository != 'gastownhall/beads' && '--skip=publish --skip=announce' || '' }}
@@ -359,7 +361,9 @@ jobs:
           python-version: '3.14'
 
       - name: Install uv
-        run: python -m pip install uv==0.11.16
+        uses: astral-sh/setup-uv@11f9893b081a58869d3b5fccaea48c9e9e46f990 # v8.3.2
+        with:
+          version: '0.11.16'
 
       - name: Download validated MCP dist
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
@@ -378,7 +382,8 @@ jobs:
           TWINE_PASSWORD: ${{ secrets.PYPI_API_TOKEN }}
         run: |
           cd integrations/beads-mcp
-          uv tool run twine upload dist/*
+          uv sync --all-groups --locked
+          uv run twine upload dist/*
 
   publish-npm:
     runs-on: ubuntu-latest
@@ -398,7 +403,7 @@ jobs:
           registry-url: 'https://registry.npmjs.org'
 
       - name: Update npm for OIDC trusted publishing
-        run: npm install -g npm@latest  # Requires npm >= 11.5.1 for trusted publishing
+        run: npm install -g npm@11.5.1
 
       - name: Publish to npm
         run: |

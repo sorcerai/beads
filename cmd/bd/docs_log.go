@@ -32,6 +32,10 @@ var docsLogCmd = &cobra.Command{
 			FatalErrorRespectJSON("not in a git repository")
 		}
 		write, _ := cmd.Flags().GetBool("write")
+		docsDir, err := validatedDocsDir(repoRoot)
+		if err != nil {
+			FatalErrorRespectJSON("bd docs log: %v", err)
+		}
 
 		statusClosed := types.StatusClosed
 		issues, err := store.SearchIssues(rootCtx, "", types.IssueFilter{
@@ -42,7 +46,6 @@ var docsLogCmd = &cobra.Command{
 			FatalErrorRespectJSON("querying closed issues: %v", err)
 		}
 
-		docsDir := docsDirName()
 		rendered := make([]string, 0, len(issues))
 		for _, issue := range issues {
 			parentID, deps := docsIssueLinks(rootCtx, issue)

@@ -1,12 +1,11 @@
 #!/usr/bin/env bash
 #
 # Beads (bd) installation script
-# Usage: curl -fsSL https://raw.githubusercontent.com/gastownhall/beads/main/scripts/install.sh | bash
+# Usage: bash install.sh
 #
-# ⚠️ IMPORTANT: This script must be EXECUTED, never SOURCED
-# ❌ WRONG: source install.sh (will exit your shell on errors)
-# ✅ CORRECT: bash install.sh
-# ✅ CORRECT: curl -fsSL ... | bash
+# This script must be EXECUTED, never SOURCED.
+# WRONG: source install.sh (will exit your shell on errors)
+# CORRECT: download and inspect this file, then run: bash install.sh
 #
 
 set -e
@@ -208,10 +207,10 @@ detect_platform() {
         MINGW*|MSYS*|CYGWIN*)
             log_error "Windows detected ($(uname -s))."
             echo "" >&2
-            echo "  This bash installer is for macOS/Linux. On Windows, use the PowerShell installer:" >&2
+            echo "  This bash installer is for macOS/Linux. On Windows, use npm or another supported method:" >&2
             echo "" >&2
-            echo "    irm https://raw.githubusercontent.com/gastownhall/beads/main/install.ps1 | iex" >&2
-            echo "" >&2
+            echo "    npm install -g @beads/bd" >&2
+            echo "    https://github.com/gastownhall/beads#installation" >&2
             exit 1
             ;;
     esac
@@ -223,10 +222,11 @@ detect_platform() {
         log_warning "WSL (Windows Subsystem for Linux) detected."
         echo "" >&2
         echo "  This will install the Linux version of bd, usable only inside WSL." >&2
-        echo "  If you want bd available in native Windows (PowerShell, cmd), use:" >&2
+        echo "  If you want bd available in native Windows (PowerShell, cmd), use npm or another supported method:" >&2
         echo "" >&2
-        echo "    irm https://raw.githubusercontent.com/gastownhall/beads/main/install.ps1 | iex" >&2
-        echo "" >&2
+        echo "    npm install -g @beads/bd" >&2
+        echo "    https://github.com/gastownhall/beads#installation" >&2
+
         # Only show interactive message and pause if running in a terminal (skip in CI/non-interactive shells)
         if [ -t 0 ]; then
             echo "  Continuing with Linux install for WSL in 5 seconds... (Ctrl+C to cancel)" >&2

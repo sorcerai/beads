@@ -1,6 +1,6 @@
 # Beads (bd) Windows installer
-# Usage:
-#   irm https://raw.githubusercontent.com/gastownhall/beads/main/install.ps1 | iex
+# Usage: download and inspect this file, then run it locally:
+#   .\install.ps1
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"

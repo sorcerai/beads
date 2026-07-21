@@ -32,6 +32,9 @@ var docsInitCmd = &cobra.Command{
 
 // runDocsInit is the testable core behind docsInitCmd.
 func runDocsInit(repoRoot, docsDir string) error {
+	if err := validateDocsDir(repoRoot, docsDir); err != nil {
+		return err
+	}
 	logDir := filepath.Join(repoRoot, docsDir, "log")
 	if err := os.MkdirAll(logDir, 0o750); err != nil {
 		return fmt.Errorf("mkdir %s: %w", logDir, err)
@@ -105,15 +108,31 @@ func wireDocsHook(repoRoot string) (created, wired bool, err error) {
 	}
 	hookPath := filepath.Join(hooksDir, "post-close")
 
-	data, statErr := os.ReadFile(hookPath) // #nosec G304 -- hookPath is <repoRoot|BEADS_DIR>/hooks/post-close, constructed by us.
-	if statErr != nil {
+	_, statErr := os.Lstat(hookPath)
+	if os.IsNotExist(statErr) {
 		if err := os.MkdirAll(hooksDir, 0o750); err != nil {
 			return false, false, err
+		}
+		if err := validatePostCloseHooksDir(hooksDir); err != nil {
+			return false, false, fmt.Errorf("unsafe hooks directory: %w", err)
 		}
 		if err := os.WriteFile(hookPath, []byte(docsHookBaseTemplate), 0o755); err != nil { // #nosec G306 -- hook must be executable.
 			return false, false, err
 		}
 		return true, true, nil
+	}
+	if statErr != nil {
+		return false, false, statErr
+	}
+	if err := upgradeLegacyPostCloseHook(hookPath); err != nil {
+		return false, false, fmt.Errorf("upgrade legacy post-close hook: %w", err)
+	}
+	if err := validatePostCloseHookPath(hookPath); err != nil {
+		return false, false, fmt.Errorf("unsafe post-close hook: %w", err)
+	}
+	data, err := os.ReadFile(hookPath) // #nosec G304 -- validated local hook path.
+	if err != nil {
+		return false, false, err
 	}
 
 	content := string(data)
@@ -124,6 +143,9 @@ func wireDocsHook(repoRoot string) (created, wired bool, err error) {
 		content = content[:idx] + "\n" + docsHookBlock + content[idx:]
 	} else {
 		content += docsHookBlock
+	}
+	if err := validatePostCloseHookPath(hookPath); err != nil {
+		return false, false, fmt.Errorf("unsafe post-close hook: %w", err)
 	}
 	if err := os.WriteFile(hookPath, []byte(content), 0o755); err != nil { // #nosec G306 -- hook must be executable.
 		return false, false, err

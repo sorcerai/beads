@@ -95,6 +95,9 @@ var YamlOnlyKeys = map[string]bool{
 // IsYamlOnlyKey returns true if the given key should be stored in config.yaml
 // rather than the Dolt database.
 func IsYamlOnlyKey(key string) bool {
+	if IsSecretKey(key) {
+		return true
+	}
 	// Check exact match
 	if YamlOnlyKeys[key] {
 		return true
@@ -111,20 +114,51 @@ func IsYamlOnlyKey(key string) bool {
 	return false
 }
 
-// secretKeyPatterns are substrings that identify a yaml-only key as containing
-// sensitive material that should not be written to git-tracked files.
-var secretKeyPatterns = []string{"api_key", "api-key", "secret", "token", "password"}
+// RedactedValue is used whenever a secret config value is displayed outside
+// the explicit `config get` command.
+const RedactedValue = "[REDACTED]"
+
+var secretKeyComponents = map[string]bool{
+	"secret": true, "token": true, "password": true, "passwd": true,
+	"credential": true, "credentials": true,
+	"apikey": true, "privatekey": true, "accesskey": true,
+	"clientcredential": true, "clientcredentials": true,
+	"accesstoken": true, "refreshtoken": true,
+}
+
+var secretKeyPairPrefixes = map[string]bool{"api": true, "private": true, "access": true}
+
+var secretConfigKeys = map[string]bool{
+	"linear.oauth_client_id": true,
+	"ado.pat":                true,
+}
 
 // IsSecretKey returns true if the given config key holds sensitive material
-// (API keys, tokens, passwords) that should not be committed to git.
+// that should not be committed to git or printed by aggregate commands.
 func IsSecretKey(key string) bool {
 	lower := strings.ToLower(key)
-	for _, pattern := range secretKeyPatterns {
-		if strings.Contains(lower, pattern) {
-			return true
-		}
+	if secretConfigKeys[lower] {
+		return true
 	}
-	return false
+	parts := strings.FieldsFunc(lower, func(r rune) bool {
+		return r == '.' || r == '_' || r == '-'
+	})
+	if len(parts) == 0 {
+		return false
+	}
+	last := parts[len(parts)-1]
+	if secretKeyComponents[last] {
+		return true
+	}
+	return last == "key" && len(parts) >= 2 && secretKeyPairPrefixes[parts[len(parts)-2]]
+}
+
+// RedactValue preserves ordinary config values and masks secrets for display.
+func RedactValue(key, value string) string {
+	if IsSecretKey(key) {
+		return RedactedValue
+	}
+	return value
 }
 
 // isGitTracked returns true if the file at path is tracked by git
@@ -452,6 +486,15 @@ func UnsetYamlConfig(key string) error {
 	}
 
 	newContent := commentOutYamlKey(string(content), normalizedKey)
+	if IsSecretKey(key) {
+		updated, removed, removeErr := removeYamlKey(string(content), normalizedKey)
+		if removeErr != nil {
+			return fmt.Errorf("failed to remove secret config: %w", removeErr)
+		}
+		if removed {
+			newContent = updated
+		}
+	}
 
 	if err := os.WriteFile(configPath, []byte(newContent), 0600); err != nil { //nolint:gosec // configPath is validated
 		return fmt.Errorf("failed to write config.yaml: %w", err)
@@ -626,12 +669,16 @@ func updateNestedYamlKey(content, key, value string) (string, bool, error) {
 	if err := yaml.Unmarshal([]byte(content), &root); err != nil {
 		return "", false, err
 	}
+	var mapping *yaml.Node
 	if len(root.Content) == 0 {
-		return "", false, nil
-	}
-	mapping := root.Content[0]
-	if mapping.Kind != yaml.MappingNode {
-		return "", false, nil
+		mapping = &yaml.Node{Kind: yaml.MappingNode, Tag: "!!map"}
+		root.Kind = yaml.DocumentNode
+		root.Content = []*yaml.Node{mapping}
+	} else {
+		mapping = root.Content[0]
+		if mapping.Kind != yaml.MappingNode {
+			return "", false, nil
+		}
 	}
 
 	if findMappingChild(mapping, key) != -1 {
@@ -688,6 +735,55 @@ func findOrCreateNestedScalar(mapping *yaml.Node, parts []string) (*yaml.Node, b
 		current = child
 	}
 	return nil, false
+}
+
+func removeYamlKey(content, key string) (string, bool, error) {
+	var root yaml.Node
+	if err := yaml.Unmarshal([]byte(content), &root); err != nil {
+		return "", false, err
+	}
+	if len(root.Content) == 0 || root.Content[0].Kind != yaml.MappingNode {
+		return content, false, nil
+	}
+
+	mapping := root.Content[0]
+	if idx := findMappingChild(mapping, key); idx != -1 {
+		mapping.Content = append(mapping.Content[:idx], mapping.Content[idx+2:]...)
+		out, err := yaml.Marshal(&root)
+		return string(out), true, err
+	}
+
+	parts := strings.Split(key, ".")
+	if len(parts) < 2 {
+		return content, false, nil
+	}
+	type parentLink struct {
+		mapping *yaml.Node
+		index   int
+	}
+	links := make([]parentLink, 0, len(parts))
+	current := mapping
+	for _, part := range parts {
+		idx := findMappingChild(current, part)
+		if idx == -1 {
+			return content, false, nil
+		}
+		links = append(links, parentLink{mapping: current, index: idx})
+		current = current.Content[idx+1]
+	}
+
+	leaf := links[len(links)-1]
+	leaf.mapping.Content = append(leaf.mapping.Content[:leaf.index], leaf.mapping.Content[leaf.index+2:]...)
+	for i := len(links) - 2; i >= 0; i-- {
+		link := links[i]
+		child := link.mapping.Content[link.index+1]
+		if child.Kind != yaml.MappingNode || len(child.Content) != 0 {
+			break
+		}
+		link.mapping.Content = append(link.mapping.Content[:link.index], link.mapping.Content[link.index+2:]...)
+	}
+	out, err := yaml.Marshal(&root)
+	return string(out), true, err
 }
 
 func findMappingChild(mapping *yaml.Node, name string) int {

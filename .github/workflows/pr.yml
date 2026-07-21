@@ -232,8 +232,12 @@ jobs:
         run: ./scripts/ci/detect-package-gates.sh
 
   package-mcp:
-    name: Package Gate (MCP)
+    name: Package Gate (MCP, Python ${{ matrix.python-version }})
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ['3.10', '3.13']
     needs: [detect-package-gates, build-artifacts]
     steps:
       - name: Check applicability
@@ -251,11 +255,14 @@ jobs:
         if: steps.applicability.outputs.run == 'true'
         uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
         with:
-          python-version: '3.14'
+          python-version: ${{ matrix.python-version }}
 
       - name: Install uv
         if: steps.applicability.outputs.run == 'true'
-        run: python -m pip install uv==0.11.16
+        uses: astral-sh/setup-uv@11f9893b081a58869d3b5fccaea48c9e9e46f990 # v8.3.2
+        with:
+          version: '0.11.16'
+
 
       - name: Download build artifacts
         if: steps.applicability.outputs.run == 'true'
@@ -351,7 +358,7 @@ jobs:
           go-version-file: 'go.mod'
 
       - name: Install Dolt
-        run: curl -fsSL https://github.com/dolthub/dolt/releases/latest/download/install.sh | sudo bash
+        run: ./scripts/install-dolt-ci.sh
 
       - name: Configure Git and Dolt identity
         run: |
@@ -414,7 +421,7 @@ jobs:
           go-version-file: 'go.mod'
 
       - name: Install Dolt CLI
-        run: curl -fsSL https://github.com/dolthub/dolt/releases/latest/download/install.sh | sudo bash
+        run: ./scripts/install-dolt-ci.sh
 
       - name: Verify dolt on PATH
         run: dolt version
@@ -478,7 +485,7 @@ jobs:
           go-version-file: 'go.mod'
 
       - name: Install Dolt CLI
-        run: curl -fsSL https://github.com/dolthub/dolt/releases/latest/download/install.sh | sudo bash
+        run: ./scripts/install-dolt-ci.sh
 
       - name: Configure Git and Dolt identity
         run: |
@@ -531,7 +538,7 @@ jobs:
       - name: golangci-lint
         uses: golangci/golangci-lint-action@ba0d7d2ec06a0ea1cb5fa41b2e4a3ab91d21278a # v9
         with:
-          version: latest
+          version: v2.12.2
           args: --timeout=5m --build-tags=gms_pure_go
 
   ci-gate:

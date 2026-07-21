@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"sort"
 
+	"github.com/steveyegge/beads/internal/config"
 	"github.com/steveyegge/beads/internal/storage/uow"
 	"github.com/steveyegge/beads/internal/types"
 )
@@ -33,10 +34,10 @@ func runConfigSetProxiedServer(ctx context.Context, key, value string) error {
 	if jsonOutput {
 		_ = outputJSON(map[string]string{
 			"key":   key,
-			"value": value,
+			"value": config.RedactValue(key, value),
 		})
 	} else {
-		fmt.Printf("Set %s = %s\n", key, value)
+		fmt.Printf("Set %s = %s\n", key, config.RedactValue(key, value))
 	}
 	printConfigSideEffects(checkConfigSetSideEffects(key, value))
 	return nil
@@ -82,7 +83,7 @@ func runConfigListProxiedServer(ctx context.Context) error {
 	}
 
 	if jsonOutput {
-		_ = outputJSON(cfg)
+		_ = outputJSON(redactedConfigMap(cfg))
 		return nil
 	}
 
@@ -99,7 +100,7 @@ func runConfigListProxiedServer(ctx context.Context) error {
 
 	fmt.Println("\nConfiguration:")
 	for _, k := range keys {
-		fmt.Printf("  %s = %s\n", k, cfg[k])
+		fmt.Printf("  %s = %s\n", k, config.RedactValue(k, cfg[k]))
 	}
 
 	showConfigYAMLOverrides(cfg)
