@@ -40,6 +40,24 @@ mcp_uv_sync() {
     uv sync --all-groups --locked
 }
 
+mcp_dependency_audit() {
+    cd "$MCP_DIR"
+    local marked_requirements="$tmpdir/requirements-marked.txt"
+    local requirements="$tmpdir/requirements-audit.txt"
+    uv export --frozen --all-groups --no-hashes --no-emit-project --output-file "$marked_requirements"
+
+    : >"$requirements"
+    while IFS= read -r requirement; do
+        if [[ -z "$requirement" || "$requirement" == \#* ]]; then
+            continue
+        fi
+        printf '%s\n' "${requirement%% ; *}" >>"$requirements"
+    done <"$marked_requirements"
+    sort -u -o "$requirements" "$requirements"
+
+    uv run pip-audit --strict --no-deps --disable-pip --requirement "$requirements"
+}
+
 mcp_ruff() {
     cd "$MCP_DIR"
     uv run ruff check src/beads_mcp tests
@@ -58,13 +76,14 @@ mcp_pytest() {
 mcp_build() {
     cd "$MCP_DIR"
     rm -rf dist
-    uv build
+    uv build --no-build-isolation
 }
 
 cd "$REPO_ROOT"
 
 ci_time "prepare bd for MCP package" -- prepare_bd_binary
 ci_time "mcp uv sync" -- mcp_uv_sync
+ci_time "mcp dependency audit" -- mcp_dependency_audit
 ci_time "mcp ruff check" -- mcp_ruff
 ci_time "mcp mypy" -- mcp_mypy
 ci_time "mcp pytest" -- mcp_pytest

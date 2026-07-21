@@ -31,7 +31,11 @@ var docsUpdateCmd = &cobra.Command{
 		if repoRoot == "" {
 			return
 		}
-		docsDir := docsDirName()
+		docsDir, err := validatedDocsDir(repoRoot)
+		if err != nil {
+			debug.Logf("docs update: %v\n", err)
+			return
+		}
 
 		entries := make([]docsUpdateEntry, 0, len(args))
 		for _, id := range args {

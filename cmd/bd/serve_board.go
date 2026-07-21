@@ -3,11 +3,14 @@ package main
 import (
 	"bytes"
 	"context"
+	"crypto/subtle"
 	"encoding/json"
 	"fmt"
 	"html/template"
 	"io"
+	"net"
 	"net/http"
+	"net/netip"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -1646,14 +1649,6 @@ func explainIssueInWorkspace(ctx context.Context, dir string, issueID string) (E
 	associatedFiles := make(map[string]string)
 	uncommittedFiles := make(map[string]bool)
 
-	statusOut, statusErr := runGitCmd(ctx, dir, "status", "--porcelain")
-	if statusErr == nil {
-		for k, v := range parseGitStatusPorcelain(statusOut) {
-			uncommittedFiles[k] = true
-			associatedFiles[k] = v
-		}
-	}
-
 	logOut, err := runGitCmd(ctx, dir, "log", "--grep="+issueID, "--name-status", "--pretty=format:", "--max-count=50")
 	if err == nil {
 		for k, v := range parseGitLogNameStatus(logOut) {
@@ -1669,6 +1664,13 @@ func explainIssueInWorkspace(ctx context.Context, dir string, issueID string) (E
 
 	var baseBranch string
 	if isCurrentBranch {
+		statusOut, statusErr := runGitCmd(ctx, dir, "status", "--porcelain")
+		if statusErr == nil {
+			for k, v := range parseGitStatusPorcelain(statusOut) {
+				uncommittedFiles[k] = true
+				associatedFiles[k] = v
+			}
+		}
 		bases := []string{"origin/main", "main", "origin/master", "master"}
 		for _, base := range bases {
 			_, err := runGitCmd(ctx, dir, "diff", "--name-status", base+"...HEAD")
@@ -1800,9 +1802,99 @@ func explainIssueInWorkspace(ctx context.Context, dir string, issueID string) (E
 	return resp, nil
 }
 
-func serveBoard(addr string, refreshSec int, ttl, timeout time.Duration, concurrency int, explicit, globs []string, staleAfter time.Duration, ntfyURL string, showMemories bool) error {
+var (
+	boardTailscaleIPv4 = netip.MustParsePrefix("100.64.0.0/10")
+	boardTailscaleIPv6 = netip.MustParsePrefix("fd7a:115c:a1e0::/48")
+)
+
+func validateBoardBind(addr, authToken string) error {
+	host, _, err := net.SplitHostPort(addr)
+	if err != nil {
+		return fmt.Errorf("invalid --addr: %w", err)
+	}
+	ip, err := netip.ParseAddr(host)
+	if err != nil {
+		return fmt.Errorf("--addr host must be a loopback or Tailscale IP")
+	}
+	ip = ip.Unmap()
+	if ip.IsLoopback() {
+		return nil
+	}
+	if boardTailscaleIPv4.Contains(ip) || boardTailscaleIPv6.Contains(ip) {
+		if authToken == "" {
+			return fmt.Errorf("Tailscale board binds require --auth-token-file")
+		}
+		return nil
+	}
+	return fmt.Errorf("refusing non-loopback, non-Tailscale board bind %q", host)
+}
+
+func boardAuth(token string, next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if token == "" || r.URL.Path == "/healthz" {
+			next.ServeHTTP(w, r)
+			return
+		}
+		candidate := ""
+		if user, password, ok := r.BasicAuth(); ok && user == "beads" {
+			candidate = password
+		} else if value := r.Header.Get("Authorization"); strings.HasPrefix(value, "Bearer ") {
+			candidate = strings.TrimPrefix(value, "Bearer ")
+		}
+		if subtle.ConstantTimeCompare([]byte(candidate), []byte(token)) != 1 {
+			w.Header().Set("WWW-Authenticate", `Basic realm="beads board"`)
+			http.Error(w, "unauthorized", http.StatusUnauthorized)
+			return
+		}
+		next.ServeHTTP(w, r)
+	})
+}
+
+func selectExplainWorkspace(project string, owners map[string][]string) (string, error) {
+	if project == "" {
+		return "", fmt.Errorf("missing project parameter")
+	}
+	dirs := owners[project]
+	switch len(dirs) {
+	case 0:
+		return "", fmt.Errorf("unknown project %q", project)
+	case 1:
+		return dirs[0], nil
+	default:
+		return "", fmt.Errorf("project %q is ambiguous across %d workspaces", project, len(dirs))
+	}
+}
+
+func boardSecurityHeaders(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Cache-Control", "no-store")
+		w.Header().Set("Content-Security-Policy", "default-src 'self'; style-src 'self' 'unsafe-inline'; script-src 'self' 'unsafe-inline'; frame-ancestors 'none'")
+		w.Header().Set("Referrer-Policy", "no-referrer")
+		w.Header().Set("X-Content-Type-Options", "nosniff")
+		next.ServeHTTP(w, r)
+	})
+}
+
+func readBoardAuthToken(path string) (string, error) {
+	if path == "" {
+		return "", nil
+	}
+	data, _, err := readVerifiedRegularFile(path, 0o077)
+	if err != nil {
+		return "", fmt.Errorf("auth token file must be a private regular file (mode 0600): %w", err)
+	}
+	token := strings.TrimSpace(string(data))
+	if token == "" {
+		return "", fmt.Errorf("auth token file is empty")
+	}
+	return token, nil
+}
+
+func serveBoard(addr string, refreshSec int, ttl, timeout time.Duration, concurrency int, explicit, globs []string, staleAfter time.Duration, ntfyURL string, showMemories bool, authToken string) error {
 	notifier := newNtfyNotifier(ntfyURL)
 	depths := &depthSampler{}
+	var projectOwnersMu sync.RWMutex
+	projectOwners := make(map[string][]string)
 	cache := newBoardCache(ttl, func(ctx context.Context) ([]byte, error) {
 		// Resolve per fetch so workspaces created after startup are picked up
 		// live (no restart). Cheap: a few globs + stats.
@@ -1810,6 +1902,9 @@ func serveBoard(addr string, refreshSec int, ttl, timeout time.Duration, concurr
 		if err != nil {
 			return nil, err
 		}
+		projectOwnersMu.Lock()
+		projectOwners = payload.projectOwners
+		projectOwnersMu.Unlock()
 		now := time.Now()
 		depths.add(readyDepth(&payload.Rollup, "")) // sampler history is fleet-wide
 		// observe runs synchronously (it feeds BlockedGrew health and snapshots
@@ -1841,34 +1936,12 @@ func serveBoard(addr string, refreshSec int, ttl, timeout time.Duration, concurr
 			return
 		}
 
-		wDirs := resolveWorkspaces(explicit, globs)
-		var targetDir string
-
-		if project != "" {
-			for _, d := range wDirs {
-				if workspaceName(d) == project {
-					targetDir = d
-					break
-				}
-			}
-		}
-
-		if targetDir == "" && len(wDirs) > 1 {
-			for _, d := range wDirs {
-				testResp, err := explainIssueInWorkspace(r.Context(), d, issue)
-				if err == nil && len(testResp.Files) > 0 {
-					targetDir = d
-					break
-				}
-			}
-		}
-
-		if targetDir == "" {
-			if len(wDirs) > 0 {
-				targetDir = wDirs[0]
-			} else {
-				targetDir = ""
-			}
+		projectOwnersMu.RLock()
+		targetDir, err := selectExplainWorkspace(project, projectOwners)
+		projectOwnersMu.RUnlock()
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
 		}
 
 		resp, err := explainIssueInWorkspace(r.Context(), targetDir, issue)
@@ -1907,7 +1980,7 @@ func serveBoard(addr string, refreshSec int, ttl, timeout time.Duration, concurr
 		}
 	})
 	srv := &http.Server{
-		Addr: addr, Handler: mux,
+		Addr: addr, Handler: boardSecurityHeaders(boardAuth(authToken, mux)),
 		ReadHeaderTimeout: 5 * time.Second,
 		WriteTimeout:      30 * time.Second,
 	}
@@ -1916,10 +1989,11 @@ func serveBoard(addr string, refreshSec int, ttl, timeout time.Duration, concurr
 
 var serveBoardCmd = &cobra.Command{
 	Use:   "serve-board",
-	Short: "Serve the read-only project board over HTTP (tailnet-only)",
+	Short: "Serve the read-only project board over protected HTTP",
 	Long: `Serves a read-only HTML board. Holds NO database credentials: it
-execs 'bd board --json' behind a singleflight+TTL cache. Bind to a tailnet
-IP only; never a public interface.`,
+execs 'bd board --json' behind a singleflight+TTL cache. Loopback binds may
+run without authentication. Tailscale binds require --auth-token-file.
+Public, wildcard, and ordinary private-network binds are refused.`,
 	RunE: func(cmd *cobra.Command, _ []string) error {
 		addr, _ := cmd.Flags().GetString("addr")
 		refresh, _ := cmd.Flags().GetInt("refresh")
@@ -1931,18 +2005,26 @@ IP only; never a public interface.`,
 		staleAfter, _ := cmd.Flags().GetDuration("stale-after")
 		ntfyURL, _ := cmd.Flags().GetString("ntfy-url")
 		showMemories, _ := cmd.Flags().GetBool("show-memories")
+		authTokenFile, _ := cmd.Flags().GetString("auth-token-file")
 		if addr == "" {
-			return fmt.Errorf("--addr is required (tailnet IP:port, e.g. 100.x.y.z:8099)")
+			return fmt.Errorf("--addr is required (loopback or Tailscale IP:port)")
 		}
-		fmt.Printf("serving board on http://%s (refresh=%ds ttl=%ds workspaces=%d globs=%d concurrency=%d stale-after=%s ntfy=%v memories=%v)\n",
-			addr, refresh, ttlSec, len(workspaces), len(globs), concurrency, staleAfter, ntfyURL != "", showMemories)
+		authToken, err := readBoardAuthToken(authTokenFile)
+		if err != nil {
+			return fmt.Errorf("read --auth-token-file: %w", err)
+		}
+		if err := validateBoardBind(addr, authToken); err != nil {
+			return err
+		}
+		fmt.Printf("serving board on http://%s (auth=%v refresh=%ds ttl=%ds workspaces=%d globs=%d concurrency=%d stale-after=%s ntfy=%v memories=%v)\n",
+			addr, authToken != "", refresh, ttlSec, len(workspaces), len(globs), concurrency, staleAfter, ntfyURL != "", showMemories)
 		return serveBoard(addr, refresh,
-			time.Duration(ttlSec)*time.Second, time.Duration(timeoutSec)*time.Second, concurrency, workspaces, globs, staleAfter, ntfyURL, showMemories)
+			time.Duration(ttlSec)*time.Second, time.Duration(timeoutSec)*time.Second, concurrency, workspaces, globs, staleAfter, ntfyURL, showMemories, authToken)
 	},
 }
 
 func init() {
-	serveBoardCmd.Flags().String("addr", "", "Tailnet bind address, e.g. 100.x.y.z:8099 (required)")
+	serveBoardCmd.Flags().String("addr", "", "Loopback or Tailscale bind address (required)")
 	serveBoardCmd.Flags().Int("refresh", 30, "Browser auto-refresh seconds (spec: >=15)")
 	serveBoardCmd.Flags().Int("cache-ttl", 20, "Server cache TTL seconds (<= refresh)")
 	serveBoardCmd.Flags().Int("exec-timeout", 10, "Hard timeout for 'bd board --json' seconds")
@@ -1951,6 +2033,7 @@ func init() {
 	serveBoardCmd.Flags().StringArray("workspace-glob", nil, "Glob for workspace dirs, expanded live on each fetch so new projects appear without a restart; repeatable (e.g. /tmp/beads-*-workspace)")
 	serveBoardCmd.Flags().Duration("stale-after", 2*time.Hour, "Flag in_progress issues as stale after this much inactivity")
 	serveBoardCmd.Flags().String("ntfy-url", "", "ntfy topic URL for push notifications (empty = disabled)")
+	serveBoardCmd.Flags().String("auth-token-file", "", "Private file containing the board HTTP Basic/Bearer token (required for Tailscale binds)")
 	serveBoardCmd.Flags().Bool("show-memories", false, "Fetch and render the per-workspace bd-remember panel (default off: adds a second bd subprocess per workspace)")
 	rootCmd.AddCommand(serveBoardCmd)
 }

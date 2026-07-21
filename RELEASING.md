@@ -297,8 +297,8 @@ The MCP server is a Python package published separately to PyPI.
 ### Prerequisites
 
 ```bash
-# Install build tools
-pip install build twine
+# Install the repository's locked development and release dependencies
+uv sync --all-groups --locked
 
 # Verify PyPI credentials
 cat ~/.pypirc  # Should have token or credentials
@@ -520,9 +520,10 @@ bd version
 ### Installation Script
 
 ```bash
-# Test quick install script
-curl -fsSL https://raw.githubusercontent.com/gastownhall/beads/main/scripts/install.sh | bash
+# From the checked-out release tag, test the local script directly.
+bash scripts/install.sh
 bd version
+
 ```
 
 ### CLI Docs Pin
@@ -671,11 +672,11 @@ jobs:
   goreleaser:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v3
-      - uses: actions/setup-go@v4
-      - uses: goreleaser/goreleaser-action@v4
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v6
+      - uses: actions/setup-go@4a3601121dd01d1626a1e23e37211e3254c1c06c # v6
+      - uses: goreleaser/goreleaser-action@5daf1e915a5f0af01ddbcd89a43b8061ff4f1a89 # v7
         with:
-          version: latest
+          version: v2.17.0
           args: release --clean
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -684,8 +685,8 @@ jobs:
     needs: goreleaser
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v3
-      - uses: actions/setup-node@v3
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v6
+      - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6
         with:
           node-version: '18'
           registry-url: 'https://registry.npmjs.org'
@@ -697,13 +698,16 @@ jobs:
     needs: goreleaser
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v3
-      - uses: actions/setup-python@v4
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v6
+      - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6
+      - uses: astral-sh/setup-uv@11f9893b081a58869d3b5fccaea48c9e9e46f990 # v8.3.2
+        with:
+          version: '0.11.16'
       - run: |
-          cd integrations/mcp/server
-          pip install build twine
-          python -m build
-          twine upload dist/*
+          cd integrations/beads-mcp
+          uv sync --all-groups --locked
+          uv build --no-sources
+          uv run twine upload dist/*
         env:
           TWINE_USERNAME: __token__
           TWINE_PASSWORD: ${{ secrets.PYPI_TOKEN }}

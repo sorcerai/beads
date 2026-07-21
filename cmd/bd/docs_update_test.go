@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -113,6 +114,159 @@ func docsInitTestRepo(t *testing.T) (repoRoot string) {
 	t.Setenv("BEADS_DIR", "")
 	t.Chdir(repoRoot)
 	return repoRoot
+}
+
+func TestValidateDocsDir(t *testing.T) {
+	repo := t.TempDir()
+	outside := t.TempDir()
+	if err := os.Symlink(outside, filepath.Join(repo, "escape")); err != nil {
+		t.Fatalf("create escaping symlink: %v", err)
+	}
+
+	tests := []struct {
+		name    string
+		dir     string
+		wantErr bool
+	}{
+		{name: "wiki", dir: "wiki"},
+		{name: "nested wiki", dir: "docs/wiki"},
+		{name: "absolute path", dir: filepath.Join(repo, "wiki"), wantErr: true},
+		{name: "empty", dir: "", wantErr: true},
+		{name: "current directory", dir: ".", wantErr: true},
+		{name: "parent directory", dir: "..", wantErr: true},
+		{name: "parent traversal", dir: "../outside", wantErr: true},
+		{name: "nested traversal", dir: "docs/../../outside", wantErr: true},
+		{name: "unclean relative path", dir: "docs/../wiki", wantErr: true},
+		{name: "symlink escapes repo", dir: "escape/wiki", wantErr: true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := validateDocsDir(repo, tt.dir)
+			if tt.wantErr && err == nil {
+				t.Errorf("validateDocsDir(%q) succeeded, want containment error", tt.dir)
+			}
+			if !tt.wantErr && err != nil {
+				t.Errorf("validateDocsDir(%q) = %v, want success", tt.dir, err)
+			}
+		})
+	}
+}
+
+func TestRunDocsInitRejectsOutsideDocsDir(t *testing.T) {
+	base := t.TempDir()
+	repo := filepath.Join(base, "repo")
+	outside := filepath.Join(base, "outside")
+	if err := os.Mkdir(repo, 0o755); err != nil {
+		t.Fatalf("create repo: %v", err)
+	}
+	t.Setenv("BEADS_DIR", "")
+	t.Chdir(repo)
+
+	if err := runDocsInit(repo, "../outside"); err == nil {
+		t.Error("runDocsInit accepted docs.dir outside the repo")
+	}
+	if _, err := os.Stat(outside); !os.IsNotExist(err) {
+		t.Errorf("runDocsInit created outside path %s", outside)
+	}
+}
+
+func TestValidateDocsDirRejectsSymlinkDescendants(t *testing.T) {
+	tests := []struct {
+		name       string
+		descendant string
+		targetDir  bool
+	}{
+		{name: "log directory", descendant: "log", targetDir: true},
+		{name: "state file", descendant: ".docs-state"},
+		{name: "wiki page", descendant: "page.md"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			repo := t.TempDir()
+			wiki := filepath.Join(repo, "wiki")
+			if err := os.Mkdir(wiki, 0o755); err != nil {
+				t.Fatalf("create wiki: %v", err)
+			}
+			outside := t.TempDir()
+			target := filepath.Join(outside, "target")
+			if tt.targetDir {
+				if err := os.Mkdir(target, 0o755); err != nil {
+					t.Fatalf("create outside directory: %v", err)
+				}
+			} else if err := os.WriteFile(target, []byte("outside sentinel"), 0o600); err != nil {
+				t.Fatalf("create outside file: %v", err)
+			}
+			if err := os.Symlink(target, filepath.Join(wiki, tt.descendant)); err != nil {
+				t.Fatalf("create descendant symlink: %v", err)
+			}
+
+			if err := validateDocsDir(repo, "wiki"); err == nil {
+				t.Errorf("validateDocsDir accepted wiki with symlink descendant %q", tt.descendant)
+			}
+		})
+	}
+}
+
+func TestRunDocsInitRejectsSymlinkDescendantsWithoutOutsideWrites(t *testing.T) {
+	t.Setenv("BEADS_DIR", "")
+	tests := []struct {
+		name       string
+		descendant string
+		targetDir  bool
+	}{
+		{name: "log directory", descendant: "log", targetDir: true},
+		{name: "state file", descendant: ".docs-state"},
+		{name: "wiki page", descendant: "page.md"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			base := t.TempDir()
+			repo := filepath.Join(base, "repo")
+			wiki := filepath.Join(repo, "wiki")
+			if err := os.MkdirAll(wiki, 0o755); err != nil {
+				t.Fatalf("create wiki: %v", err)
+			}
+			t.Chdir(repo)
+
+			outside := filepath.Join(base, "outside")
+			if err := os.Mkdir(outside, 0o755); err != nil {
+				t.Fatalf("create outside root: %v", err)
+			}
+			target := filepath.Join(outside, "target")
+			const sentinel = "outside sentinel"
+			if tt.targetDir {
+				if err := os.Mkdir(target, 0o755); err != nil {
+					t.Fatalf("create outside directory: %v", err)
+				}
+				if err := os.WriteFile(filepath.Join(target, "sentinel"), []byte(sentinel), 0o600); err != nil {
+					t.Fatalf("seed outside directory: %v", err)
+				}
+			} else if err := os.WriteFile(target, []byte(sentinel), 0o600); err != nil {
+				t.Fatalf("create outside file: %v", err)
+			}
+			if err := os.Symlink(target, filepath.Join(wiki, tt.descendant)); err != nil {
+				t.Fatalf("create descendant symlink: %v", err)
+			}
+
+			if err := runDocsInit(repo, "wiki"); err == nil {
+				t.Errorf("runDocsInit accepted wiki with symlink descendant %q", tt.descendant)
+			}
+			outsidePath := target
+			if tt.targetDir {
+				outsidePath = filepath.Join(target, "sentinel")
+			}
+			got, err := os.ReadFile(outsidePath)
+			if err != nil {
+				t.Fatalf("read outside sentinel after rejected init: %v", err)
+			}
+			if string(got) != sentinel {
+				t.Errorf("runDocsInit modified outside target through %q: got %q", tt.descendant, got)
+			}
+		})
+	}
 }
 
 func TestDocsInitIdempotent(t *testing.T) {
@@ -362,6 +516,180 @@ func TestDocsWireHookMarkerDetection(t *testing.T) {
 	hook, _ := os.ReadFile(hookPath)
 	if strings.Count(string(hook), docsHookMarker) != 1 {
 		t.Fatalf("managed marker must be spliced in exactly once:\n%s", hook)
+	}
+}
+
+func TestWireDocsHookRejectsSymlinkMutation(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("post-close hooks require POSIX symlink semantics")
+	}
+
+	tests := []struct {
+		name         string
+		symlinkHooks bool
+	}{
+		{name: "hooks directory symlink", symlinkHooks: true},
+		{name: "post-close file symlink"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			repo := t.TempDir()
+			beadsDir := filepath.Join(repo, ".beads")
+			if err := os.Mkdir(beadsDir, 0o700); err != nil {
+				t.Fatalf("create .beads: %v", err)
+			}
+			t.Setenv("BEADS_DIR", "")
+			t.Chdir(repo)
+
+			hooksDir := filepath.Join(beadsDir, "hooks")
+			outside := t.TempDir()
+			outsideHook := filepath.Join(outside, postCloseHookName)
+			const sentinel = "outside hook sentinel\n"
+			if err := os.WriteFile(outsideHook, []byte(sentinel), 0o700); err != nil {
+				t.Fatalf("write outside sentinel: %v", err)
+			}
+			if tt.symlinkHooks {
+				if err := os.Symlink(outside, hooksDir); err != nil {
+					t.Fatalf("symlink hooks directory: %v", err)
+				}
+			} else {
+				if err := os.Mkdir(hooksDir, 0o700); err != nil {
+					t.Fatalf("create hooks directory: %v", err)
+				}
+				if err := os.Symlink(outsideHook, filepath.Join(hooksDir, postCloseHookName)); err != nil {
+					t.Fatalf("symlink post-close hook: %v", err)
+				}
+			}
+
+			created, wired, err := wireDocsHook(repo)
+			if err == nil || created || wired {
+				t.Errorf("wireDocsHook did not refuse symlink: created=%v wired=%v err=%v", created, wired, err)
+			}
+			data, readErr := os.ReadFile(outsideHook)
+			if readErr != nil {
+				t.Fatalf("read outside sentinel: %v", readErr)
+			}
+			if string(data) != sentinel {
+				t.Errorf("wireDocsHook modified outside sentinel:\n%s", data)
+			}
+		})
+	}
+}
+
+func TestWireDocsHookRejectsWritableMutation(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("post-close hooks require POSIX symlink and permission semantics")
+	}
+
+	tests := []struct {
+		name string
+		kind string
+		safe bool
+	}{
+		{name: "ordinary existing hook", kind: "safe", safe: true},
+		{name: "hook group writable", kind: "hook-group-writable"},
+		{name: "hook other writable", kind: "hook-other-writable"},
+		{name: "hooks directory group writable", kind: "directory-group-writable"},
+		{name: "hooks directory other writable", kind: "directory-other-writable"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			repo := t.TempDir()
+			beadsDir := filepath.Join(repo, ".beads")
+			if err := os.Mkdir(beadsDir, 0o700); err != nil {
+				t.Fatalf("create .beads: %v", err)
+			}
+			t.Setenv("BEADS_DIR", "")
+			t.Chdir(repo)
+
+			hooksDir := filepath.Join(beadsDir, "hooks")
+			hookPath := filepath.Join(hooksDir, postCloseHookName)
+			preservedPath := hookPath
+			preserved := []byte("#!/bin/sh\nexit 0\n")
+			expectAbsent := false
+
+			switch tt.kind {
+			case "directory-symlink":
+				outsideHooks := filepath.Join(t.TempDir(), "hooks")
+				if err := os.Mkdir(outsideHooks, 0o700); err != nil {
+					t.Fatalf("create outside hooks directory: %v", err)
+				}
+				preservedPath = filepath.Join(outsideHooks, postCloseHookName)
+				expectAbsent = true
+				if err := os.Symlink(outsideHooks, hooksDir); err != nil {
+					t.Fatalf("symlink hooks directory: %v", err)
+				}
+			default:
+				if err := os.Mkdir(hooksDir, 0o700); err != nil {
+					t.Fatalf("create hooks directory: %v", err)
+				}
+				if tt.kind == "hook-symlink" {
+					preservedPath = filepath.Join(t.TempDir(), postCloseHookName)
+					if err := os.WriteFile(preservedPath, preserved, 0o600); err != nil {
+						t.Fatalf("create outside hook target: %v", err)
+					}
+					if err := os.Symlink(preservedPath, hookPath); err != nil {
+						t.Fatalf("symlink hook: %v", err)
+					}
+				} else if err := os.WriteFile(hookPath, preserved, 0o700); err != nil {
+					t.Fatalf("write hook: %v", err)
+				}
+			}
+
+			switch tt.kind {
+			case "hook-group-writable":
+				if err := os.Chmod(hookPath, 0o720); err != nil {
+					t.Fatalf("chmod hook: %v", err)
+				}
+			case "hook-other-writable":
+				if err := os.Chmod(hookPath, 0o702); err != nil {
+					t.Fatalf("chmod hook: %v", err)
+				}
+			case "directory-group-writable":
+				if err := os.Chmod(hooksDir, 0o770); err != nil {
+					t.Fatalf("chmod hooks directory: %v", err)
+				}
+			case "directory-other-writable":
+				if err := os.Chmod(hooksDir, 0o707); err != nil {
+					t.Fatalf("chmod hooks directory: %v", err)
+				}
+			}
+
+			created, wired, err := wireDocsHook(repo)
+			if tt.safe {
+				if err != nil || created || !wired {
+					t.Fatalf("wireDocsHook safe result: created=%v wired=%v err=%v", created, wired, err)
+				}
+				data, readErr := os.ReadFile(hookPath)
+				if readErr != nil {
+					t.Fatalf("read safely wired hook: %v", readErr)
+				}
+				content := string(data)
+				if !strings.HasPrefix(content, "#!/bin/sh\n") || !strings.HasSuffix(content, "exit 0\n") || strings.Count(content, docsHookMarker) != 1 {
+					t.Fatalf("safe existing hook was not preserved and wired once:\n%s", data)
+				}
+				return
+			}
+
+			if err == nil || created || wired {
+				t.Errorf("wireDocsHook did not refuse unsafe %s: created=%v wired=%v err=%v", tt.kind, created, wired, err)
+			}
+			if expectAbsent {
+				if _, statErr := os.Lstat(preservedPath); !os.IsNotExist(statErr) {
+					t.Errorf("wireDocsHook created outside target %s", preservedPath)
+				}
+				return
+			}
+			data, readErr := os.ReadFile(preservedPath)
+			if readErr != nil {
+				t.Fatalf("read preserved hook target: %v", readErr)
+			}
+			if string(data) != string(preserved) {
+				t.Errorf("wireDocsHook modified refused target %s:\n%s", preservedPath, data)
+			}
+		})
 	}
 }
 

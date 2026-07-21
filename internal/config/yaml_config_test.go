@@ -774,8 +774,13 @@ func TestIsSecretKey(t *testing.T) {
 		key      string
 		expected bool
 	}{
-		{"linear.api_key", true},
 		{"github.token", true},
+		{"linear.api_key", true},
+		{"linear.oauth_client_id", true},
+		{"linear.oauth_client_secret", true},
+		{"jira.api_token", true},
+		{"gitlab.token", true},
+		{"ado.pat", true},
 		{"some.password", true},
 		{"some.secret", true},
 		{"some.api-key", true},
@@ -792,6 +797,56 @@ func TestIsSecretKey(t *testing.T) {
 			got := IsSecretKey(tt.key)
 			if got != tt.expected {
 				t.Errorf("IsSecretKey(%q) = %v, want %v", tt.key, got, tt.expected)
+			}
+		})
+	}
+}
+
+func TestSecretKeysAreAlwaysYamlOnly(t *testing.T) {
+	tests := []string{
+		"custom.password",
+		"linear.refresh_token",
+		"ado.private_key",
+		"custom.api-key",
+		"custom.secret-token",
+	}
+
+	for _, key := range tests {
+		t.Run(key, func(t *testing.T) {
+			if !IsSecretKey(key) {
+				t.Fatalf("IsSecretKey(%q) = false, want true", key)
+			}
+			if !IsYamlOnlyKey(key) {
+				t.Errorf("secret key %q is not yaml-only", key)
+			}
+		})
+	}
+}
+
+func TestIsSecretKeyNameBoundaries(t *testing.T) {
+	tests := []struct {
+		key  string
+		want bool
+	}{
+		{key: "custom.accessKey", want: true},
+		{key: "custom.accesskey", want: true},
+		{key: "custom.privateKey", want: true},
+		{key: "custom.apiKey", want: true},
+		{key: "custom.credentials", want: true},
+		{key: "custom.clientCredentials", want: true},
+		{key: "custom.accessToken", want: true},
+		{key: "custom.token_limit", want: false},
+		{key: "custom.tokenizer", want: false},
+		{key: "custom.secretary", want: false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.key, func(t *testing.T) {
+			if got := IsSecretKey(tt.key); got != tt.want {
+				t.Errorf("IsSecretKey(%q) = %v, want %v", tt.key, got, tt.want)
+			}
+			if tt.want && !IsYamlOnlyKey(tt.key) {
+				t.Errorf("secret key %q is not yaml-only", tt.key)
 			}
 		})
 	}
@@ -859,7 +914,7 @@ func TestCheckSecretKeyGitSafety_RefusesGitTrackedSecret(t *testing.T) {
 	}
 }
 
-func TestCheckSecretKeyGitSafety_AllowsDatabaseBackedSecretKey(t *testing.T) {
+func TestCheckSecretKeyGitSafety_RejectsTrackedNotionToken(t *testing.T) {
 	tmpDir := t.TempDir()
 
 	gitInit := exec.Command("git", "init")
@@ -882,10 +937,12 @@ func TestCheckSecretKeyGitSafety_AllowsDatabaseBackedSecretKey(t *testing.T) {
 		t.Fatalf("git add failed: %v\n%s", err, out)
 	}
 
-	// Secret-looking keys that are not YAML-backed do not write to config.yaml.
 	err := checkSecretGitTracked(configPath, "notion.token")
-	if err != nil {
-		t.Fatalf("expected no error for database-backed secret key, got: %v", err)
+	if err == nil {
+		t.Fatal("expected tracked config.yaml to reject notion.token")
+	}
+	if !strings.Contains(err.Error(), "refusing to write secret key") {
+		t.Fatalf("unexpected tracked-secret error: %v", err)
 	}
 }
 
@@ -1046,6 +1103,60 @@ other-setting: value
 	}
 	if !strings.Contains(contentStr, "other-setting: value") {
 		t.Errorf("config.yaml should preserve other settings, got:\n%s", contentStr)
+	}
+}
+
+func TestUnsetSecretYamlConfigRemovesNestedAndFlatNodes(t *testing.T) {
+	tests := []struct {
+		name      string
+		key       string
+		secret    string
+		content   string
+		preserved string
+	}{
+		{
+			name:      "nested secret",
+			key:       "linear.refresh_token",
+			secret:    "nested-refresh-secret",
+			content:   "linear:\n  refresh_token: nested-refresh-secret\n  team_id: TEAM\nother: keep\n",
+			preserved: "team_id: TEAM",
+		},
+		{
+			name:      "flat dotted secret",
+			key:       "linear.refresh_token",
+			secret:    "flat-refresh-secret",
+			content:   "linear.refresh_token: flat-refresh-secret\nlinear.team_id: TEAM\nother: keep\n",
+			preserved: "linear.team_id: TEAM",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			beadsDir := filepath.Join(t.TempDir(), ".beads")
+			if err := os.MkdirAll(beadsDir, 0o755); err != nil {
+				t.Fatal(err)
+			}
+			configPath := filepath.Join(beadsDir, "config.yaml")
+			if err := os.WriteFile(configPath, []byte(tt.content), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			t.Setenv("BEADS_DIR", beadsDir)
+
+			if err := UnsetYamlConfig(tt.key); err != nil {
+				t.Fatalf("UnsetYamlConfig(%q): %v", tt.key, err)
+			}
+			data, err := os.ReadFile(configPath)
+			if err != nil {
+				t.Fatal(err)
+			}
+			got := string(data)
+			if strings.Contains(got, tt.secret) || strings.Contains(got, "refresh_token:") {
+				t.Errorf("secret key %q remains in config.yaml, including as a comment:\n%s", tt.key, got)
+			}
+			if !strings.Contains(got, tt.preserved) || !strings.Contains(got, "other: keep") {
+				t.Errorf("unsetting %q removed unrelated YAML:\n%s", tt.key, got)
+			}
+		})
 	}
 }
 

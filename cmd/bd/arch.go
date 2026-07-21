@@ -212,11 +212,25 @@ func seedPostCloseHook(repoRoot string) bool {
 		hooksDir = filepath.Join(repoRoot, ".beads", "hooks")
 	}
 	hookPath := filepath.Join(hooksDir, "post-close")
-	if _, err := os.Stat(hookPath); err == nil {
+	if _, err := os.Lstat(hookPath); err == nil {
+		if upgradeErr := upgradeLegacyPostCloseHook(hookPath); upgradeErr != nil {
+			fmt.Fprintf(os.Stderr, "Warning: could not upgrade legacy post-close hook %s: %v\n", hookPath, upgradeErr)
+			return false
+		}
+		if unsafeErr := validatePostCloseHookPath(hookPath); unsafeErr != nil {
+			fmt.Fprintf(os.Stderr, "Warning: refusing unsafe post-close hook %s: %v\n", hookPath, unsafeErr)
+		}
 		return false // already exists — never overwrite
+	} else if !os.IsNotExist(err) {
+		fmt.Fprintf(os.Stderr, "Warning: could not inspect post-close hook: %v\n", err)
+		return false
 	}
 	if err := os.MkdirAll(hooksDir, 0o750); err != nil {
 		fmt.Fprintf(os.Stderr, "Warning: could not create hooks dir %s: %v\n", hooksDir, err)
+		return false
+	}
+	if err := validatePostCloseHooksDir(hooksDir); err != nil {
+		fmt.Fprintf(os.Stderr, "Warning: refusing unsafe hooks directory %s: %v\n", hooksDir, err)
 		return false
 	}
 	if err := os.WriteFile(hookPath, []byte(postCloseHookTemplate), 0o755); err != nil {
@@ -322,8 +336,8 @@ if [ ! -f ARCH.md ]; then
   echo "ℹ  no ARCH.md — run 'bd arch init' to scaffold construction guardrails." >&2
 fi
 
-# --- Tier 1: deterministic check (free, 0 tokens) ---
-if [ -x ./scripts/arch-check.sh ]; then
+# --- Tier 1: deterministic check (explicit opt-in; runs repository code) ---
+if [ "${BD_ARCH_CHECK:-0}" = "1" ] && [ -x ./scripts/arch-check.sh ]; then
   ./scripts/arch-check.sh || echo "⚠  see arch-check output above (advisory)" >&2
 fi
 

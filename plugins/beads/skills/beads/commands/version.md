@@ -19,7 +19,7 @@ Display:
 - Compatibility status (✓ compatible or ⚠️ update needed)
 
 If versions are mismatched, provide instructions:
-- Update bd CLI: `curl -fsSL https://raw.githubusercontent.com/gastownhall/beads/main/scripts/install.sh | bash`
+- Update bd CLI: `brew upgrade beads` or `npm update -g @beads/bd`
 - Update plugin: `/plugin update beads`
 - Restart Claude Code after updating
 

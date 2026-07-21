@@ -431,3 +431,127 @@ func TestCollectViperEntriesMetricsUserGlobalProvenance(t *testing.T) {
 		t.Errorf("config show --json entry %s misattributes user-global value to project config.yaml", encoded)
 	}
 }
+
+func TestConfigShowAndListRedactSecrets(t *testing.T) {
+	fake := setupConfigOutputTest(t)
+
+	const (
+		yamlSecret = "yaml-aggregate-secret"
+		dbSecret   = "database-aggregate-secret"
+		yamlValue  = "visible-yaml-value"
+		dbValue    = "visible-database-value"
+	)
+	if err := config.SetYamlConfig("ado.pat", yamlSecret); err != nil {
+		t.Fatalf("set YAML secret: %v", err)
+	}
+	if err := config.SetYamlConfig("actor", yamlValue); err != nil {
+		t.Fatalf("set YAML non-secret: %v", err)
+	}
+	fake.values["custom.password"] = dbSecret
+	fake.values["custom.visible"] = dbValue
+
+	config.ResetForTesting()
+	if err := config.Initialize(); err != nil {
+		t.Fatalf("reload config: %v", err)
+	}
+
+	tests := []struct {
+		name        string
+		run         func() error
+		jsonOutput  bool
+		markerCount int
+		wantValues  map[string]string
+		jsonList    bool
+		jsonShow    bool
+	}{
+		{
+			name:        "show text",
+			run:         func() error { return configShowCmd.RunE(configShowCmd, nil) },
+			markerCount: 2,
+			wantValues:  map[string]string{"actor": yamlValue, "custom.visible": dbValue},
+		},
+		{
+			name:        "show JSON",
+			run:         func() error { return configShowCmd.RunE(configShowCmd, nil) },
+			jsonOutput:  true,
+			markerCount: 2,
+			wantValues: map[string]string{
+				"ado.pat":         "[REDACTED]",
+				"custom.password": "[REDACTED]",
+				"actor":           yamlValue,
+				"custom.visible":  dbValue,
+			},
+			jsonShow: true,
+		},
+		{
+			name:        "list text",
+			run:         func() error { return configListCmd.RunE(configListCmd, nil) },
+			markerCount: 2,
+			wantValues:  map[string]string{"actor": yamlValue, "custom.visible": dbValue},
+		},
+		{
+			name:        "list JSON",
+			run:         func() error { return configListCmd.RunE(configListCmd, nil) },
+			jsonOutput:  true,
+			markerCount: 1,
+			wantValues: map[string]string{
+				"custom.password": "[REDACTED]",
+				"custom.visible":  dbValue,
+			},
+			jsonList: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			jsonOutput = tt.jsonOutput
+			out := captureStdout(t, tt.run)
+
+			for _, secret := range []string{yamlSecret, dbSecret} {
+				if strings.Contains(out, secret) {
+					t.Errorf("config %s leaked secret %q:\n%s", tt.name, secret, out)
+				}
+			}
+			if got := strings.Count(out, "[REDACTED]"); got != tt.markerCount {
+				t.Errorf("config %s contains %d redaction markers, want %d:\n%s", tt.name, got, tt.markerCount, out)
+			}
+
+			if tt.jsonShow {
+				var entries []configEntry
+				if err := json.Unmarshal([]byte(out), &entries); err != nil {
+					t.Fatalf("parse config show JSON: %v\n%s", err, out)
+				}
+				got := make(map[string]string, len(entries))
+				for _, entry := range entries {
+					got[entry.Key] = entry.Value
+				}
+				for key, want := range tt.wantValues {
+					if got[key] != want {
+						t.Errorf("config show JSON value for %q = %q, want %q", key, got[key], want)
+					}
+				}
+				return
+			}
+
+			if tt.jsonList {
+				var payload map[string]interface{}
+				if err := json.Unmarshal([]byte(out), &payload); err != nil {
+					t.Fatalf("parse config list JSON: %v\n%s", err, out)
+				}
+				for key, want := range tt.wantValues {
+					got, _ := payload[key].(string)
+					if got != want {
+						t.Errorf("config list JSON value for %q = %q, want %q", key, got, want)
+					}
+				}
+				return
+			}
+
+			for key, value := range tt.wantValues {
+				if !strings.Contains(out, key) || !strings.Contains(out, value) {
+					t.Errorf("config %s changed non-secret output for %q=%q:\n%s", tt.name, key, value, out)
+				}
+			}
+		})
+	}
+}

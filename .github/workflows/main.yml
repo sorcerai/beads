@@ -232,8 +232,12 @@ jobs:
         run: ./scripts/ci/detect-package-gates.sh
 
   package-mcp:
-    name: Package Gate (MCP)
+    name: Package Gate (MCP, Python ${{ matrix.python-version }})
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ['3.10', '3.13']
     needs: [detect-package-gates, build-artifacts]
     steps:
       - name: Check applicability
@@ -251,11 +255,13 @@ jobs:
         if: steps.applicability.outputs.run == 'true'
         uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
-          python-version: '3.14'
+          python-version: ${{ matrix.python-version }}
 
       - name: Install uv
         if: steps.applicability.outputs.run == 'true'
-        run: python -m pip install uv==0.11.16
+        uses: astral-sh/setup-uv@11f9893b081a58869d3b5fccaea48c9e9e46f990 # v8.3.2
+        with:
+          version: '0.11.16'
 
       - name: Download build artifacts
         if: steps.applicability.outputs.run == 'true'
@@ -351,7 +357,7 @@ jobs:
           go-version-file: 'go.mod'
 
       - name: Install Dolt
-        run: curl -fsSL https://github.com/dolthub/dolt/releases/latest/download/install.sh | sudo bash
+        run: ./scripts/install-dolt-ci.sh
 
       - name: Configure Git and Dolt identity
         run: |
@@ -423,7 +429,7 @@ jobs:
           go-version-file: 'go.mod'
 
       - name: Install Dolt (Linux/macOS)
-        run: curl -fsSL https://github.com/dolthub/dolt/releases/latest/download/install.sh | sudo bash
+        run: ./scripts/install-dolt-ci.sh
 
       - name: Verify dolt on PATH
         run: dolt version
@@ -510,7 +516,7 @@ jobs:
           go-version-file: 'go.mod'
 
       - name: Install Dolt CLI
-        run: curl -fsSL https://github.com/dolthub/dolt/releases/latest/download/install.sh | sudo bash
+        run: ./scripts/install-dolt-ci.sh
 
       - name: Verify dolt on PATH
         run: dolt version
@@ -577,7 +583,7 @@ jobs:
           chmod +x bd-linux-gms-pure
 
       - name: Install Dolt
-        run: curl -fsSL https://github.com/dolthub/dolt/releases/latest/download/install.sh | sudo bash
+        run: ./scripts/install-dolt-ci.sh
 
       - name: Configure Git and Dolt identity
         run: |
@@ -660,7 +666,7 @@ jobs:
           chmod +x bd-linux-gms-pure
 
       - name: Install Dolt
-        run: curl -fsSL https://github.com/dolthub/dolt/releases/latest/download/install.sh | sudo bash
+        run: ./scripts/install-dolt-ci.sh
 
       - name: Configure Git and Dolt identity
         run: |
@@ -751,7 +757,7 @@ jobs:
       - name: Install Dolt CLI
         # TestProxiedServerExternalCreate needs the dolt binary on PATH; the
         # shared harness itself uses the dolt sql-server container image.
-        run: curl -fsSL https://github.com/dolthub/dolt/releases/latest/download/install.sh | sudo bash
+        run: ./scripts/install-dolt-ci.sh
 
       - name: Configure Git and Dolt identity
         run: |
@@ -986,7 +992,7 @@ jobs:
         env:
           GOWORK: "off"
         with:
-          version: v2.10.1
+          version: v2.12.2
           args: --config=.golangci.yml --modules-download-mode=readonly --timeout=5m --build-tags=gms_pure_go
 
   test-nix:

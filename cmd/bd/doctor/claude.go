@@ -345,7 +345,7 @@ func CheckBdInPath() DoctorCheck {
 			Detail:  "Claude hooks execute 'bd prime' and won't work without bd in PATH",
 			Fix: "Install bd globally:\n" +
 				"  • Homebrew: brew install beads\n" +
-				"  • Script: " + installScriptCommand + "\n" +
+				"  • npm: " + installScriptCommand + "\n" +
 				"  • Or add bd to your PATH",
 		}
 	}
@@ -395,7 +395,7 @@ func CheckDocumentationBdPrimeReference(repoPath string) DoctorCheck {
 			Detail:  "Files: " + strings.Join(filesWithBdPrime, ", "),
 			Fix: "Upgrade bd to get the 'bd prime' command:\n" +
 				"  • Homebrew: brew upgrade beads\n" +
-				"  • Script: " + installScriptCommand + "\n" +
+				"  • npm: " + installScriptCommand + "\n" +
 				"  Or remove 'bd prime' references from documentation if using older version",
 		}
 	}
