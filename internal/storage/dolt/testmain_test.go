@@ -13,8 +13,10 @@ import (
 )
 
 // testServerPort is the port of the shared test Dolt server (0 = not running).
-// Set by TestMain before tests run, used implicitly via BEADS_DOLT_PORT env var
-// which applyConfigDefaults reads when ServerPort is 0.
+// Set by TestMain before tests run, and passed explicitly to New() via
+// cfg.ServerPort (and to raw DSNs) by every test in this package. TestMain
+// clears BEADS_DOLT_SERVER_PORT / BEADS_DOLT_PORT so an ambient value can't
+// override that explicit port inside applyConfigDefaults.
 var testServerPort int
 
 // testSharedDB is the name of the shared database for branch-per-test isolation.
@@ -57,6 +59,16 @@ func testMainInner(m *testing.M) int {
 	// sql-server (testcontainer or external port). The new database-name
 	// firewall in dolt.New refuses test-named DBs unless this opt-in is set.
 	os.Setenv("BEADS_TEST_SERVER", "1")
+	// Clear any ambient Dolt port env vars before container setup. Tests in
+	// this package connect via an explicit cfg.ServerPort (= testServerPort,
+	// the isolated test container). applyConfigDefaults lets a set
+	// BEADS_DOLT_SERVER_PORT (or legacy BEADS_DOLT_PORT) override that explicit
+	// port, so an ambient value — e.g. the city/production Dolt server in a gc
+	// session — would silently redirect every test off the container and onto
+	// that server. Unsetting here makes testServerPort authoritative for the
+	// whole package.
+	os.Unsetenv("BEADS_DOLT_SERVER_PORT")
+	os.Unsetenv("BEADS_DOLT_PORT")
 	if err := testutil.EnsureDoltContainerForTestMain(); err != nil {
 		fmt.Fprintf(os.Stderr, "WARN: %v, skipping Dolt tests\n", err)
 	} else {
@@ -90,6 +102,7 @@ func testMainInner(m *testing.M) int {
 	doltserver.SweepOrphanedTestServers(suiteTempRoot)
 
 	testServerPort = 0
+	os.Unsetenv("BEADS_DOLT_SERVER_PORT")
 	os.Unsetenv("BEADS_DOLT_PORT")
 	os.Unsetenv("BEADS_TEST_MODE")
 	os.Unsetenv("BEADS_TEST_PDEATHSIG")

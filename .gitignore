@@ -37,6 +37,10 @@ pkg/
 .codex
 
 
+# pm1 deploy: secrets + host inventory (never commit)
+deploy/pm1-beads/beads-client.env
+deploy/pm1-beads/preexisting-inventory-*.txt
+
 # OS
 .DS_Store
 Thumbs.db
@@ -255,3 +259,10 @@ tmp/build/cli-docs/where.md
 tmp/build/cli-docs/worktree.md
 tmp/docs/CLI_REFERENCE.md
 *.gate.lock*
+
+# Multi-agent skill wiring (npx skills) — local install state
+.claude/skills/
+skills-lock.json
+
+# Internal deploy/infra — never commit (privacy: contains infra topology)
+deploy/pm1-beads/

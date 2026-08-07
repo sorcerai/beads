@@ -48,12 +48,13 @@ type closeProxiedPreflight struct {
 }
 
 type closeProxiedOutcome struct {
-	id          string
-	before      *types.Issue
-	after       *types.Issue
-	closed      bool
-	auditOld    string
-	auditReason string
+	id            string
+	before        *types.Issue
+	after         *types.Issue
+	closed        bool
+	auditOld      string
+	auditReason   string
+	autoClosedIDs []string // molecule roots auto-closed as a side effect
 }
 
 // closeProxiedPostClose is the work `bd close` does AFTER the closes have
@@ -132,16 +133,23 @@ func runCloseProxiedServer(cmd *cobra.Command, ctx context.Context, args []strin
 		fmt.Fprintf(os.Stderr, "Warning: %s\n", w)
 	}
 
+	lifecycleClosed := make([]string, 0, len(outcomes))
 	for i, o := range outcomes {
 		if o.closed {
 			audit.LogFieldChange(o.id, "status", o.auditOld, "closed", actor, o.auditReason)
 			if err := fireProxiedCloseHooks(ctx, o.before, o.after); err != nil {
 				fmt.Fprintf(os.Stderr, "warning: %s: %v\n", o.id, err)
 			}
+			lifecycleClosed = append(lifecycleClosed, o.id)
+			lifecycleClosed = append(lifecycleClosed, o.autoClosedIDs...)
 		}
 		if !in.jsonOut {
 			fmt.Printf("%s Closed %s: %s\n", ui.RenderPass("✓"), formatFeedbackID(o.after.ID, o.after.Title), closeReasons[i])
 		}
+	}
+
+	if len(lifecycleClosed) > 0 {
+		firePostCloseHook(ctx, nil, lifecycleClosed)
 	}
 
 	var claimedNextIssue *types.Issue
@@ -365,11 +373,12 @@ func closeProxiedRunPostClose(ctx context.Context, args []string, in closeProxie
 		var out closeProxiedPostClose
 		var wrote []string
 
-		for _, o := range outcomes {
-			mol := autoCloseProxiedCompletedMolecule(ctx, uw, o.id, actor, in.session, &out.warnings)
+		for i := range outcomes {
+			mol := autoCloseProxiedCompletedMolecule(ctx, uw, outcomes[i].id, actor, in.session, &out.warnings)
 			if mol != nil {
 				out.autoClosedMol = mol
 				wrote = append(wrote, "auto-close "+mol.ID)
+				outcomes[i].autoClosedIDs = append(outcomes[i].autoClosedIDs, mol.ID)
 			}
 		}
 

@@ -77,7 +77,7 @@ func runMemoriesProxiedServer(ctx context.Context, search string) error {
 		return HandleErrorRespectJSON("listing memories: %v", err)
 	}
 
-	return printMemoriesResult(memoriesFromConfig(allConfig, search), search)
+	return printMemoriesResult(memoriesFromConfig(allConfig, search), search, nil)
 }
 
 func runForgetProxiedServer(ctx context.Context, key string) error {
@@ -117,5 +117,5 @@ func runRecallProxiedServer(ctx context.Context, key string) error {
 		return HandleErrorRespectJSON("recalling memory: %v", err)
 	}
 
-	return printRecallResult(key, value)
+	return printRecallResult(key, value, "")
 }

@@ -276,6 +276,17 @@ func runExportFromSource(ctx context.Context, src exportSource) error {
 			return HandleErrorRespectJSON("failed to read config for memories: %v", err)
 		}
 		fullPrefix := kvPrefix + memoryPrefix
+		superPrefix := kvPrefix + memorySupersededPrefix
+
+		// Build superseded map
+		supersededBy := make(map[string]string)
+		for k, v := range allConfig {
+			if strings.HasPrefix(k, superPrefix) {
+				userKey := strings.TrimPrefix(k, superPrefix)
+				supersededBy[userKey] = v
+			}
+		}
+
 		// Sort keys for deterministic output order (GH#3474).
 		var memKeys []string
 		for k := range allConfig {
@@ -291,6 +302,9 @@ func runExportFromSource(ctx context.Context, src exportSource) error {
 				"_type": "memory",
 				"key":   userKey,
 				"value": v,
+			}
+			if replacement, ok := supersededBy[userKey]; ok {
+				record["superseded_by"] = replacement
 			}
 			data, err := json.Marshal(record)
 			if err != nil {
