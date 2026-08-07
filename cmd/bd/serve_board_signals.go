@@ -61,7 +61,8 @@ type wsStatus struct {
 // rollup plus explicit per-workspace statuses (including failures).
 type boardPayload struct {
 	rollup.Rollup
-	Workspaces []wsStatus `json:"workspaces,omitempty"`
+	Workspaces    []wsStatus `json:"workspaces,omitempty"`
+	projectOwners map[string][]string
 }
 
 // wsResult is one workspace's raw fetch outcome.
@@ -106,7 +107,23 @@ func buildPayload(results []wsResult, now time.Time, staleAfter time.Duration) *
 		wss = append(wss, st)
 		parsed = append(parsed, workspaceRollup{dir: res.dir, r: r})
 	}
-	return &boardPayload{Rollup: mergeRollups(parsed), Workspaces: wss}
+	owners := make(map[string][]string)
+	for _, wr := range parsed {
+		implied := workspaceName(wr.dir)
+		seen := make(map[string]bool)
+		for _, project := range wr.r.Projects {
+			slug := project.Slug
+			if slug == "Unassigned" && implied != "" {
+				slug = implied
+			}
+			if slug == "" || seen[slug] {
+				continue
+			}
+			seen[slug] = true
+			owners[slug] = append(owners[slug], wr.dir)
+		}
+	}
+	return &boardPayload{Rollup: mergeRollups(parsed), Workspaces: wss, projectOwners: owners}
 }
 
 // forEachCard visits every card (epic issues, their children, loose) in the

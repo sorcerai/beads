@@ -174,7 +174,8 @@ Try Beads in your own projects:
 
 ` + "```bash" + `
 # Install Beads
-curl -sSL https://raw.githubusercontent.com/steveyegge/beads/main/scripts/install.sh | bash
+brew install beads
+# Or: npm install -g @beads/bd
 
 # Initialize in your repo
 bd init

@@ -43,8 +43,8 @@ Use the command that matches your install method.
 
 | Install method | Platforms | Command |
 |---|---|---|
-| Quick install script | macOS, Linux, FreeBSD | `curl -fsSL https://raw.githubusercontent.com/gastownhall/beads/main/scripts/install.sh \| bash` |
-| PowerShell installer | Windows | `irm https://raw.githubusercontent.com/gastownhall/beads/main/install.ps1 \| iex` |
+| Manual install script | macOS, Linux, FreeBSD | Download from a release tag, inspect, then run locally |
+| Manual PowerShell installer | Windows | Download from a release tag, inspect, then run locally |
 | Homebrew | macOS, Linux | `brew upgrade beads` |
 | go install (server-mode only) | macOS, Linux, FreeBSD, Windows | `CGO_ENABLED=0 go install github.com/steveyegge/beads/cmd/bd@latest` |
 | go install (embedded-capable) | macOS, Linux, Windows | `CGO_ENABLED=1 GOFLAGS=-tags=gms_pure_go go install github.com/steveyegge/beads/cmd/bd@latest` |
@@ -52,17 +52,9 @@ Use the command that matches your install method.
 | bun | macOS, Linux, Windows | `bun install -g --trust @beads/bd` |
 | From source (Unix shell) | macOS, Linux, FreeBSD | `git pull && make build` |
 
-### Quick install script (macOS/Linux/FreeBSD)
+### Manual install scripts
 
-```bash
-curl -fsSL https://raw.githubusercontent.com/gastownhall/beads/main/scripts/install.sh | bash
-```
-
-### PowerShell installer (Windows)
-
-```pwsh
-irm https://raw.githubusercontent.com/gastownhall/beads/main/install.ps1 | iex
-```
+Use the release-pinned download, inspection, and local execution procedure from the [installation guide](/getting-started/installation#manual-install-script-macoslinuxfreebsd). Never pipe a network response directly to `bash` or `iex`.
 
 ### Homebrew
 
@@ -319,9 +311,9 @@ The old binary stored data in SQLite. The new binary uses Dolt.
 **Recommended: use the migration script** (requires `sqlite3` and `jq`):
 
 ```bash
-# Download the script from the beads repo
-curl -fsSLO https://raw.githubusercontent.com/gastownhall/beads/main/scripts/migrate-sqlite-to-current.sh
-chmod +x migrate-sqlite-to-current.sh
+# Download the script from the immutable release tag, then inspect it before execution
+curl -fSLo migrate-sqlite-to-current.sh https://raw.githubusercontent.com/gastownhall/beads/v1.1.0/scripts/migrate-sqlite-to-current.sh
+less migrate-sqlite-to-current.sh
 
 # Run it in your project directory
 ./migrate-sqlite-to-current.sh

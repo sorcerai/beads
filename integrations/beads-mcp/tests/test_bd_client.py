@@ -22,6 +22,28 @@ from beads_mcp.models import (
 )
 
 
+class MockProcess:
+    """Async subprocess fake compatible with bounded stream reads."""
+
+    def __init__(self):
+        self.returncode = 0
+        self.pid = 1
+        self.wait = AsyncMock(return_value=0)
+        self.kill = MagicMock()
+        self.communicate = AsyncMock(return_value=(b"", b""))
+
+    @property
+    def communicate(self):
+        return self._communicate
+
+    @communicate.setter
+    def communicate(self, communicate_mock):
+        self._communicate = communicate_mock
+        stdout, stderr = communicate_mock.return_value
+        self.stdout = MagicMock(read=AsyncMock(side_effect=[stdout, b""]))
+        self.stderr = MagicMock(read=AsyncMock(side_effect=[stderr, b""]))
+
+
 @pytest.fixture
 def bd_client():
     """Create a BdClient instance for testing."""
@@ -30,11 +52,8 @@ def bd_client():
 
 @pytest.fixture
 def mock_process():
-    """Create a mock subprocess process."""
-    process = MagicMock()
-    process.returncode = 0
-    process.communicate = AsyncMock(return_value=(b"", b""))
-    return process
+    """Create a subprocess fake exposing independently readable output streams."""
+    return MockProcess()
 
 
 @pytest.mark.asyncio

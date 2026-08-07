@@ -78,6 +78,7 @@ async def mcp_client(bd_executable, temp_db, monkeypatch):
     # temp_db is now the .beads directory path
     # The workspace root is the parent directory
     workspace_root = os.path.dirname(temp_db)
+    monkeypatch.setenv("BEADS_MCP_ALLOWED_ROOTS", workspace_root)
 
     # Create test client
     async with Client(mcp) as client:
@@ -94,8 +95,9 @@ async def mcp_client(bd_executable, temp_db, monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_quickstart_resource(mcp_client):
+async def test_quickstart_resource(mcp_client, temp_db, monkeypatch):
     """Test beads://quickstart resource."""
+    monkeypatch.setenv("BEADS_WORKING_DIR", os.path.dirname(temp_db))
     result = await mcp_client.read_resource("beads://quickstart")
 
     assert result is not None
@@ -642,7 +644,7 @@ async def test_blocked_tool(mcp_client):
 
 
 @pytest.mark.asyncio
-async def test_context_init_action(bd_executable):
+async def test_context_init_action(bd_executable, monkeypatch):
     """Test context tool with init action.
 
     Note: This test validates that context(action='init') can be called successfully via MCP.
@@ -664,6 +666,7 @@ async def test_context_init_action(bd_executable):
 
     # Create a fresh temp directory without any beads database
     temp_dir = tempfile.mkdtemp(prefix="beads_init_test_")
+    monkeypatch.setenv("BEADS_MCP_ALLOWED_ROOTS", temp_dir)
     try:
         async with Client(mcp) as client:
             # First set context to the fresh directory

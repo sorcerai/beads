@@ -15,15 +15,18 @@ jobs:
       - name: Set up Python
         uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
-          python-version: '3.14'
+          python-version: '3.13'
 
       - name: Install uv
-        run: pip install uv
+        uses: astral-sh/setup-uv@11f9893b081a58869d3b5fccaea48c9e9e46f990 # v8.3.2
+        with:
+          version: '0.11.16'
 
       - name: Build package
         run: |
           cd integrations/beads-mcp
-          uv build
+          uv sync --all-groups --locked
+          uv build --no-build-isolation
 
       - name: Publish to TestPyPI
         env:
@@ -31,4 +34,4 @@ jobs:
           TWINE_PASSWORD: ${{ secrets.TEST_PYPI_API_TOKEN }}
         run: |
           cd integrations/beads-mcp
-          uv tool run twine upload --repository testpypi dist/*
+          uv run twine upload --repository testpypi dist/*

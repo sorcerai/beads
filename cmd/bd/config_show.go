@@ -186,6 +186,8 @@ func collectViperEntries() []configEntry {
 			continue
 		}
 
+		value = config.RedactValue(key, value)
+
 		entries = append(entries, configEntry{
 			Key:    key,
 			Value:  value,
@@ -296,7 +298,7 @@ func collectDatabaseEntries() []configEntry {
 
 	var entries []configEntry
 	for key, value := range dbConfig {
-		entries = append(entries, configEntry{Key: key, Value: value, Source: "database"})
+		entries = append(entries, configEntry{Key: key, Value: config.RedactValue(key, value), Source: "database"})
 	}
 
 	return entries

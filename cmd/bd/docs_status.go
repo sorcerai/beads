@@ -24,7 +24,11 @@ var docsStatusCmd = &cobra.Command{
 		if repoRoot == "" {
 			FatalErrorRespectJSON("not in a git repository")
 		}
-		printDocsStatus(repoRoot, docsDirName())
+		docsDir, err := validatedDocsDir(repoRoot)
+		if err != nil {
+			FatalErrorRespectJSON("bd docs status: %v", err)
+		}
+		printDocsStatus(repoRoot, docsDir)
 	},
 }
 

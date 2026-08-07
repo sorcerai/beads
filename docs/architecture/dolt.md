@@ -22,11 +22,11 @@ is needed. Install the standalone `dolt` CLI only when you want to run server
 mode or work directly with the database via `dolt sql`.
 
 ```bash
-# macOS
+# macOS/Linux with Homebrew
 brew install dolt
 
-# Linux
-curl -L https://github.com/dolthub/dolt/releases/latest/download/install.sh | bash
+# Other Linux environments: download a versioned archive and checksums.txt from
+# https://github.com/dolthub/dolt/releases, then verify it before extraction.
 
 # Verify installation
 dolt version

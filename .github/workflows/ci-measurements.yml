@@ -66,7 +66,7 @@ jobs:
           go-version-file: 'go.mod'
 
       - name: Install Dolt
-        run: curl -fsSL https://github.com/dolthub/dolt/releases/latest/download/install.sh | sudo bash
+        run: ./scripts/install-dolt-ci.sh
 
       - name: Configure Git and Dolt identity
         run: |
@@ -113,7 +113,7 @@ jobs:
           go-version-file: 'go.mod'
 
       - name: Install Dolt
-        run: curl -fsSL https://github.com/dolthub/dolt/releases/latest/download/install.sh | sudo bash
+        run: ./scripts/install-dolt-ci.sh
 
       - name: Configure Git and Dolt identity
         run: |
@@ -144,7 +144,7 @@ jobs:
           go-version-file: 'go.mod'
 
       - name: Install Dolt
-        run: curl -fsSL https://github.com/dolthub/dolt/releases/latest/download/install.sh | sudo bash
+        run: ./scripts/install-dolt-ci.sh
 
       - name: Configure Git and Dolt identity
         run: |
@@ -177,7 +177,7 @@ jobs:
           go-version-file: 'go.mod'
 
       - name: Install Dolt
-        run: curl -fsSL https://github.com/dolthub/dolt/releases/latest/download/install.sh | sudo bash
+        run: ./scripts/install-dolt-ci.sh
 
       - name: Configure Git and Dolt identity
         run: |
@@ -222,7 +222,7 @@ jobs:
           go-version-file: 'go.mod'
 
       - name: Install Dolt
-        run: curl -fsSL https://github.com/dolthub/dolt/releases/latest/download/install.sh | sudo bash
+        run: ./scripts/install-dolt-ci.sh
 
       - name: Configure Git and Dolt identity
         run: |
@@ -287,7 +287,7 @@ jobs:
           go-version-file: 'go.mod'
 
       - name: Install Dolt
-        run: curl -fsSL https://github.com/dolthub/dolt/releases/latest/download/install.sh | sudo bash
+        run: ./scripts/install-dolt-ci.sh
 
       - name: Configure Git and Dolt identity
         run: |
@@ -355,7 +355,7 @@ jobs:
           go-version-file: 'go.mod'
 
       - name: Install Dolt
-        run: curl -fsSL https://github.com/dolthub/dolt/releases/latest/download/install.sh | sudo bash
+        run: ./scripts/install-dolt-ci.sh
 
       - name: Configure Git and Dolt identity
         run: |
@@ -423,7 +423,7 @@ jobs:
           go-version-file: 'go.mod'
 
       - name: Install Dolt
-        run: curl -fsSL https://github.com/dolthub/dolt/releases/latest/download/install.sh | sudo bash
+        run: ./scripts/install-dolt-ci.sh
 
       - name: Configure Git and Dolt identity
         run: |
@@ -528,7 +528,7 @@ jobs:
           path: prebuilt-bd
 
       - name: Install Dolt
-        run: curl -fsSL https://github.com/dolthub/dolt/releases/latest/download/install.sh | sudo bash
+        run: ./scripts/install-dolt-ci.sh
 
       - name: Configure Git and Dolt identity
         run: |
@@ -594,7 +594,7 @@ jobs:
           go-version-file: 'go.mod'
 
       - name: Install Dolt
-        run: curl -fsSL https://github.com/dolthub/dolt/releases/latest/download/install.sh | sudo bash
+        run: ./scripts/install-dolt-ci.sh
 
       - name: Configure Git and Dolt identity
         run: |
@@ -706,14 +706,18 @@ jobs:
       - name: Set up Python
         uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
-          python-version: '3.14'
+          python-version: '3.13'
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@11f9893b081a58869d3b5fccaea48c9e9e46f990 # v8.3.2
+        with:
+          version: '0.11.16'
 
       - name: Measure commands
         run: |
           set -euo pipefail
           source scripts/ci/lib/timing.sh
 
-          ci_time "install uv" -- pip install uv==0.11.16
           ci_time "mcp package gate" -- make ci-package-mcp
 
       - name: Upload measurement artifacts

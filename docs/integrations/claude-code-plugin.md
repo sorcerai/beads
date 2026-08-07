@@ -19,9 +19,15 @@ Beads (`bd`) is an issue tracker designed specifically for AI-supervised coding 
 
 1. Install beads CLI:
 ```bash
-curl -sSL https://raw.githubusercontent.com/gastownhall/beads/main/scripts/install.sh | bash
+brew install beads                 # macOS/Linux
+# Or: npm install -g @beads/bd     # Any platform with Node.js
 ```
 
+2. Install Python and uv (for MCP server):
+```bash
+brew install uv                    # macOS/Linux with Homebrew
+# Or: pipx install uv
+```
 
 ### Install Plugin
 
@@ -286,8 +292,11 @@ Claude Code will pull the latest version from GitHub. After updating, **restart 
 The plugin requires the `bd` CLI to be installed. Update it separately:
 
 ```bash
-# Quick update
-curl -fsSL https://raw.githubusercontent.com/gastownhall/beads/main/scripts/install.sh | bash
+# Homebrew
+brew upgrade beads
+
+# npm
+npm update -g @beads/bd
 
 # Or with Go (server-mode only)
 CGO_ENABLED=0 go install github.com/steveyegge/beads/cmd/bd@latest

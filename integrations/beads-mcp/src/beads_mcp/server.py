@@ -45,6 +45,7 @@ from beads_mcp.tools import (
     beads_add_note,
     beads_board,
     beads_blocked,
+    beads_board,
     beads_claim_issue,
     beads_close_issue,
     beads_create_issue,
@@ -173,6 +174,38 @@ except importlib.metadata.PackageNotFoundError:
 logger.info(f"beads-mcp v{__version__} initialized with lifecycle management")
 
 
+def _allowed_workspace_roots() -> tuple[str, ...]:
+    configured = os.environ.get("BEADS_MCP_ALLOWED_ROOTS")
+    values = configured.split(os.pathsep) if configured else [os.getcwd()]
+    roots = tuple(os.path.realpath(value.strip()) for value in values if value.strip())
+    if not roots:
+        raise ValueError("BEADS_MCP_ALLOWED_ROOTS must contain at least one path")
+    return roots
+
+
+def _path_within_allowed_roots(path: str) -> bool:
+    candidate = os.path.realpath(path)
+    for root in _allowed_workspace_roots():
+        try:
+            if os.path.commonpath((candidate, root)) == root:
+                return True
+        except ValueError:
+            continue
+    return False
+
+
+def _validate_workspace_root(path: str) -> str:
+    if not os.path.isdir(path):
+        raise ValueError(f"Workspace is not a directory: {path}")
+    resolved = os.path.realpath(_resolve_workspace_root(path))
+    if not _path_within_allowed_roots(resolved):
+        raise ValueError(f"Workspace is outside BEADS_MCP_ALLOWED_ROOTS: {resolved}")
+    project = _find_beads_project(resolved)
+    if project is not None and not _path_within_allowed_roots(project[0]):
+        raise ValueError("Beads redirect resolves outside BEADS_MCP_ALLOWED_ROOTS")
+    return resolved
+
+
 def with_workspace(func: Callable[..., Awaitable[T]]) -> Callable[..., Awaitable[T]]:
     """Decorator to set workspace context for the duration of a tool call.
 
@@ -188,10 +221,15 @@ def with_workspace(func: Callable[..., Awaitable[T]]) -> Callable[..., Awaitable
         # Extract workspace_root parameter (if provided)
         workspace_root = kwargs.get("workspace_root")
 
-        # Determine workspace: parameter > persistent context > env > None
-        workspace = (
+        # Determine workspace: parameter > persistent context > env > None.
+        requested_workspace = (
             workspace_root or _workspace_context.get("BEADS_WORKING_DIR") or os.environ.get("BEADS_WORKING_DIR")
         )
+        workspace = None
+        if requested_workspace:
+            workspace = await asyncio.wait_for(
+                asyncio.to_thread(_validate_workspace_root, requested_workspace), timeout=5.0
+            )
 
         # Set ContextVar for this request
         token = current_workspace.set(workspace)
@@ -213,21 +251,18 @@ def require_context(func: Callable[..., Awaitable[T]]) -> Callable[..., Awaitabl
     - workspace_root was provided on tool call (via ContextVar), OR
     - BEADS_WORKING_DIR is set (from context tool)
 
-    Only enforces if BEADS_REQUIRE_CONTEXT=1 is set in environment.
-    This allows backward compatibility while adding safety for multi-repo setups.
+    Context is mandatory for every mutating tool. Read-only tools may continue
+    to use the MCP process working directory for backward compatibility.
     """
 
     @wraps(func)
     async def wrapper(*args: Any, **kwargs: Any) -> T:
-        # Only enforce if explicitly enabled
-        if os.environ.get("BEADS_REQUIRE_CONTEXT") == "1":
-            # Check ContextVar or environment
-            workspace = current_workspace.get() or os.environ.get("BEADS_WORKING_DIR")
-            if not workspace:
-                raise ValueError(
-                    "Context not set. Either provide workspace_root parameter or call "
-                    "context(workspace_root='...') first."
-                )
+        workspace = current_workspace.get() or _workspace_context.get("BEADS_WORKING_DIR")
+        if not workspace:
+            raise ValueError(
+                "Context not set. Either provide workspace_root parameter or call "
+                "context(workspace_root='...') first."
+            )
         return await func(*args, **kwargs)
 
     return wrapper
@@ -664,14 +699,20 @@ async def context(
         return _context_show()
 
     elif action == "init":
-        # For init, we need context to be set first
-        context_set = _workspace_context.get("BEADS_CONTEXT_SET") or os.environ.get("BEADS_CONTEXT_SET")
-        if not context_set:
+        workspace = _workspace_context.get("BEADS_WORKING_DIR")
+        if not workspace or not _workspace_context.get("BEADS_CONTEXT_SET"):
             return (
                 "Error: Context must be set before init.\n"
                 "Use context(action='set', workspace_root='/path/to/project') first."
             )
-        return await beads_init(prefix=prefix)
+        validated = await asyncio.wait_for(
+            asyncio.to_thread(_validate_workspace_root, workspace), timeout=5.0
+        )
+        token = current_workspace.set(validated)
+        try:
+            return await beads_init(prefix=prefix)
+        finally:
+            current_workspace.reset(token)
 
     else:
         return f"Error: Unknown action '{action}'. Valid actions: set, show, init"
@@ -682,8 +723,8 @@ async def _context_set(workspace_root: str) -> str:
     # Resolve to git repo root if possible (run in thread to avoid blocking event loop)
     try:
         resolved_root = await asyncio.wait_for(
-            asyncio.to_thread(_resolve_workspace_root, workspace_root),
-            timeout=5.0,  # Longer timeout to handle slow git operations
+            asyncio.to_thread(_validate_workspace_root, workspace_root),
+            timeout=5.0,
         )
     except asyncio.TimeoutError:
         logger.error(f"Git detection timed out after 5s for: {workspace_root}")
@@ -698,17 +739,12 @@ async def _context_set(workspace_root: str) -> str:
     _workspace_context["BEADS_WORKING_DIR"] = resolved_root
     _workspace_context["BEADS_CONTEXT_SET"] = "1"
 
-    # Also set in os.environ for compatibility
-    os.environ["BEADS_WORKING_DIR"] = resolved_root
-    os.environ["BEADS_CONTEXT_SET"] = "1"
-
     # Locate the beads project (handles SQLite and Dolt backends)
     project = _find_beads_project(resolved_root)
 
     if project is None:
         # Clear any stale DB path
         _workspace_context.pop("BEADS_DB", None)
-        os.environ.pop("BEADS_DB", None)
         return (
             f"Context set successfully:\n"
             f"  Workspace root: {resolved_root}\n"
@@ -723,20 +759,17 @@ async def _context_set(workspace_root: str) -> str:
         db_path = _find_beads_db(project_root)
         if db_path:
             _workspace_context["BEADS_DB"] = db_path
-            os.environ["BEADS_DB"] = db_path
             return f"Context set successfully:\n  Workspace root: {resolved_root}\n  Database: {db_path}"
-        else:
-            _workspace_context.pop("BEADS_DB", None)
-            os.environ.pop("BEADS_DB", None)
-            return (
-                f"Context set successfully:\n"
-                f"  Workspace root: {resolved_root}\n"
-                f"  Database: Not found (run context(action='init') to create)"
-            )
+
+        _workspace_context.pop("BEADS_DB", None)
+        return (
+            f"Context set successfully:\n"
+            f"  Workspace root: {resolved_root}\n"
+            f"  Database: Not found (run context(action='init') to create)"
+        )
 
     # Dolt or unknown — clear any stale BEADS_DB and report the project root.
     _workspace_context.pop("BEADS_DB", None)
-    os.environ.pop("BEADS_DB", None)
     return (
         f"Context set successfully:\n"
         f"  Workspace root: {resolved_root}\n"
@@ -1277,6 +1310,7 @@ async def add_dependency(
 
 
 @mcp.tool(
+
     name="comment",
     description=(
         "Add a human-readable comment to an issue — a durable, timestamped record of what "
@@ -1389,12 +1423,12 @@ async def blocked(
     name="admin",
     description="""Administrative and diagnostic operations.
 Actions:
-- validate: Run database health checks (checks=orphans,duplicates,pollution,conflicts)
-- repair: Fix orphaned dependency references (fix=True to apply)
+- validate: Run database health checks (fix_all requires server-side mutation opt-in)
+- repair: Inspect dependency repairs (fix requires server-side mutation opt-in)
 - schema: Show database schema info
-- debug: Show environment and working directory info
+- debug: Show redacted context state
 - migration: Get migration plan and database state
-- pollution: Detect/clean test issues (clean=True to delete)""",
+- pollution: Detect test issues (clean requires server-side mutation opt-in)""",
 )
 @with_workspace
 async def admin(
@@ -1406,6 +1440,16 @@ async def admin(
     workspace_root: str | None = None,
 ) -> dict[str, Any] | str:
     """Administrative and diagnostic operations."""
+    mutation_requested = (action == "validate" and fix_all) or (action == "repair" and fix) or (
+        action == "pollution" and clean
+    )
+    if mutation_requested:
+        if not current_workspace.get():
+            raise ValueError("Context not set for administrative mutation")
+        if os.environ.get("BEADS_MCP_ENABLE_ADMIN_MUTATIONS") != "1":
+            raise PermissionError(
+                "Administrative mutations are disabled; set BEADS_MCP_ENABLE_ADMIN_MUTATIONS=1 server-side"
+            )
 
     if action == "validate":
         return await beads_validate(checks=checks, fix_all=fix_all)
@@ -1417,16 +1461,10 @@ async def admin(
         return await beads_get_schema_info()
 
     elif action == "debug":
-        info = []
-        info.append("=== Working Directory Debug Info ===\n")
-        info.append(f"os.getcwd(): {os.getcwd()}\n")
-        info.append(f"PWD env var: {os.environ.get('PWD', 'NOT SET')}\n")
-        info.append(f"BEADS_WORKING_DIR env var: {os.environ.get('BEADS_WORKING_DIR', 'NOT SET')}\n")
-        info.append(f"BEADS_PATH env var: {os.environ.get('BEADS_PATH', 'NOT SET')}\n")
-        info.append(f"BEADS_DB env var: {os.environ.get('BEADS_DB', 'NOT SET')}\n")
-        info.append(f"HOME: {os.environ.get('HOME', 'NOT SET')}\n")
-        info.append(f"USER: {os.environ.get('USER', 'NOT SET')}\n")
-        return "".join(info)
+        return (
+            "Workspace context: " + ("set" if current_workspace.get() else "not set") + "\n"
+            "Database override: " + ("set" if _workspace_context.get("BEADS_DB") else "not set")
+        )
 
     elif action == "migration":
         return await beads_inspect_migration()

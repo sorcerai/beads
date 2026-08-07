@@ -22,8 +22,8 @@ fi
 if ! command -v bd &> /dev/null; then
   echo "❌ Error: bd command not found"
   echo
-  echo "Install bd:"
-  echo "  curl -fsSL https://raw.githubusercontent.com/gastownhall/beads/main/scripts/install.sh | bash"
+  echo "Install bd with Homebrew: brew install beads"
+  echo "Or with npm: npm install -g @beads/bd"
   echo
   exit 1
 fi

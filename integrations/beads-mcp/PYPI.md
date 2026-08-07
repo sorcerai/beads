@@ -12,9 +12,9 @@ This guide covers how to build and publish the beads-mcp package to the Python P
    - Test PyPI: https://test.pypi.org/manage/account/token/
    - PyPI: https://pypi.org/manage/account/token/
 
-3. **Build Tools**: Install the Python build tools:
+3. **Build Tools**: Sync the repository's locked development and release dependencies:
    ```bash
-   uv pip install --upgrade build twine
+   uv sync --all-groups --locked
    ```
 
 ## Building the Package
@@ -26,7 +26,7 @@ This guide covers how to build and publish the beads-mcp package to the Python P
 
 2. **Build the distribution packages**:
    ```bash
-   python -m build
+   uv build --no-sources
    ```
 
    This creates both:
@@ -50,7 +50,7 @@ This guide covers how to build and publish the beads-mcp package to the Python P
 
 1. **Upload to Test PyPI**:
    ```bash
-   python -m twine upload --repository testpypi dist/*
+   uv run twine upload --repository testpypi dist/*
    ```
 
    When prompted, use:
@@ -81,7 +81,7 @@ Once you've verified the package works on Test PyPI:
 
 1. **Upload to PyPI**:
    ```bash
-   python -m twine upload dist/*
+   uv run twine upload dist/*
    ```
 
    Use:

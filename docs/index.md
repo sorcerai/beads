@@ -23,8 +23,8 @@ Traditional issue trackers (Jira, GitHub Issues) weren't designed for AI agents.
 # Install via Homebrew (macOS/Linux)
 brew install beads
 
-# Or quick install (macOS/Linux/FreeBSD)
-curl -fsSL https://raw.githubusercontent.com/gastownhall/beads/main/scripts/install.sh | bash
+# Or via npm (any platform with Node.js)
+npm install -g @beads/bd
 
 # Initialize in your project
 cd your-project
