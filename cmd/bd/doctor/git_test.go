@@ -36,6 +36,22 @@ func TestCheckGitHooks(t *testing.T) {
 	// We test the basic case where hooks are not installed
 	t.Run("not in git repo returns N/A", func(t *testing.T) {
 		tmpDir := t.TempDir()
+		hooksDir := filepath.Join(tmpDir, "global-hooks")
+		if err := os.Mkdir(hooksDir, 0o755); err != nil {
+			t.Fatalf("creating hooks directory: %v", err)
+		}
+		for _, name := range []string{"pre-commit", "post-merge", "pre-push"} {
+			if err := os.WriteFile(filepath.Join(hooksDir, name), []byte("#!/bin/sh\n"), 0o755); err != nil {
+				t.Fatalf("creating %s hook: %v", name, err)
+			}
+		}
+		globalConfig := filepath.Join(tmpDir, "gitconfig")
+		if output, err := exec.Command("git", "config", "--file", globalConfig, "core.hooksPath", hooksDir).CombinedOutput(); err != nil {
+			t.Fatalf("configuring global hooks path: %v: %s", err, output)
+		}
+		t.Setenv("GIT_CONFIG_GLOBAL", globalConfig)
+		t.Setenv("GIT_CONFIG_NOSYSTEM", "1")
+
 		runInDir(t, tmpDir, func() {
 			check := CheckGitHooks("0.49.6")
 

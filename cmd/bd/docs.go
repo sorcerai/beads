@@ -14,9 +14,7 @@ import (
 )
 
 // docsCmd is the root of the bd docs family — the beads-native living
-// documentation system. Design spec: docs/superpowers/specs/2026-07-04-bd-docs-design.md.
-// Tier 1 (update) is deterministic and rides the post-close hook + sweep;
-// Tier 2 (regen) is an LLM pass run by the resident agent session.
+// documentation system, with deterministic updates and agent-assisted regeneration.
 var docsCmd = &cobra.Command{
 	Use:   "docs",
 	Short: "Living repo documentation driven by closed issues",

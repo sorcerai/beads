@@ -1,0 +1,313 @@
+#!/usr/bin/env python3
+"""Run Graphify as an explicit, local, advisory review aid.
+
+Graphify output is not evidence that code is dead or a refactor is safe. Confirm
+any result in source, registrations/configuration, tests, and runtime behavior.
+"""
+
+import atexit
+import hashlib
+import json
+import os
+import re
+import shutil
+import signal
+import stat
+import subprocess
+import sys
+import uuid
+from pathlib import Path
+
+REQUIRED_GRAPHIFY_VERSION = "0.9.27"
+USAGE_EXIT = 2
+METADATA_NAME = "current.json"
+LOCK_NAME = ".refresh.lock"
+GENERATION_PATTERN = re.compile(r"gen-[0-9a-f]{32}\Z")
+
+_created_paths = []
+
+
+def fail(message, code=USAGE_EXIT):
+    sys.stderr.write(f"graphify: {message}\n")
+    raise SystemExit(code)
+
+
+def cleanup():
+    while _created_paths:
+        path = _created_paths.pop()
+        try:
+            if path.is_symlink() or path.is_file():
+                path.unlink(missing_ok=True)
+            elif path.is_dir():
+                shutil.rmtree(path)
+        except OSError:
+            pass
+
+
+def signal_cleanup(signum, _frame):
+    cleanup()
+    raise SystemExit(128 + signum)
+
+
+atexit.register(cleanup)
+signal.signal(signal.SIGINT, signal_cleanup)
+signal.signal(signal.SIGTERM, signal_cleanup)
+
+
+def require_graphify():
+    binary = shutil.which("graphify")
+    if not binary:
+        fail(f"graphify {REQUIRED_GRAPHIFY_VERSION} is required; install that exact version and retry")
+    result = subprocess.run([binary, "--version"], text=True, capture_output=True, check=False)
+    if result.returncode != 0 or result.stdout.strip() != f"graphify {REQUIRED_GRAPHIFY_VERSION}":
+        fail(f"graphify {REQUIRED_GRAPHIFY_VERSION} is required; found incompatible binary at {binary}")
+    return binary
+
+
+def repository():
+    result = subprocess.run(
+        ["git", "rev-parse", "--show-toplevel"], text=True, capture_output=True, check=False
+    )
+    if result.returncode != 0:
+        fail("must run inside a Git worktree")
+    try:
+        return Path(result.stdout.strip()).resolve(strict=True)
+    except OSError as error:
+        fail(f"cannot resolve repository path: {error}")
+
+
+def cache_root(repo):
+    base = Path(os.environ.get("XDG_CACHE_HOME", Path.home() / ".cache")).expanduser().absolute()
+    digest = hashlib.sha256(os.fsencode(str(repo))).hexdigest()
+    root = base / "omp" / "graphify" / digest
+    try:
+        root.resolve(strict=False).relative_to(repo)
+        fail("managed cache must be outside the repository")
+    except ValueError:
+        return root
+
+
+def managed_cache(repo, create):
+    root = cache_root(repo)
+    directories = [root.parents[2], root.parents[1], root.parent, root]
+    for directory in directories:
+        if directory.is_symlink() or (directory.exists() and not directory.is_dir()):
+            fail(f"unsafe managed directory: {directory}")
+        if not directory.exists():
+            if not create:
+                return None
+            directory.mkdir(mode=0o700)
+        if directory == root:
+            os.chmod(directory, 0o700)
+    return root
+
+
+def safe_regular_file(path):
+    try:
+        details = path.lstat()
+    except OSError:
+        return False
+    return stat.S_ISREG(details.st_mode) and not path.is_symlink()
+
+
+def visible_paths(repo):
+    result = subprocess.run(
+        ["git", "-C", str(repo), "ls-files", "-z", "--cached", "--others", "--exclude-standard"],
+        capture_output=True,
+        check=False,
+    )
+    if result.returncode != 0:
+        fail("cannot enumerate visible worktree files")
+    paths = [os.fsdecode(item) for item in result.stdout.split(b"\0") if item]
+    return sorted(paths, key=os.fsencode)
+
+
+def fingerprint(repo):
+    digest = hashlib.sha256()
+    for relative in visible_paths(repo):
+        path = repo / relative
+        try:
+            path.resolve(strict=False).relative_to(repo)
+            details = path.lstat()
+        except (OSError, ValueError) as error:
+            fail(f"cannot fingerprint {relative}: {error}")
+        digest.update(b"P\0" + os.fsencode(relative) + b"\0")
+        if stat.S_ISLNK(details.st_mode):
+            digest.update(b"L\0" + os.fsencode(os.readlink(path)) + b"\0")
+            continue
+        if not stat.S_ISREG(details.st_mode):
+            fail(f"cannot fingerprint non-regular file: {relative}")
+        digest.update(b"F\0")
+        try:
+            with path.open("rb") as source:
+                for chunk in iter(lambda: source.read(1024 * 1024), b""):
+                    digest.update(chunk)
+        except OSError as error:
+            fail(f"cannot fingerprint {relative}: {error}")
+        digest.update(b"\0")
+    return digest.hexdigest()
+
+
+def read_metadata(root, repo):
+    if root is None:
+        return None
+    metadata = root / METADATA_NAME
+    if metadata.is_symlink() or (metadata.exists() and not safe_regular_file(metadata)):
+        fail(f"unsafe managed metadata: {metadata}")
+    if not metadata.exists():
+        return None
+    try:
+        value = json.loads(metadata.read_text(encoding="utf-8"))
+        generation = value["generation"]
+        if value["repository"] != str(repo) or not isinstance(generation, str) or not GENERATION_PATTERN.fullmatch(generation):
+            return None
+    except (OSError, ValueError, KeyError, TypeError):
+        return None
+    generation_path = root / generation
+    output = generation_path / "graphify-out"
+    graph = output / "graph.json"
+    if generation_path.is_symlink() or output.is_symlink():
+        fail(f"unsafe managed generation: {generation_path}")
+    if not safe_regular_file(graph):
+        return None
+    return value
+
+
+def status(repo, root):
+    metadata = read_metadata(root, repo)
+    if metadata is None:
+        return {"state": "missing", "repository": str(repo)}, None
+    current = fingerprint(repo)
+    state = "current" if current == metadata.get("fingerprint") else "stale"
+    return {"state": state, "repository": str(repo), "generation": metadata["generation"]}, metadata
+
+
+def write_metadata(root, value):
+    target = root / METADATA_NAME
+    if target.is_symlink() or (target.exists() and not safe_regular_file(target)):
+        fail(f"unsafe managed metadata: {target}")
+    temporary = root / f".{METADATA_NAME}.{uuid.uuid4().hex}.tmp"
+    _created_paths.append(temporary)
+    try:
+        with temporary.open("x", encoding="utf-8") as destination:
+            json.dump(value, destination, sort_keys=True, separators=(",", ":"))
+            destination.write("\n")
+        os.chmod(temporary, 0o600)
+        os.replace(temporary, target)
+        _created_paths.remove(temporary)
+    except OSError as error:
+        fail(f"cannot publish metadata: {error}")
+
+
+def acquire_lock(root):
+    lock = root / LOCK_NAME
+    if lock.exists() or lock.is_symlink():
+        fail("refresh already in progress or unsafe lock path exists")
+    try:
+        descriptor = os.open(lock, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        os.close(descriptor)
+    except OSError as error:
+        fail(f"cannot acquire refresh lock: {error}")
+    _created_paths.append(lock)
+
+
+def refresh(binary, repo):
+    root = managed_cache(repo, create=True)
+    metadata = root / METADATA_NAME
+    if metadata.is_symlink() or (metadata.exists() and not safe_regular_file(metadata)):
+        fail(f"unsafe managed metadata: {metadata}")
+    acquire_lock(root)
+    before = fingerprint(repo)
+    staging = root / f".staging-{uuid.uuid4().hex}"
+    try:
+        staging.mkdir(mode=0o700)
+    except OSError as error:
+        fail(f"cannot create refresh staging: {error}")
+    _created_paths.append(staging)
+    result = subprocess.run(
+        [binary, "extract", str(repo), "--code-only", "--no-cluster", "--out", str(staging)],
+        check=False,
+    )
+    if result.returncode != 0:
+        raise SystemExit(result.returncode)
+    output = staging / "graphify-out"
+    graph = output / "graph.json"
+    if staging.is_symlink() or output.is_symlink():
+        fail("unsafe staging output")
+    if not output.is_dir() or not safe_regular_file(graph):
+        fail("Graphify did not produce a regular graphify-out/graph.json")
+    if fingerprint(repo) != before:
+        fail("worktree changed during refresh; graph was not published")
+    generation = f"gen-{uuid.uuid4().hex}"
+    destination = root / generation
+    if destination.exists() or destination.is_symlink():
+        fail("generated cache name already exists")
+    try:
+        os.rename(staging, destination)
+        _created_paths.remove(staging)
+        _created_paths.append(destination)
+    except OSError as error:
+        fail(f"cannot publish graph generation: {error}")
+    write_metadata(root, {"repository": str(repo), "fingerprint": before, "generation": generation})
+    _created_paths.remove(destination)
+    for candidate in root.glob("gen-*"):
+        if candidate.name != generation:
+            if candidate.is_symlink() or not candidate.is_dir():
+                fail(f"unsafe generation path: {candidate}")
+            shutil.rmtree(candidate)
+
+
+def require_current(repo):
+    root = managed_cache(repo, create=False)
+    value, metadata = status(repo, root)
+    if value["state"] != "current" or metadata is None:
+        fail(f"graph is {value['state']}; run ./scripts/graphify refresh")
+    graph = root / metadata["generation"] / "graphify-out" / "graph.json"
+    return metadata, graph
+
+
+def guarded_query(binary, repo, command, argument):
+    if argument.startswith("-"):
+        fail("only one positional query argument is allowed")
+    if command == "affected":
+        path = Path(argument)
+        try:
+            if path.is_absolute():
+                raise ValueError
+            (repo / path).resolve(strict=False).relative_to(repo)
+        except ValueError:
+            fail("affected path must be inside the repository")
+    metadata, graph = require_current(repo)
+    sys.stderr.write(f"current-graph: {metadata['generation']} (advisory)\n")
+    result = subprocess.run([binary, command, argument, "--graph", str(graph)], check=False)
+    raise SystemExit(result.returncode)
+
+
+def usage():
+    fail("usage: scripts/graphify status|refresh|query <term>|affected <path>")
+
+
+def main(arguments):
+    if not arguments:
+        usage()
+    command = arguments[0]
+    if command not in {"status", "refresh", "query", "affected"}:
+        usage()
+    if command in {"status", "refresh"} and len(arguments) != 1:
+        usage()
+    if command in {"query", "affected"} and len(arguments) != 2:
+        usage()
+    binary = require_graphify()
+    repo = repository()
+    if command == "status":
+        value, _ = status(repo, managed_cache(repo, create=False))
+        print(json.dumps(value, sort_keys=True, separators=(",", ":")))
+        return
+    if command == "refresh":
+        refresh(binary, repo)
+        return
+    guarded_query(binary, repo, command, arguments[1])
+
+
+if __name__ == "__main__":
+    main(sys.argv[1:])

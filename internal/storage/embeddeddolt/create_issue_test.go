@@ -1265,6 +1265,7 @@ func TestCreateIssues(t *testing.T) {
 }
 
 func TestHookFiringStoreCreateIssuesFiresDependencyUpdatesFromEmbeddedStore(t *testing.T) {
+	skipUnlessEmbeddedDolt(t)
 	t.Run("non_transactional", func(t *testing.T) {
 		te := newTestEnv(t, "hk")
 		ctx := t.Context()

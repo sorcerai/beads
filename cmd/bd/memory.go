@@ -540,18 +540,18 @@ Examples:
   bd memory supersede auth-old --with auth-new
   bd memory supersede deploy-notes-v1 --with deploy-notes-v2`,
 	Args: cobra.ExactArgs(1),
-	Run: func(cmd *cobra.Command, args []string) {
+	RunE: func(cmd *cobra.Command, args []string) error {
 		CheckReadonly("memory supersede")
 
 		if err := ensureDirectMode("memory supersede requires direct database access"); err != nil {
-			FatalError("%v", err)
+			return HandleErrorRespectJSON("%v", err)
 		}
 
 		oldKey := args[0]
 		newKey := memorySupersedeWithFlag
 
 		if newKey == "" {
-			FatalErrorRespectJSON("--with flag is required: bd memory supersede <old-key> --with=<new-key>")
+			return HandleErrorRespectJSON("--with flag is required: bd memory supersede <old-key> --with=<new-key>")
 		}
 
 		ctx := rootCtx
@@ -560,38 +560,39 @@ Examples:
 		oldStorageKey := kvPrefix + memoryPrefix + oldKey
 		oldValue, err := store.GetConfig(ctx, oldStorageKey)
 		if err != nil {
-			FatalErrorRespectJSON("reading memory %q: %v", oldKey, err)
+			return HandleErrorRespectJSON("reading memory %q: %v", oldKey, err)
 		}
 		if oldValue == "" {
-			FatalErrorRespectJSON("no memory with key %q", oldKey)
+			return HandleErrorRespectJSON("no memory with key %q", oldKey)
 		}
 
 		// Verify new memory exists
 		newStorageKey := kvPrefix + memoryPrefix + newKey
 		newValue, err := store.GetConfig(ctx, newStorageKey)
 		if err != nil {
-			FatalErrorRespectJSON("reading memory %q: %v", newKey, err)
+			return HandleErrorRespectJSON("reading memory %q: %v", newKey, err)
 		}
 		if newValue == "" {
-			FatalErrorRespectJSON("no memory with key %q (use --with to specify an existing memory)", newKey)
+			return HandleErrorRespectJSON("no memory with key %q (use --with to specify an existing memory)", newKey)
 		}
 
 		// Store the supersession edge
 		superStorageKey := kvPrefix + memorySupersededPrefix + oldKey
 		if err := store.SetConfig(ctx, superStorageKey, newKey); err != nil {
-			FatalErrorRespectJSON("storing supersession: %v", err)
+			return HandleErrorRespectJSON("storing supersession: %v", err)
 		}
 		commandDidWrite.Store(true)
 
 		if jsonOutput {
-			outputJSON(map[string]string{
+			return outputJSON(map[string]string{
 				"action":        "superseded",
 				"key":           oldKey,
 				"superseded_by": newKey,
 			})
-		} else {
-			fmt.Printf("Superseded [%s] -> [%s]\n", oldKey, newKey)
 		}
+
+		fmt.Printf("Superseded [%s] -> [%s]\n", oldKey, newKey)
+		return nil
 	},
 }
 

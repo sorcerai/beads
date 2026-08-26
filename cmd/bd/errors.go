@@ -120,6 +120,17 @@ func SilentExit() error {
 	return &exitError{Code: 1}
 }
 
+func FatalErrorRespectJSON(format string, args ...interface{}) {
+	msg := fmt.Sprintf(format, args...)
+	if jsonOutput {
+		jsonStdoutError(msg, "")
+	} else {
+		fmt.Fprintf(os.Stderr, "Error: %s\n", msg)
+	}
+	metrics.CloseAndFlush()
+	os.Exit(1)
+}
+
 func WarnError(format string, args ...interface{}) {
 	fmt.Fprintf(os.Stderr, "Warning: "+format+"\n", args...)
 }

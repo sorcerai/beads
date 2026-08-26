@@ -65,6 +65,7 @@ func TestPullWithAutoResolve_BranchTrackingFallback(t *testing.T) {
 }
 
 func TestPullWithAutoResolve_BranchTrackingFallbackSuccess(t *testing.T) {
+	skipIfNoDolt(t)
 	remoteDir := filepath.Join(t.TempDir(), "remote")
 	if err := os.MkdirAll(remoteDir, 0o755); err != nil {
 		t.Fatalf("mkdir remote: %v", err)
