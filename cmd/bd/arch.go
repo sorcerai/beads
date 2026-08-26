@@ -41,8 +41,10 @@ Subcommands:
 // archInitCmd scaffolds ARCH.md (if absent) and the post-close hook (if absent).
 // Idempotent: never overwrites a hand-curated ARCH.md.
 var archInitCmd = &cobra.Command{
-	Use:   "init",
-	Short: "Scaffold ARCH.md + the post-close drift hook",
+	SilenceUsage:  true,
+	SilenceErrors: true,
+	Use:           "init",
+	Short:         "Scaffold ARCH.md + the post-close drift hook",
 	Long: `Scaffold a construction-blueprint ARCH.md and wire the post-close drift hook.
 
 Creates ARCH.md from a negative-invariant template if none exists, and installs
@@ -97,8 +99,10 @@ architecture. Filling it in is the work; this just makes the empty form visible.
 // archCheckCmd runs the deterministic gate if present, plus the ARCH.md
 // staleness check. Supports a diff-scoped baseline (see arch_baseline.go).
 var archCheckCmd = &cobra.Command{
-	Use:   "check",
-	Short: "Run the deterministic architecture gate",
+	SilenceUsage:  true,
+	SilenceErrors: true,
+	Use:           "check",
+	Short:         "Run the deterministic architecture gate",
 	Long: `Run the deterministic architecture gate (scripts/arch-check.sh) if it exists,
 then a deterministic ARCH.md staleness check.
 
@@ -214,11 +218,25 @@ func seedPostCloseHook(repoRoot string) bool {
 		hooksDir = filepath.Join(repoRoot, ".beads", "hooks")
 	}
 	hookPath := filepath.Join(hooksDir, "post-close")
-	if _, err := os.Stat(hookPath); err == nil {
+	if _, err := os.Lstat(hookPath); err == nil {
+		if upgradeErr := upgradeLegacyPostCloseHook(hookPath); upgradeErr != nil {
+			fmt.Fprintf(os.Stderr, "Warning: could not upgrade legacy post-close hook %s: %v\n", hookPath, upgradeErr)
+			return false
+		}
+		if unsafeErr := validatePostCloseHookPath(hookPath); unsafeErr != nil {
+			fmt.Fprintf(os.Stderr, "Warning: refusing unsafe post-close hook %s: %v\n", hookPath, unsafeErr)
+		}
 		return false // already exists — never overwrite
+	} else if !os.IsNotExist(err) {
+		fmt.Fprintf(os.Stderr, "Warning: could not inspect post-close hook: %v\n", err)
+		return false
 	}
 	if err := os.MkdirAll(hooksDir, 0o750); err != nil {
 		fmt.Fprintf(os.Stderr, "Warning: could not create hooks dir %s: %v\n", hooksDir, err)
+		return false
+	}
+	if err := validatePostCloseHooksDir(hooksDir); err != nil {
+		fmt.Fprintf(os.Stderr, "Warning: refusing unsafe hooks directory %s: %v\n", hooksDir, err)
 		return false
 	}
 	if err := os.WriteFile(hookPath, []byte(postCloseHookTemplate), 0o755); err != nil {
@@ -324,8 +342,10 @@ if [ ! -f ARCH.md ]; then
   echo "ℹ  no ARCH.md — run 'bd arch init' to scaffold construction guardrails." >&2
 fi
 
-# --- Tier 1: deterministic check (free, 0 tokens) ---
-if [ -x ./scripts/arch-check.sh ]; then
+# --- Tier 1: deterministic check (explicit opt-in; runs repository code) ---
+# Repository-controlled scripts must not execute without an explicit opt-in:
+# a compromised checkout could otherwise run code on every close.
+if [ "${BD_ARCH_CHECK:-0}" = "1" ] && [ -x ./scripts/arch-check.sh ]; then
   ./scripts/arch-check.sh || echo "⚠  see arch-check output above (advisory)" >&2
 fi
 

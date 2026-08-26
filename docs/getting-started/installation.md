@@ -72,24 +72,18 @@ The `-g` enables beads globally. To enable project-specific versions, omit it.
 
 Mise's Go backend follows the same caveats as `go install`; prefer the release backend above.
 
-### Quick Install Script (macOS/Linux/FreeBSD)
+### Manual Install Script (macOS/Linux/FreeBSD)
+
+Package managers above are preferred. If you need the install script, pin it to the release you intend to install, download it to disk, inspect it, and execute it separately:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/gastownhall/beads/main/scripts/install.sh | bash
+BEADS_VERSION=v1.1.0
+curl -fSLo install-beads.sh "https://raw.githubusercontent.com/gastownhall/beads/${BEADS_VERSION}/scripts/install.sh"
+less install-beads.sh
+bash install-beads.sh
 ```
 
-The installer will:
-- Detect your platform (macOS/Linux/FreeBSD, amd64/arm64)
-- Verify downloaded release archives against release `checksums.txt`
-- Fall back to the supported `go install` modes if Go is available
-- Fall back to building from source if needed
-- Guide you through PATH setup if necessary
-
-On macOS, the script preserves the downloaded binary signature by default. If you explicitly want ad-hoc local re-signing, opt in:
-
-```bash
-BEADS_INSTALL_RESIGN_MACOS=1 curl -fsSL https://raw.githubusercontent.com/gastownhall/beads/main/scripts/install.sh | bash
-```
+The installer detects your platform, verifies release archives against `checksums.txt`, and falls back to supported source builds when needed. On macOS, it preserves the downloaded signature by default. To opt into ad-hoc local re-signing after inspection, run `BEADS_INSTALL_RESIGN_MACOS=1 bash install-beads.sh`.
 
 ### Comparison of Installation Methods
 
@@ -99,13 +93,13 @@ BEADS_INSTALL_RESIGN_MACOS=1 curl -fsSL https://raw.githubusercontent.com/gastow
 | **Mise** | All platforms | `mise up` | mise | Installs the latest GitHub release |
 | **npm** | JS/Node.js projects | `npm update -g @beads/bd` | Node.js | Convenient if npm is your ecosystem |
 | **bun** | JS/Bun.js projects | `bun install -g --trust @beads/bd` | Bun.js | Convenient if bun is your ecosystem |
-| **Install script** | Quick setup, CI/CD | Re-run script | curl, bash | Good for automation and one-liners |
+| **Install script** | Manual setup | Download, inspect, rerun | curl, bash | Must be pinned to a release; never pipe network output to a shell |
 | **go install (nocgo)** | Go developers, simplest install | Re-run command | Go 1.24+ | **Server-mode only** (no embedded Dolt) |
 | **go install (cgo)** | Go developers wanting embedded mode | Re-run command | Go 1.24+, C compiler | Full embedded-Dolt support |
 | **From source** | Contributors only | `git pull && go build` | Go, git | Full control, can modify code |
 | **AUR (Arch)** | Arch Linux users | `yay -Syu` | yay/paru | Community-maintained |
 
-**TL;DR:** Use Homebrew if available. Use npm if you're in a Node.js environment. Use the script for quick one-off installs or CI.
+**TL;DR:** Use Homebrew if available or npm in Node.js environments. Reserve the release-pinned, inspected script for platforms without a supported package manager.
 
 ## Go Install and Build Dependencies
 
@@ -211,10 +205,7 @@ CGO_ENABLED=1 GOFLAGS=-tags=gms_pure_go go install github.com/steveyegge/beads/c
 
 ### FreeBSD
 
-**Via quick install script**:
-```bash
-curl -fsSL https://raw.githubusercontent.com/gastownhall/beads/main/scripts/install.sh | bash
-```
+**Via the manual install script**: follow the release-pinned download, inspection, and local execution procedure above.
 
 **Via go install** (server-mode only):
 ```bash
@@ -231,7 +222,10 @@ Beads ships with native Windows support—no MSYS or MinGW required.
 
 **Via PowerShell script**:
 ```pwsh
-irm https://raw.githubusercontent.com/gastownhall/beads/main/install.ps1 | iex
+$BeadsVersion = "v1.1.0"
+Invoke-WebRequest "https://raw.githubusercontent.com/gastownhall/beads/$BeadsVersion/install.ps1" -OutFile install-beads.ps1
+Get-Content .\install-beads.ps1
+.\install-beads.ps1
 ```
 
 The script installs a prebuilt Windows release if available and verifies the downloaded ZIP checksum against release `checksums.txt`. Go is only required for `go install` or building from source.
@@ -417,11 +411,9 @@ The Claude Code plugin itself does not bundle an MCP server. If you configured t
 
 **Solution:**
 ```bash
-# Install uv
-curl -LsSf https://astral.sh/uv/install.sh | sh
-
-# Restart your shell or update PATH
-source ~/.local/bin/env
+# Install uv through a package manager
+brew install uv                    # macOS/Linux with Homebrew
+# Or: pipx install uv
 
 # Verify uv is available
 which uv
@@ -454,17 +446,9 @@ Upgrade checklist:
 Other clones should install the new binary and run `bd bootstrap`, not
 independently migrate. For the full procedure, see [Upgrading](/getting-started/upgrading).
 
-### Quick install script (macOS/Linux/FreeBSD)
+### Manual Install Scripts
 
-```bash
-curl -fsSL https://raw.githubusercontent.com/gastownhall/beads/main/scripts/install.sh | bash
-```
-
-### PowerShell installer (Windows)
-
-```pwsh
-irm https://raw.githubusercontent.com/gastownhall/beads/main/install.ps1 | iex
-```
+Re-download the script from the release tag you trust, inspect it, then execute the local file as shown above. Never pipe a network response directly to `bash` or `iex`.
 
 ### Homebrew
 

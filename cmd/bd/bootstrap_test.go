@@ -12,6 +12,7 @@ import (
 
 	"github.com/steveyegge/beads/internal/config"
 	"github.com/steveyegge/beads/internal/configfile"
+	"gopkg.in/yaml.v3"
 )
 
 // snapshotBootstrapEnv saves all BD_/BEADS_-prefixed env vars, clears them,
@@ -1263,6 +1264,7 @@ func TestDetectBootstrapAction_SynthesizedDirWithoutRecoveryStillUsesExistingSha
 // guard for GH#3201: executeSyncAction previously left the workspace
 // without these files, causing "no beads configuration found" and
 // "Error 1105: no database selected" on every subsequent bd command.
+
 func TestFinalizeSyncedBootstrapWritesConfigFiles(t *testing.T) {
 	t.Setenv("BEADS_DOLT_DATA_DIR", "")
 	t.Setenv("BEADS_DOLT_SERVER_DATABASE", "")
@@ -1322,16 +1324,24 @@ func TestFinalizeSyncedBootstrapWritesConfigFiles(t *testing.T) {
 	if err != nil {
 		t.Fatalf("config.yaml missing after finalize: %v", err)
 	}
-	yaml := string(yamlBytes)
+	yamlText := string(yamlBytes)
 
 	// sync.remote must be persisted so subsequent fresh clones (and
 	// bootstrap retries) can rediscover the remote without re-probing
 	// origin refs.
-	if !strings.Contains(yaml, "sync.remote: ") && !strings.Contains(yaml, "sync-remote: ") {
-		t.Errorf("config.yaml does not contain sync.remote entry:\n%s", yaml)
+	var yamlConfig struct {
+		Sync struct {
+			Remote string `yaml:"remote"`
+		} `yaml:"sync"`
 	}
-	if !strings.Contains(yaml, syncRemote) {
-		t.Errorf("config.yaml does not contain sync remote URL %q:\n%s", syncRemote, yaml)
+	if err := yaml.Unmarshal(yamlBytes, &yamlConfig); err != nil {
+		t.Fatalf("config.yaml is invalid: %v\n%s", err, yamlText)
+	}
+	if yamlConfig.Sync.Remote != syncRemote {
+		t.Errorf("sync.remote = %q, want %q\n%s", yamlConfig.Sync.Remote, syncRemote, yamlText)
+	}
+	if !strings.Contains(yamlText, syncRemote) {
+		t.Errorf("config.yaml does not contain sync remote URL %q:\n%s", syncRemote, yamlText)
 	}
 
 	gitignoreBytes, err := os.ReadFile(filepath.Join(beadsDir, ".gitignore"))

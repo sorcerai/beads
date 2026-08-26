@@ -15,9 +15,11 @@ import (
 // regeneration-on-demand for history the inbox no longer holds (compacted
 // into backlog.md or already consumed by a regen).
 var docsLogCmd = &cobra.Command{
-	Use:   "log",
-	Short: "Render closed issues since a date from Dolt (regeneration-on-demand)",
-	Args:  cobra.NoArgs,
+	SilenceUsage:  true,
+	SilenceErrors: true,
+	Use:           "log",
+	Short:         "Render closed issues since a date from Dolt (regeneration-on-demand)",
+	Args:          cobra.NoArgs,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		since, _ := cmd.Flags().GetString("since")
 		if since == "" {

@@ -711,6 +711,13 @@ func GetStringFromDir(beadsDir, key string) string {
 	if err := yaml.Unmarshal(data, &root); err != nil {
 		return ""
 	}
+	// Flat dotted keys: updateYamlKey writes "custom.password: x" (one scalar
+	// key containing a dot) while viper reads it as nested. Prefer the flat
+	// top-level key when present so a value written by `bd config set`
+	// round-trips through this reader.
+	if flat, ok := root[key]; ok {
+		return fmt.Sprintf("%v", flat)
+	}
 	parts := strings.SplitN(key, ".", 2)
 	node := root
 	for len(parts) == 2 {

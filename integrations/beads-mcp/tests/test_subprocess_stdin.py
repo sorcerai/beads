@@ -29,8 +29,10 @@ class TestBdClientSubprocessStdin:
     def mock_process(self):
         """Create a mock subprocess process."""
         process = MagicMock()
+        process.stdout.read = AsyncMock(side_effect=[b'{"id": "test-1"}', b""])
+        process.stderr.read = AsyncMock(side_effect=[b""])
+        process.wait = AsyncMock(return_value=0)
         process.returncode = 0
-        process.communicate = AsyncMock(return_value=(b'{"id": "test-1"}', b""))
         return process
 
     @pytest.mark.asyncio
@@ -49,7 +51,7 @@ class TestBdClientSubprocessStdin:
     @pytest.mark.asyncio
     async def test_check_version_uses_devnull_stdin(self, bd_client, mock_process):
         """Test that _check_version passes stdin=DEVNULL."""
-        mock_process.communicate = AsyncMock(return_value=(b"bd version 0.9.5", b""))
+        mock_process.stdout.read = AsyncMock(side_effect=[b"bd version 0.9.5", b""])
 
         with patch("asyncio.create_subprocess_exec", return_value=mock_process) as mock_exec:
             await bd_client._check_version()
@@ -78,7 +80,7 @@ class TestBdClientSubprocessStdin:
     @pytest.mark.asyncio
     async def test_quickstart_uses_devnull_stdin(self, bd_client, mock_process):
         """Test that quickstart passes stdin=DEVNULL."""
-        mock_process.communicate = AsyncMock(return_value=(b"# Quickstart guide", b""))
+        mock_process.stdout.read = AsyncMock(side_effect=[b"# Quickstart guide", b""])
 
         with patch("asyncio.create_subprocess_exec", return_value=mock_process) as mock_exec:
             await bd_client.quickstart()
@@ -92,7 +94,7 @@ class TestBdClientSubprocessStdin:
     @pytest.mark.asyncio
     async def test_init_uses_devnull_stdin(self, bd_client, mock_process):
         """Test that init passes stdin=DEVNULL."""
-        mock_process.communicate = AsyncMock(return_value=(b"Initialized!", b""))
+        mock_process.stdout.read = AsyncMock(side_effect=[b"Initialized!", b""])
 
         with patch("asyncio.create_subprocess_exec", return_value=mock_process) as mock_exec:
             await bd_client.init()

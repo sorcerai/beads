@@ -83,7 +83,7 @@ Contributors: coffeegoddd (Dustin Brown / DoltHub), matt wilkie (maphew), harry-
 ```bash
 brew upgrade beads
 # or
-curl -fsSL https://raw.githubusercontent.com/gastownhall/beads/main/scripts/install.sh | bash
+npm update -g @beads/bd
 ```
 
 **Breaking change**: `BD_ACTOR` is deprecated in favor of `BEADS_ACTOR`. The old variable still works as a fallback but will be removed in a future release.

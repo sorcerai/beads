@@ -22,6 +22,28 @@ from beads_mcp.models import (
 )
 
 
+class MockProcess:
+    """Async subprocess fake compatible with bounded stream reads."""
+
+    def __init__(self):
+        self.returncode = 0
+        self.pid = 1
+        self.wait = AsyncMock(return_value=0)
+        self.kill = MagicMock()
+        self.communicate = AsyncMock(return_value=(b"", b""))
+
+    @property
+    def communicate(self):
+        return self._communicate
+
+    @communicate.setter
+    def communicate(self, communicate_mock):
+        self._communicate = communicate_mock
+        stdout, stderr = communicate_mock.return_value
+        self.stdout = MagicMock(read=AsyncMock(side_effect=[stdout, b""]))
+        self.stderr = MagicMock(read=AsyncMock(side_effect=[stderr, b""]))
+
+
 @pytest.fixture
 def bd_client():
     """Create a BdClient instance for testing."""
@@ -30,11 +52,8 @@ def bd_client():
 
 @pytest.fixture
 def mock_process():
-    """Create a mock subprocess process."""
-    process = MagicMock()
-    process.returncode = 0
-    process.communicate = AsyncMock(return_value=(b"", b""))
-    return process
+    """Create a subprocess fake exposing independently readable output streams."""
+    return MockProcess()
 
 
 @pytest.mark.asyncio
@@ -950,3 +969,38 @@ async def test_list_comments_invalid_response(bd_client, mock_process):
         comments = await bd_client.list_comments(params)
 
     assert comments == []
+
+
+@pytest.mark.asyncio
+async def test_board_returns_parsed_json(bd_client, monkeypatch):
+    async def fake_run_command(*args, cwd=None):
+        assert args[0] == "board"
+        return {"projects": [], "diagnostics": [], "generated_at": "2026-05-17T00:00:00Z"}
+
+    monkeypatch.setattr(bd_client, "_run_command", fake_run_command)
+    result = await bd_client.board()
+    assert result["projects"] == []
+    assert "generated_at" in result
+
+
+@pytest.mark.asyncio
+async def test_board_passes_project_and_limit_args(bd_client, monkeypatch):
+    seen: list[str] = []
+
+    async def fake_run_command(*args, cwd=None):
+        seen.extend(args)
+        return {"projects": []}
+
+    monkeypatch.setattr(bd_client, "_run_command", fake_run_command)
+    await bd_client.board(project="alpha", limit=5)
+    assert seen == ["board", "--project", "alpha", "--limit", "5"]
+
+
+@pytest.mark.asyncio
+async def test_board_non_dict_response_raises(bd_client, monkeypatch):
+    async def fake_run_command(*args, cwd=None):
+        return ["not", "a", "dict"]
+
+    monkeypatch.setattr(bd_client, "_run_command", fake_run_command)
+    with pytest.raises(BdCommandError):
+        await bd_client.board()

@@ -1,9 +1,13 @@
 """Client for interacting with bd (beads) CLI and daemon."""
 
 import asyncio
+import contextlib
 import json
+import ntpath
 import os
 import re
+import signal
+import subprocess
 import sys
 from abc import ABC, abstractmethod
 from typing import Any
@@ -73,8 +77,9 @@ class BdNotFoundError(BdError):
             f"bd CLI not found at: {attempted_path}\n\n"
             "The beads Claude Code plugin requires the bd CLI to be installed separately.\n\n"
             "Install bd CLI:\n"
-            "  curl -fsSL https://raw.githubusercontent.com/gastownhall/beads/main/scripts/install.sh | bash\n\n"
-            "Or visit: https://github.com/gastownhall/beads#installation\n\n"
+            "  brew install beads              # macOS/Linux\n"
+            "  npm install -g @beads/bd        # Any platform with Node.js\n\n"
+            "Other supported methods: https://github.com/gastownhall/beads#installation\n\n"
             "After installation, restart Claude Code to reload the MCP server."
         )
 
@@ -273,6 +278,11 @@ class BdCliClient(BdClientBase):
         self.no_auto_flush = no_auto_flush if no_auto_flush is not None else config.beads_no_auto_flush
         self.no_auto_import = no_auto_import if no_auto_import is not None else config.beads_no_auto_import
         self.working_dir = working_dir if working_dir is not None else config.beads_working_dir
+        self.command_timeout = max(0.1, min(float(os.environ.get("BEADS_MCP_COMMAND_TIMEOUT", "30")), 300.0))
+        self.max_output_bytes = max(
+            1024,
+            min(int(os.environ.get("BEADS_MCP_MAX_OUTPUT_BYTES", str(8 << 20))), 64 << 20),
+        )
 
     def _get_working_dir(self) -> str:
         """Get working directory for bd commands.
@@ -302,6 +312,124 @@ class BdCliClient(BdClientBase):
             flags.append("--no-auto-import")
         return flags
 
+    def _command_env(self) -> dict[str, str]:
+        allowed = {
+            "PATH",
+            "HOME",
+            "TMPDIR",
+            "TMP",
+            "TEMP",
+            "USER",
+            "LOGNAME",
+            "SHELL",
+            "LANG",
+            "LC_ALL",
+            "LC_CTYPE",
+            "TERM",
+            "NO_COLOR",
+        }
+        env = {key: value for key, value in os.environ.items() if key in allowed}
+        if self.beads_dir:
+            env["BEADS_DIR"] = self.beads_dir
+        elif self.beads_db:
+            env["BEADS_DB"] = self.beads_db
+        env["BD_NO_CLOSE_HOOK"] = "1"
+        env["BD_NO_DOCS"] = "1"
+        return env
+
+    async def _read_limited_output(self, stream: asyncio.StreamReader) -> bytes:
+        data = bytearray()
+        while True:
+            chunk = await stream.read(min(64 << 10, self.max_output_bytes + 1 - len(data)))
+            if not chunk:
+                return bytes(data)
+            data.extend(chunk)
+            if len(data) > self.max_output_bytes:
+                raise BdCommandError(f"bd command exceeded output limit ({self.max_output_bytes} bytes)")
+
+    async def _kill_process_group(self, process: asyncio.subprocess.Process) -> None:
+        if process.returncode is None:
+            if sys.platform == "win32":
+                tree_killed = False
+                taskkill = None
+                try:
+                    system_root = next(
+                        (value for key, value in os.environ.items() if key.upper() == "SYSTEMROOT"),
+                        r"C:\Windows",
+                    )
+                    taskkill_path = ntpath.join(system_root, "System32", "taskkill.exe")
+                    taskkill = await asyncio.create_subprocess_exec(
+                        taskkill_path,
+                        "/PID",
+                        str(process.pid),
+                        "/T",
+                        "/F",
+                        stdin=asyncio.subprocess.DEVNULL,
+                        stdout=asyncio.subprocess.DEVNULL,
+                        stderr=asyncio.subprocess.DEVNULL,
+                    )
+                    await asyncio.wait_for(taskkill.wait(), timeout=5.0)
+                    tree_killed = taskkill.returncode == 0
+                except (FileNotFoundError, ProcessLookupError, TimeoutError):
+                    if taskkill is not None and taskkill.returncode is None:
+                        taskkill.kill()
+                if not tree_killed:
+                    with contextlib.suppress(ProcessLookupError):
+                        process.kill()
+            else:
+                with contextlib.suppress(ProcessLookupError):
+                    os.killpg(process.pid, signal.SIGKILL)
+        with contextlib.suppress(ProcessLookupError):
+            await process.wait()
+
+    async def _execute(
+        self,
+        cmd: list[str],
+        *,
+        cwd: str | None = None,
+        env: dict[str, str] | None = None,
+    ) -> tuple[bytes, bytes, int]:
+        platform_options: dict[str, Any]
+        if sys.platform == "win32":
+            platform_options = {"creationflags": subprocess.CREATE_NEW_PROCESS_GROUP}
+        else:
+            platform_options = {"start_new_session": True}
+        try:
+            process = await asyncio.create_subprocess_exec(
+                *cmd,
+                stdin=asyncio.subprocess.DEVNULL,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+                cwd=cwd or self._get_working_dir(),
+                env=env or self._command_env(),
+                **platform_options,
+            )
+        except FileNotFoundError as e:
+            raise BdNotFoundError(BdNotFoundError.installation_message(self.bd_path)) from e
+
+        stdout_reader = process.stdout
+        stderr_reader = process.stderr
+        assert stdout_reader is not None and stderr_reader is not None
+
+        async def collect() -> tuple[bytes, bytes]:
+            stdout, stderr = await asyncio.gather(
+                self._read_limited_output(stdout_reader),
+                self._read_limited_output(stderr_reader),
+            )
+            await process.wait()
+            return stdout, stderr
+
+        try:
+            stdout, stderr = await asyncio.wait_for(collect(), timeout=self.command_timeout)
+        except TimeoutError as e:
+            await self._kill_process_group(process)
+            raise BdCommandError(f"bd command timed out after {self.command_timeout:g}s") from e
+        except BaseException:
+            await self._kill_process_group(process)
+            raise
+
+        return stdout, stderr, process.returncode or 0
+
     async def _run_command(self, *args: str, cwd: str | None = None) -> Any:
         """Run bd command and parse JSON output.
 
@@ -319,12 +447,9 @@ class BdCliClient(BdClientBase):
         cmd = [self.bd_path, *args, *self._global_flags(), "--json"]
         working_dir = cwd if cwd is not None else self._get_working_dir()
 
-        # Set up environment with database configuration
-        env = os.environ.copy()
-        if self.beads_dir:
-            env["BEADS_DIR"] = self.beads_dir
-        elif self.beads_db:
-            env["BEADS_DB"] = self.beads_db
+        # Pass only the environment needed by bd. Ambient provider and CI
+        # credentials must not cross the MCP subprocess boundary.
+        env = self._command_env()
 
         # Log database routing for debugging
         if self.beads_dir:
@@ -337,24 +462,13 @@ class BdCliClient(BdClientBase):
         print(f"[beads-mcp]   Database: {db_info}", file=sys.stderr)
         print(f"[beads-mcp]   Working dir: {working_dir}", file=sys.stderr)
 
-        try:
-            process = await asyncio.create_subprocess_exec(
-                *cmd,
-                stdin=asyncio.subprocess.DEVNULL,  # Prevent inheriting MCP's stdin
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE,
-                cwd=working_dir,
-                env=env,
-            )
-            stdout, stderr = await process.communicate()
-        except FileNotFoundError as e:
-            raise BdNotFoundError(BdNotFoundError.installation_message(self.bd_path)) from e
+        stdout, stderr, returncode = await self._execute(cmd, cwd=working_dir, env=env)
 
-        if process.returncode != 0:
+        if returncode != 0:
             raise BdCommandError(
                 f"bd command failed: {stderr.decode()}",
                 stderr=stderr.decode(),
-                returncode=process.returncode or 1,
+                returncode=returncode,
             )
 
         stdout_str = stdout.decode().strip()
@@ -380,24 +494,13 @@ class BdCliClient(BdClientBase):
         # Minimum required version
         min_version = (0, 9, 0)
 
-        try:
-            process = await asyncio.create_subprocess_exec(
-                self.bd_path,
-                "version",
-                stdin=asyncio.subprocess.DEVNULL,  # Prevent inheriting MCP's stdin
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE,
-                cwd=self._get_working_dir(),
-            )
-            stdout, stderr = await process.communicate()
-        except FileNotFoundError as e:
-            raise BdNotFoundError(BdNotFoundError.installation_message(self.bd_path)) from e
+        stdout, stderr, returncode = await self._execute([self.bd_path, "version"])
 
-        if process.returncode != 0:
+        if returncode != 0:
             raise BdCommandError(
                 f"bd version failed: {stderr.decode()}",
                 stderr=stderr.decode(),
-                returncode=process.returncode or 1,
+                returncode=returncode,
             )
 
         # Parse version from output like "bd version 0.9.2"
@@ -411,13 +514,11 @@ class BdCliClient(BdClientBase):
         if version < min_version:
             min_ver_str = ".".join(str(x) for x in min_version)
             cur_ver_str = ".".join(str(x) for x in version)
-            install_cmd = (
-                "curl -fsSL https://raw.githubusercontent.com/gastownhall/beads/main/scripts/install.sh | bash"
-            )
             raise BdVersionError(
                 f"bd version {cur_ver_str} is too old. "
                 f"This MCP server requires bd >= {min_ver_str}. "
-                f"Update with: {install_cmd}"
+                "Update with `brew upgrade beads` or `npm update -g @beads/bd`; "
+                "other methods: https://github.com/gastownhall/beads#installation"
             )
 
     async def ready(self, params: ReadyWorkParams | None = None) -> list[Issue]:
@@ -672,31 +773,12 @@ class BdCliClient(BdClientBase):
             *self._global_flags(),
         ]
 
-        # Set up environment with database configuration
-        env = os.environ.copy()
-        if self.beads_dir:
-            env["BEADS_DIR"] = self.beads_dir
-        elif self.beads_db:
-            env["BEADS_DB"] = self.beads_db
-
-        try:
-            process = await asyncio.create_subprocess_exec(
-                *cmd,
-                stdin=asyncio.subprocess.DEVNULL,  # Prevent inheriting MCP's stdin
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE,
-                cwd=self._get_working_dir(),
-                env=env,
-            )
-            _stdout, stderr = await process.communicate()
-        except FileNotFoundError as e:
-            raise BdNotFoundError(BdNotFoundError.installation_message(self.bd_path)) from e
-
-        if process.returncode != 0:
+        _stdout, stderr, returncode = await self._execute(cmd)
+        if returncode != 0:
             raise BdCommandError(
                 f"bd dep add failed: {stderr.decode()}",
                 stderr=stderr.decode(),
-                returncode=process.returncode or 1,
+                returncode=returncode,
             )
 
     async def _run_text_command(self, *args: str) -> str:
@@ -707,30 +789,12 @@ class BdCliClient(BdClientBase):
         """
         cmd = [self.bd_path, *args, *self._global_flags()]
 
-        env = os.environ.copy()
-        if self.beads_dir:
-            env["BEADS_DIR"] = self.beads_dir
-        elif self.beads_db:
-            env["BEADS_DB"] = self.beads_db
-
-        try:
-            process = await asyncio.create_subprocess_exec(
-                *cmd,
-                stdin=asyncio.subprocess.DEVNULL,  # Prevent inheriting MCP's stdin
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE,
-                cwd=self._get_working_dir(),
-                env=env,
-            )
-            stdout, stderr = await process.communicate()
-        except FileNotFoundError as e:
-            raise BdNotFoundError(BdNotFoundError.installation_message(self.bd_path)) from e
-
-        if process.returncode != 0:
+        stdout, stderr, returncode = await self._execute(cmd)
+        if returncode != 0:
             raise BdCommandError(
                 f"bd {args[0]} failed: {stderr.decode()}",
                 stderr=stderr.decode(),
-                returncode=process.returncode or 1,
+                returncode=returncode,
             )
 
         return stdout.decode().strip()
@@ -781,23 +845,12 @@ class BdCliClient(BdClientBase):
         """
         cmd = [self.bd_path, "quickstart"]
 
-        try:
-            process = await asyncio.create_subprocess_exec(
-                *cmd,
-                stdin=asyncio.subprocess.DEVNULL,  # Prevent inheriting MCP's stdin
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE,
-                cwd=self._get_working_dir(),
-            )
-            stdout, stderr = await process.communicate()
-        except FileNotFoundError as e:
-            raise BdNotFoundError(BdNotFoundError.installation_message(self.bd_path)) from e
-
-        if process.returncode != 0:
+        stdout, stderr, returncode = await self._execute(cmd)
+        if returncode != 0:
             raise BdCommandError(
                 f"bd quickstart failed: {stderr.decode()}",
                 stderr=stderr.decode(),
-                returncode=process.returncode or 1,
+                returncode=returncode,
             )
 
         return stdout.decode()
@@ -953,23 +1006,15 @@ class BdCliClient(BdClientBase):
         if self.actor:
             cmd.extend(["--actor", self.actor])
 
-        try:
-            process = await asyncio.create_subprocess_exec(
-                *cmd,
-                stdin=asyncio.subprocess.DEVNULL,  # Prevent inheriting MCP's stdin
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE,
-                cwd=self._get_working_dir(),
-            )
-            stdout, stderr = await process.communicate()
-        except FileNotFoundError as e:
-            raise BdNotFoundError(BdNotFoundError.installation_message(self.bd_path)) from e
-
-        if process.returncode != 0:
+        env = self._command_env()
+        env.pop("BEADS_DIR", None)
+        env.pop("BEADS_DB", None)
+        stdout, stderr, returncode = await self._execute(cmd, env=env)
+        if returncode != 0:
             raise BdCommandError(
                 f"bd init failed: {stderr.decode()}",
                 stderr=stderr.decode(),
-                returncode=process.returncode or 1,
+                returncode=returncode,
             )
 
         return stdout.decode()

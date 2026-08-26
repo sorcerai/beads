@@ -25,8 +25,10 @@ const docsRegenPromptByteCap = 200 * 1024
 // --complete consumes the inbox after the agent (or a human) finished;
 // --exec runs a headless CLI with the prompt and completes on success.
 var docsRegenCmd = &cobra.Command{
-	Use:   "regen",
-	Short: "Tier 2: LLM regen of narrative wiki pages from the inbox",
+	SilenceUsage:  true,
+	SilenceErrors: true,
+	Use:           "regen",
+	Short:         "Tier 2: LLM regen of narrative wiki pages from the inbox",
 	Long: "Tier 2: LLM regen of narrative wiki pages from the inbox.\n\n" +
 		"Residual risk: on repos where untrusted parties can influence issue " +
 		"titles/descriptions/comments (e.g. public trackers with external " +

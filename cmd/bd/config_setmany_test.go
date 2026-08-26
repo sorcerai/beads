@@ -1,12 +1,412 @@
 package main
 
 import (
+	"context"
+	"encoding/json"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
 	"github.com/steveyegge/beads/internal/config"
+	"github.com/steveyegge/beads/internal/storage"
+	"github.com/steveyegge/beads/internal/storage/domain"
+	"github.com/steveyegge/beads/internal/storage/uow"
 	"github.com/steveyegge/beads/internal/types"
+	"github.com/steveyegge/beads/issueops"
 )
+
+type configOutputStore struct {
+	storage.DoltStorage
+	values  map[string]string
+	deleted []string
+}
+
+func (s *configOutputStore) SetConfig(_ context.Context, key, value string) error {
+	s.values[key] = value
+	return nil
+}
+
+func (s *configOutputStore) DeleteConfig(_ context.Context, key string) error {
+	delete(s.values, key)
+	s.deleted = append(s.deleted, key)
+	return nil
+}
+
+func (s *configOutputStore) deletedKey(key string) bool {
+	for _, deleted := range s.deleted {
+		if deleted == key {
+			return true
+		}
+	}
+	return false
+}
+
+func (s *configOutputStore) GetAllConfig(context.Context) (map[string]string, error) {
+	values := make(map[string]string, len(s.values))
+	for key, value := range s.values {
+		values[key] = value
+	}
+	return values, nil
+}
+
+// workspaceConfig adapts the fake store to the workspace-settings role the
+// converged `bd config set` flow writes through.
+func (s *configOutputStore) WorkspaceConfig() (issueops.WorkspaceConfig, error) {
+	return &configOutputSettings{store: s}, nil
+}
+
+type configOutputSettings struct {
+	store *configOutputStore
+}
+
+func (w *configOutputSettings) GetSetting(_ context.Context, req issueops.GetSettingRequest) (issueops.SettingResult, error) {
+	return issueops.SettingResult{Key: req.Key, Value: w.store.values[req.Key]}, nil
+}
+
+func (w *configOutputSettings) ListSettings(context.Context, issueops.ListSettingsRequest) (issueops.ListSettingsResult, error) {
+	settings := make(map[string]string, len(w.store.values))
+	for k, v := range w.store.values {
+		settings[k] = v
+	}
+	return issueops.ListSettingsResult{Settings: settings}, nil
+}
+
+func (w *configOutputSettings) SetSetting(_ context.Context, req issueops.SetSettingRequest) (issueops.SetSettingResult, error) {
+	if err := w.store.SetConfig(context.Background(), req.Key, req.Value); err != nil {
+		return issueops.SetSettingResult{}, err
+	}
+	return issueops.SetSettingResult{Key: req.Key, Value: req.Value}, nil
+}
+
+func (w *configOutputSettings) UnsetSetting(_ context.Context, req issueops.UnsetSettingRequest) (issueops.UnsetSettingResult, error) {
+	if err := w.store.DeleteConfig(context.Background(), req.Key); err != nil {
+		return issueops.UnsetSettingResult{}, err
+	}
+	return issueops.UnsetSettingResult{Key: req.Key}, nil
+}
+
+func setupConfigOutputTest(t *testing.T) *configOutputStore {
+	t.Helper()
+
+	oldStore := store
+	oldRootCtx := rootCtx
+	oldJSONOutput := jsonOutput
+	oldForceGitTracked := forceGitTracked
+	oldStoreActive := isStoreActive()
+	t.Cleanup(func() {
+		setStore(oldStore)
+		setStoreActive(oldStoreActive)
+		rootCtx = oldRootCtx
+		jsonOutput = oldJSONOutput
+		forceGitTracked = oldForceGitTracked
+		config.ResetForTesting()
+		_ = config.Initialize()
+	})
+
+	tmpDir := t.TempDir()
+	beadsDir := filepath.Join(tmpDir, ".beads")
+	if err := os.MkdirAll(beadsDir, 0o755); err != nil {
+		t.Fatalf("create .beads: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(beadsDir, "config.yaml"), nil, 0o600); err != nil {
+		t.Fatalf("create config.yaml: %v", err)
+	}
+	t.Setenv("BEADS_DIR", beadsDir)
+	t.Chdir(tmpDir)
+
+	config.ResetForTesting()
+	if err := config.Initialize(); err != nil {
+		t.Fatalf("initialize config: %v", err)
+	}
+
+	fake := &configOutputStore{values: make(map[string]string)}
+	setStore(fake)
+	setStoreActive(true)
+	rootCtx = context.Background()
+	forceGitTracked = true
+	return fake
+}
+
+func TestConfigSetConfirmationsRedactSecrets(t *testing.T) {
+	setupConfigOutputTest(t)
+
+	tests := []struct {
+		name     string
+		args     []string
+		secrets  []string
+		wantText []string
+		wantJSON map[string]string
+		setMany  bool
+	}{
+		{
+			name:     "set text",
+			args:     []string{"ado.pat", "set-text-secret"},
+			secrets:  []string{"set-text-secret"},
+			wantText: []string{"Set ado.pat = [REDACTED]"},
+		},
+		{
+			name:     "set JSON",
+			args:     []string{"ado.pat", "set-json-secret"},
+			secrets:  []string{"set-json-secret"},
+			wantJSON: map[string]string{"ado.pat": "[REDACTED]"},
+		},
+		{
+			name: "set-many text",
+			args: []string{
+				"ado.pat=set-many-yaml-secret",
+				"custom.password=set-many-db-secret",
+				"actor=visible-text-value",
+			},
+			secrets: []string{"set-many-yaml-secret", "set-many-db-secret"},
+			wantText: []string{
+				"Set ado.pat = [REDACTED]",
+				"Set custom.password = [REDACTED]",
+				"Set actor = visible-text-value",
+			},
+			setMany: true,
+		},
+		{
+			name: "set-many JSON",
+			args: []string{
+				"ado.pat=set-many-json-yaml-secret",
+				"custom.password=set-many-json-db-secret",
+				"actor=visible-json-value",
+			},
+			secrets: []string{"set-many-json-yaml-secret", "set-many-json-db-secret"},
+			wantJSON: map[string]string{
+				"ado.pat":         "[REDACTED]",
+				"custom.password": "[REDACTED]",
+				"actor":           "visible-json-value",
+			},
+			setMany: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			jsonOutput = tt.wantJSON != nil
+			out := captureStdout(t, func() error {
+				if tt.setMany {
+					return configSetManyCmd.RunE(configSetManyCmd, tt.args)
+				}
+				return configSetCmd.RunE(configSetCmd, tt.args)
+			})
+
+			for _, secret := range tt.secrets {
+				if strings.Contains(out, secret) {
+					t.Errorf("config confirmation leaked secret %q:\n%s", secret, out)
+				}
+			}
+
+			if tt.wantJSON == nil {
+				for _, want := range tt.wantText {
+					if !strings.Contains(out, want) {
+						t.Errorf("config confirmation missing %q:\n%s", want, out)
+					}
+				}
+				return
+			}
+
+			got := make(map[string]string)
+			if tt.setMany {
+				var entries []map[string]string
+				if err := json.Unmarshal([]byte(out), &entries); err != nil {
+					t.Fatalf("parse set-many JSON: %v\n%s", err, out)
+				}
+				for _, entry := range entries {
+					got[entry["key"]] = entry["value"]
+				}
+			} else {
+				var entry map[string]interface{}
+				if err := json.Unmarshal([]byte(out), &entry); err != nil {
+					t.Fatalf("parse set JSON: %v\n%s", err, out)
+				}
+				key, _ := entry["key"].(string)
+				got[key], _ = entry["value"].(string)
+			}
+			for key, want := range tt.wantJSON {
+				if got[key] != want {
+					t.Errorf("confirmation value for %q = %q, want %q", key, got[key], want)
+				}
+			}
+		})
+	}
+}
+
+func TestConfigSetRoutesEverySecretOnlyToYAML(t *testing.T) {
+	tests := []struct {
+		name   string
+		key    string
+		value  string
+		secret bool
+	}{
+		{name: "custom password", key: "custom.password", value: "custom-password-value", secret: true},
+		{name: "linear refresh token", key: "linear.refresh_token", value: "linear-refresh-value", secret: true},
+		{name: "ADO private key", key: "ado.private_key", value: "ado-private-value", secret: true},
+		{name: "non-secret custom key", key: "custom.theme", value: "dark", secret: false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			fake := setupConfigOutputTest(t)
+			if tt.secret {
+				fake.values[tt.key] = "legacy-dolt-secret"
+			}
+			captureStdout(t, func() error {
+				return configSetCmd.RunE(configSetCmd, []string{tt.key, tt.value})
+			})
+
+			yamlValue := config.GetStringFromDir(os.Getenv("BEADS_DIR"), tt.key)
+			dbValue, wroteDB := fake.values[tt.key]
+			if tt.secret {
+				if wroteDB {
+					t.Errorf("secret key %q called Dolt SetConfig with %q", tt.key, dbValue)
+				}
+				if yamlValue != tt.value {
+					t.Errorf("secret key %q config.yaml value = %q, want %q", tt.key, yamlValue, tt.value)
+				}
+				if !fake.deletedKey(tt.key) {
+					t.Errorf("secret key %q did not delete legacy Dolt config", tt.key)
+				}
+				return
+			}
+
+			if !wroteDB || dbValue != tt.value {
+				t.Errorf("non-secret key %q Dolt value = %q (written=%v), want %q", tt.key, dbValue, wroteDB, tt.value)
+			}
+			if yamlValue != "" {
+				t.Errorf("non-secret key %q unexpectedly written to config.yaml as %q", tt.key, yamlValue)
+			}
+			if fake.deletedKey(tt.key) {
+				t.Errorf("non-secret key %q unexpectedly deleted Dolt config", tt.key)
+			}
+		})
+	}
+}
+
+func TestConfigSetManyRoutesEverySecretOnlyToYAML(t *testing.T) {
+	fake := setupConfigOutputTest(t)
+	secrets := map[string]string{
+		"custom.password":      "batch-custom-password",
+		"linear.refresh_token": "batch-linear-refresh",
+		"ado.private_key":      "batch-ado-private",
+	}
+	for key := range secrets {
+		fake.values[key] = "legacy-dolt-secret"
+	}
+	const nonSecretKey = "custom.theme"
+	const nonSecretValue = "light"
+	args := make([]string, 0, len(secrets)+1)
+	for key, value := range secrets {
+		args = append(args, key+"="+value)
+	}
+	args = append(args, nonSecretKey+"="+nonSecretValue)
+
+	captureStdout(t, func() error {
+		return configSetManyCmd.RunE(configSetManyCmd, args)
+	})
+
+	if len(fake.values) != 1 || fake.values[nonSecretKey] != nonSecretValue {
+		t.Errorf("Dolt SetConfig writes = %v, want only %s=%s", fake.values, nonSecretKey, nonSecretValue)
+	}
+	beadsDir := os.Getenv("BEADS_DIR")
+	for key, want := range secrets {
+		if got := config.GetStringFromDir(beadsDir, key); got != want {
+			t.Errorf("secret key %q config.yaml value = %q, want %q", key, got, want)
+		}
+		if !fake.deletedKey(key) {
+			t.Errorf("secret key %q did not delete legacy Dolt config", key)
+		}
+	}
+	if got := config.GetStringFromDir(beadsDir, nonSecretKey); got != "" {
+		t.Errorf("non-secret key %q unexpectedly written to config.yaml as %q", nonSecretKey, got)
+	}
+	if fake.deletedKey(nonSecretKey) {
+		t.Errorf("non-secret key %q unexpectedly deleted Dolt config", nonSecretKey)
+	}
+}
+
+func TestConfigUnsetSecretRemovesYAMLAndLegacyDoltValue(t *testing.T) {
+	keys := []string{"custom.password", "linear.refresh_token", "ado.private_key"}
+	for _, key := range keys {
+		t.Run(key, func(t *testing.T) {
+			fake := setupConfigOutputTest(t)
+			fake.values[key] = "legacy-dolt-secret"
+			if err := config.SetYamlConfig(key, "yaml-secret"); err != nil {
+				t.Fatalf("seed config.yaml: %v", err)
+			}
+
+			captureStdout(t, func() error {
+				return configUnsetCmd.RunE(configUnsetCmd, []string{key})
+			})
+
+			if got := config.GetStringFromDir(os.Getenv("BEADS_DIR"), key); got != "" {
+				t.Errorf("secret key %q remains in config.yaml as %q", key, got)
+			}
+			if got, exists := fake.values[key]; exists {
+				t.Errorf("secret key %q remains in Dolt as %q", key, got)
+			}
+			if !fake.deletedKey(key) {
+				t.Errorf("secret key %q did not delete legacy Dolt config", key)
+			}
+		})
+	}
+}
+
+func writeMalformedConfigYAML(t *testing.T) {
+	t.Helper()
+	configPath := filepath.Join(os.Getenv("BEADS_DIR"), "config.yaml")
+	if err := os.WriteFile(configPath, []byte("custom: [unterminated\n"), 0o600); err != nil {
+		t.Fatalf("write malformed config.yaml: %v", err)
+	}
+}
+
+func assertLegacySecretPreserved(t *testing.T, fake *configOutputStore, key string) {
+	t.Helper()
+	if fake.deletedKey(key) {
+		t.Errorf("legacy Dolt secret %q was deleted before YAML mutation succeeded", key)
+	}
+	if got := fake.values[key]; got != "legacy-dolt-secret" {
+		t.Errorf("legacy Dolt secret %q = %q after YAML failure, want preserved value", key, got)
+	}
+}
+
+func TestConfigSetSecretYamlFailurePreservesLegacyDolt(t *testing.T) {
+	fake := setupConfigOutputTest(t)
+	const key = "custom.credentials"
+	fake.values[key] = "legacy-dolt-secret"
+	writeMalformedConfigYAML(t)
+
+	if err := configSetCmd.RunE(configSetCmd, []string{key, "replacement-secret"}); err == nil {
+		t.Fatal("config set succeeded with malformed config.yaml")
+	}
+	assertLegacySecretPreserved(t, fake, key)
+}
+
+func TestConfigSetManySecretYamlFailurePreservesLegacyDolt(t *testing.T) {
+	fake := setupConfigOutputTest(t)
+	const key = "custom.clientCredentials"
+	fake.values[key] = "legacy-dolt-secret"
+	writeMalformedConfigYAML(t)
+
+	if err := configSetManyCmd.RunE(configSetManyCmd, []string{key + "=replacement-secret"}); err == nil {
+		t.Fatal("config set-many succeeded with malformed config.yaml")
+	}
+	assertLegacySecretPreserved(t, fake, key)
+}
+
+func TestConfigUnsetSecretYamlFailurePreservesLegacyDolt(t *testing.T) {
+	fake := setupConfigOutputTest(t)
+	const key = "custom.accessToken"
+	fake.values[key] = "legacy-dolt-secret"
+	writeMalformedConfigYAML(t)
+
+	if err := configUnsetCmd.RunE(configUnsetCmd, []string{key}); err == nil {
+		t.Fatal("config unset succeeded with malformed config.yaml")
+	}
+	assertLegacySecretPreserved(t, fake, key)
+}
 
 // TestConfigSetManyArgParsing tests argument parsing for the set-many command.
 func TestConfigSetManyArgParsing(t *testing.T) {
@@ -60,6 +460,10 @@ func TestConfigSetManyYamlKeyDetection(t *testing.T) {
 		}
 	}
 
+	// NOTE: "test.key"-style keys are NOT yaml-only: a bare trailing "key"
+	// segment is only sensitive with a credential pair prefix (api/private/
+	// access) or as an explicit entry (ssh.key). Ordinary *.key names stay on
+	// the database plane.
 	dbKeys := []string{"ado.state_map.open", "jira.url", "status.custom", "test.key"}
 	for _, key := range dbKeys {
 		if config.IsYamlOnlyKey(key) {
@@ -319,4 +723,65 @@ func TestConfigSetManyParseMultipleArgs(t *testing.T) {
 			t.Errorf("pair[%d] value = %q, want %q", i, p.value, expected[i].value)
 		}
 	}
+}
+
+type proxiedConfigUseCase struct {
+	domain.ConfigUseCase
+	values  map[string]string
+	deleted []string
+}
+
+func (f *proxiedConfigUseCase) SetConfig(_ context.Context, key, value string) error {
+	f.values[key] = value
+	return nil
+}
+
+func (f *proxiedConfigUseCase) DeleteConfig(_ context.Context, key string) error {
+	delete(f.values, key)
+	f.deleted = append(f.deleted, key)
+	return nil
+}
+
+func (f *proxiedConfigUseCase) deletedKey(key string) bool {
+	for _, deleted := range f.deleted {
+		if deleted == key {
+			return true
+		}
+	}
+	return false
+}
+
+func (f *proxiedConfigUseCase) GetConfig(_ context.Context, key string) (string, error) {
+	return f.values[key], nil
+}
+
+func (f *proxiedConfigUseCase) GetAllConfig(context.Context) (map[string]string, error) {
+	values := make(map[string]string, len(f.values))
+	for key, value := range f.values {
+		values[key] = value
+	}
+	return values, nil
+}
+
+type proxiedConfigUOW struct {
+	uow.UnitOfWork
+	config  *proxiedConfigUseCase
+	commits *[]string
+}
+
+func (f *proxiedConfigUOW) ConfigUseCase() domain.ConfigUseCase { return f.config }
+func (f *proxiedConfigUOW) Commit(_ context.Context, message string) error {
+	*f.commits = append(*f.commits, message)
+	return nil
+}
+func (f *proxiedConfigUOW) Close(context.Context) {}
+
+type proxiedConfigUOWProvider struct {
+	uow.UnitOfWorkProvider
+	config  *proxiedConfigUseCase
+	commits []string
+}
+
+func (f *proxiedConfigUOWProvider) NewUOW(context.Context) (uow.UnitOfWork, error) {
+	return &proxiedConfigUOW{config: f.config, commits: &f.commits}, nil
 }

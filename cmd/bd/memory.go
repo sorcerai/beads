@@ -580,8 +580,10 @@ var memoryCmd = &cobra.Command{
 
 // memorySupersedeCmd marks a memory as superseded by another.
 var memorySupersedeCmd = &cobra.Command{
-	Use:   "supersede <old-key> --with=<new-key>",
-	Short: "Supersede a memory with a newer version",
+	Use:           "supersede <old-key> --with=<new-key>",
+	SilenceUsage:  true,
+	SilenceErrors: true,
+	Short:         "Supersede a memory with a newer version",
 	Long: `Mark a memory as superseded by a newer memory.
 
 The superseded memory is hidden from default listings (bd memories)
@@ -597,7 +599,7 @@ Examples:
 		CheckReadonly("memory supersede")
 
 		if err := ensureDirectMode("memory supersede requires direct database access"); err != nil {
-			return HandleError("%v", err)
+			return HandleErrorRespectJSON("%v", err)
 		}
 
 		oldKey := args[0]

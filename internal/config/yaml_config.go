@@ -109,13 +109,22 @@ var YamlOnlyKeys = map[string]bool{
 // IsYamlOnlyKey returns true if the given key should be stored in config.yaml
 // rather than the Dolt database.
 func IsYamlOnlyKey(key string) bool {
+	// SECURITY: a key carrying sensitive material never goes to the database,
+	// where it would be replicated, exported in JSONL, and served over the
+	// wire. Secrets live only in the local git-ignored config.yaml.
+	if IsSecretKey(key) {
+		return true
+	}
+
 	// Check exact match
 	if YamlOnlyKeys[key] {
 		return true
 	}
 
 	// Check prefix matches for nested keys
-	prefixes := []string{"routing.", "sync.", "git.", "directory.", "repos.", "external_projects.", "validation.", "lint.", "hierarchy.", "ai.", "backup.", "export.", "dolt.", "federation.", "metrics.", "list.", "audit.", "storage-class."}
+	// NOTE: import.* is exact-match via YamlOnlyKeys, NOT a prefix namespace:
+	// an unlisted import.* key must not be treated as yaml-only.
+	prefixes := []string{"routing.", "sync.", "git.", "directory.", "repos.", "external_projects.", "validation.", "hierarchy.", "ai.", "backup.", "export.", "dolt.", "federation.", "metrics.", "list.", "audit."}
 	for _, prefix := range prefixes {
 		if strings.HasPrefix(key, prefix) {
 			return true
@@ -125,57 +134,60 @@ func IsYamlOnlyKey(key string) bool {
 	return false
 }
 
-// secretKeyPatterns are substrings that identify a key as carrying sensitive
-// material. Matched anywhere in the key, so they must be long enough that a
-// substring hit is never an accident.
-var secretKeyPatterns = []string{
-	"api_key", "api-key", "apikey", "secret", "token", "password", "passwd",
-	"credential", "private_key", "privatekey", "privkey",
+// secretKeyComponents are whole segments — split on `.`, `_` and `-` — that
+// mark a key as sensitive. Matched as SEGMENTS, not substrings: "tokenizer"
+// and "secretary" are ordinary words that merely contain a sensitive one.
+var secretKeyComponents = map[string]bool{
+	"secret": true, "token": true, "password": true, "passwd": true,
+	"credential": true, "credentials": true,
+	"apikey": true, "privatekey": true, "accesskey": true,
+	"clientcredential": true, "clientcredentials": true,
+	"accesstoken": true, "refreshtoken": true,
+	// Shorter credentials-oriented spellings from the earlier segment list.
+	// Whole-segment matching keeps ordinary words (tokenizer, secretary,
+	// keyword) out while still catching github.pat, db.pwd, etc. A bare
+	// trailing "key" is NOT a component — it would flag every *.key — it is
+	// handled by the pair-prefix rule plus explicit keys below.
+	"pat": true, "auth": true, "pwd": true, "bearer": true, "cert": true,
 }
 
-// secretKeySegments are whole segments — split on `.`, `_` and `-` — that mark
-// a key as sensitive.
-//
-// They are matched as SEGMENTS rather than as substrings because every one of
-// them is a prefix of an ordinary word: as a substring, "pat" would redact
-// `issue.path` and `export.pattern`, "auth" would redact `commit.author`, and
-// "key" would redact `sort.keyword`. As a segment, `github.pat` and
-// `commit.author` are told apart correctly.
-var secretKeySegments = map[string]bool{
-	"key": true, "keys": true, "apikey": true, "pwd": true, "pat": true,
-	"auth": true, "bearer": true, "cert": true, "credential": true,
-	"credentials": true, "secret": true, "token": true, "password": true,
+// secretKeyPairPrefixes qualify a bare trailing "key" segment: "api.key" is a
+// credential, "sort.keyword" is not.
+var secretKeyPairPrefixes = map[string]bool{"api": true, "private": true, "access": true}
+
+// secretConfigKeys are specific known-sensitive keys whose names carry no
+// sensitive component at all.
+var secretConfigKeys = map[string]bool{
+	"linear.oauth_client_id": true,
+	"ado.pat":                true,
+	"ssh.key":                true,
 }
 
 // IsSecretKey reports whether a config key holds sensitive material.
 //
 // IT IS A SECURITY CONTROL, not only a lint. Two callers depend on it: the
 // `bd config set` guard that refuses to write a credential into a git-tracked
-// file, and — since the settings surface went on the wire — the redaction in
-// internal/httpapi that decides whether GET /v0/beads/config publishes a
-// value. Redaction is the whole control there: a `bd serve` bearer is optional
-// and, where configured, shared and surface-wide, so it cannot withhold one
-// value from one caller — and there is no TLS either. A spelling missing from
-// this predicate is a credential served in cleartext.
-//
-// It errs toward over-redacting for that reason: a key wrongly withheld is an
-// operator asking why, and a key wrongly published cannot be recalled. The
-// decision is about the KEY alone; no value is ever inspected.
+// file, and the redaction in internal/httpapi + cmd/bd display surfaces that
+// decides whether a value is published. The decision is about the KEY alone;
+// no value is ever inspected. It errs toward over-redacting within these
+// word-boundary rules: a key wrongly withheld is an operator asking why; a
+// key wrongly published cannot be recalled.
 func IsSecretKey(key string) bool {
 	lower := strings.ToLower(key)
-	for _, pattern := range secretKeyPatterns {
-		if strings.Contains(lower, pattern) {
-			return true
-		}
+	if secretConfigKeys[lower] {
+		return true
 	}
-	for _, segment := range strings.FieldsFunc(lower, func(r rune) bool {
+	parts := strings.FieldsFunc(lower, func(r rune) bool {
 		return r == '.' || r == '_' || r == '-'
-	}) {
-		if secretKeySegments[segment] {
-			return true
-		}
+	})
+	if len(parts) == 0 {
+		return false
 	}
-	return false
+	last := parts[len(parts)-1]
+	if secretKeyComponents[last] {
+		return true
+	}
+	return last == "key" && len(parts) >= 2 && secretKeyPairPrefixes[parts[len(parts)-2]]
 }
 
 // isGitTracked returns true if the file at path is tracked by git
@@ -556,12 +568,88 @@ func UnsetYamlConfig(key string) error {
 	}
 
 	newContent := commentOutYamlKey(string(content), normalizedKey)
+	if IsSecretKey(key) {
+		// Commenting out leaves the secret in the file; a secret must be
+		// REMOVED outright. removeYamlKey parses strictly, so a malformed
+		// config.yaml refuses the unset rather than silently leaving the
+		// credential on disk.
+		updated, removed, removeErr := removeYamlKey(string(content), normalizedKey)
+		if removeErr != nil {
+			return fmt.Errorf("failed to remove secret config: %w", removeErr)
+		}
+		if removed {
+			newContent = updated
+		}
+	}
 
 	if err := os.WriteFile(configPath, []byte(newContent), 0600); err != nil { //nolint:gosec // configPath is validated
 		return fmt.Errorf("failed to write config.yaml: %w", err)
 	}
 
 	return nil
+}
+
+// findMappingChild returns the index of the named key within a mapping node's
+// Content (key/value pairs), or -1.
+func findMappingChild(mapping *yaml.Node, name string) int {
+	for i := 0; i < len(mapping.Content); i += 2 {
+		k := mapping.Content[i]
+		if k.Kind == yaml.ScalarNode && k.Value == name {
+			return i
+		}
+	}
+	return -1
+}
+
+// removeYamlKey removes a key (flat dotted or nested) from YAML content,
+// pruning empty parent mappings. It fails on malformed input.
+func removeYamlKey(content, key string) (string, bool, error) {
+	var root yaml.Node
+	if err := yaml.Unmarshal([]byte(content), &root); err != nil {
+		return "", false, err
+	}
+	if len(root.Content) == 0 || root.Content[0].Kind != yaml.MappingNode {
+		return content, false, nil
+	}
+
+	mapping := root.Content[0]
+	if idx := findMappingChild(mapping, key); idx != -1 {
+		mapping.Content = append(mapping.Content[:idx], mapping.Content[idx+2:]...)
+		out, err := yaml.Marshal(&root)
+		return string(out), true, err
+	}
+
+	parts := strings.Split(key, ".")
+	if len(parts) < 2 {
+		return content, false, nil
+	}
+	type parentLink struct {
+		mapping *yaml.Node
+		index   int
+	}
+	links := make([]parentLink, 0, len(parts))
+	current := mapping
+	for _, part := range parts {
+		idx := findMappingChild(current, part)
+		if idx == -1 {
+			return content, false, nil
+		}
+		links = append(links, parentLink{mapping: current, index: idx})
+		current = current.Content[idx+1]
+	}
+
+	leaf := links[len(links)-1]
+	leaf.mapping.Content = append(leaf.mapping.Content[:leaf.index], leaf.mapping.Content[leaf.index+2:]...)
+	for i := len(links) - 2; i >= 0; i-- {
+		link := links[i]
+		child := link.mapping.Content[link.index+1]
+		if child.Kind != yaml.MappingNode || len(child.Content) != 0 {
+			break
+		}
+		link.mapping.Content = append(link.mapping.Content[:link.index], link.mapping.Content[link.index+2:]...)
+	}
+	out, err := yaml.Marshal(&root)
+	return string(out), true, err
 }
 
 // findProjectConfigYaml finds the active config.yaml path for YAML-only config writes.
@@ -704,12 +792,20 @@ func updateNestedYamlKey(content, key, value string) (string, bool, error) {
 	if err := yaml.Unmarshal([]byte(content), &root); err != nil {
 		return "", false, err
 	}
-	if len(root.Content) == 0 {
-		return "", false, nil
+	commentOnlyPrefix := ""
+	if len(root.Content) == 0 && strings.TrimSpace(content) != "" {
+		commentOnlyPrefix = strings.TrimRight(content, "\r\n") + "\n"
 	}
-	mapping := root.Content[0]
-	if mapping.Kind != yaml.MappingNode {
-		return "", false, nil
+	var mapping *yaml.Node
+	if len(root.Content) == 0 {
+		mapping = &yaml.Node{Kind: yaml.MappingNode, Tag: "!!map"}
+		root.Kind = yaml.DocumentNode
+		root.Content = []*yaml.Node{mapping}
+	} else {
+		mapping = root.Content[0]
+		if mapping.Kind != yaml.MappingNode {
+			return "", false, nil
+		}
 	}
 
 	if findMappingChild(mapping, key) != -1 {
@@ -730,7 +826,7 @@ func updateNestedYamlKey(content, key, value string) (string, bool, error) {
 	if err != nil {
 		return "", false, err
 	}
-	return string(out), true, nil
+	return commentOnlyPrefix + string(out), true, nil
 }
 
 func findOrCreateNestedScalar(mapping *yaml.Node, parts []string) (*yaml.Node, bool) {
@@ -766,16 +862,6 @@ func findOrCreateNestedScalar(mapping *yaml.Node, parts []string) (*yaml.Node, b
 		current = child
 	}
 	return nil, false
-}
-
-func findMappingChild(mapping *yaml.Node, name string) int {
-	for i := 0; i < len(mapping.Content); i += 2 {
-		k := mapping.Content[i]
-		if k.Kind == yaml.ScalarNode && k.Value == name {
-			return i
-		}
-	}
-	return -1
 }
 
 func scalarStyleFor(value string) yaml.Style {
@@ -918,4 +1004,19 @@ func validateYamlConfigValue(key, value string) error {
 		}
 	}
 	return nil
+}
+
+// RedactedValue is displayed instead of any secret config value outside the
+// explicit `bd config get` command.
+const RedactedValue = "[REDACTED]"
+
+// RedactValue masks the value of any key IsSecretKey flags as sensitive.
+// Aggregate/display surfaces (config show, config list, set echoes) call this
+// so credentials never land in terminal scrollback or CI logs; the explicit
+// `bd config get <key>` remains the documented way to read a secret back.
+func RedactValue(key, value string) string {
+	if IsSecretKey(key) {
+		return RedactedValue
+	}
+	return value
 }

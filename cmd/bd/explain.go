@@ -10,8 +10,10 @@ import (
 )
 
 var explainCmd = &cobra.Command{
-	Use:   "explain <issue-id>",
-	Short: "Explain changes and design context for a specific issue",
+	SilenceUsage:  true,
+	SilenceErrors: true,
+	Use:           "explain <issue-id>",
+	Short:         "Explain changes and design context for a specific issue",
 	Long: `Explain parses the issue details from beads (Description, Design,
 Acceptance Criteria, Notes, Comments) and intersects them with associated
 code changes from git history, git status, and .understand-anything/knowledge-graph.json.`,

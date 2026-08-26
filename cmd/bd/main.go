@@ -1061,6 +1061,7 @@ var rootCmd = &cobra.Command{
 			"cursor-hook", // shells out to `bd prime`; never opens the store itself
 			"explain",
 			// "doctor" opts out via skipStoreAnnotation on its Command literal.
+			"explain",
 			"dolt", // bare "bd dolt" shows help only; subcommands handled below
 			"fish",
 			"formula", // parser-only subcommands; add a store-needed guard before adding DB-backed formula subcommands

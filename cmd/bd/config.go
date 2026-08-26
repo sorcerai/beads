@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"os/exec"
@@ -115,6 +116,32 @@ Examples:
 
 var forceGitTracked bool
 
+func deleteLegacyDatabaseSecret(ctx context.Context, key string) error {
+	if !config.IsSecretKey(key) {
+		return nil
+	}
+	if usesProxiedServer() {
+		// Route through the workspace-settings role: the proxied path holds a
+		// UOW, not a store, and UnsetSetting is the guarded removal surface.
+		wc, err := proxiedWorkspaceConfig()
+		if err != nil {
+			return fmt.Errorf("opening proxied workspace config: %w", err)
+		}
+		if _, err := wc.UnsetSetting(rootCtx, issueops.UnsetSettingRequest{Key: key}); err != nil {
+			return fmt.Errorf("deleting legacy database secret %q: %w", key, err)
+		}
+		return nil
+	}
+	if !isStoreActive() {
+		return nil
+	}
+	if err := store.DeleteConfig(ctx, key); err != nil {
+		return fmt.Errorf("deleting legacy database secret %q: %w", key, err)
+	}
+	commandDidWrite.Store(true)
+	return nil
+}
+
 var configSetCmd = &cobra.Command{
 	Use:           "set <key> <value>",
 	Short:         "Set a configuration value",
@@ -177,17 +204,20 @@ var configSetCmd = &cobra.Command{
 			if setErr != nil {
 				return HandleError("setting config: %v", setErr)
 			}
+			if err := deleteLegacyDatabaseSecret(rootCtx, key); err != nil {
+				return HandleError("migrating secret config: %v", err)
+			}
 
 			if jsonOutput {
 				if err := outputJSON(map[string]interface{}{
 					"key":      key,
-					"value":    value,
+					"value":    config.RedactValue(key, value),
 					"location": location,
 				}); err != nil {
 					return err
 				}
 			} else {
-				fmt.Printf("Set %s = %s (in %s)\n", key, value, location)
+				fmt.Printf("Set %s = %s (in %s)\n", key, config.RedactValue(key, value), location)
 			}
 			printConfigSideEffects(checkConfigSetSideEffects(key, value))
 			return nil
@@ -233,12 +263,12 @@ var configSetCmd = &cobra.Command{
 		if jsonOutput {
 			if err := outputJSON(map[string]string{
 				"key":   result.Key,
-				"value": result.Value,
+				"value": config.RedactValue(result.Key, result.Value),
 			}); err != nil {
 				return err
 			}
 		} else {
-			fmt.Printf("Set %s = %s\n", result.Key, result.Value)
+			fmt.Printf("Set %s = %s\n", result.Key, config.RedactValue(result.Key, result.Value))
 		}
 		printConfigSideEffects(checkConfigSetSideEffects(result.Key, result.Value))
 		return nil
@@ -260,6 +290,16 @@ func openWorkspaceConfig(directRequirement string) (issueops.WorkspaceConfig, er
 		return nil, err
 	}
 	return store.WorkspaceConfig()
+}
+
+// redactConfigSettings masks secret values in a settings listing for JSON
+// output so aggregate listings never leak credentials.
+func redactConfigSettings(settings map[string]string) map[string]string {
+	out := make(map[string]string, len(settings))
+	for k, v := range settings {
+		out[k] = config.RedactValue(k, v)
+	}
+	return out
 }
 
 // noteDirectConfigWrite marks the invocation as having written, which is what
@@ -453,7 +493,7 @@ var configListCmd = &cobra.Command{
 		stored := result.Settings
 
 		if jsonOutput {
-			return outputJSON(stored)
+			return outputJSON(redactConfigSettings(stored))
 		}
 
 		if len(stored) == 0 {
@@ -469,7 +509,7 @@ var configListCmd = &cobra.Command{
 
 		fmt.Println("\nConfiguration:")
 		for _, k := range keys {
-			fmt.Printf("  %s = %s\n", k, stored[k])
+			fmt.Printf("  %s = %s\n", k, config.RedactValue(k, stored[k]))
 		}
 
 		// The OTHER sources, reported beside the stored ones rather than merged
@@ -478,6 +518,14 @@ var configListCmd = &cobra.Command{
 		showConfigYAMLOverrides(stored)
 		return nil
 	},
+}
+
+func redactedConfigMap(values map[string]string) map[string]string {
+	redacted := make(map[string]string, len(values))
+	for key, value := range values {
+		redacted[key] = config.RedactValue(key, value)
+	}
+	return redacted
 }
 
 // showConfigYAMLOverrides warns when config.yaml or env vars override database settings.
@@ -492,7 +540,7 @@ func showConfigYAMLOverrides(dbConfig map[string]string) {
 		if envName := config.EnvVarName(key); envName != "" {
 			envValue := os.Getenv(envName)
 			if envValue != dbValue {
-				envWarnings = append(envWarnings, fmt.Sprintf("  %s: DB has %q, but env %s=%q takes precedence", key, dbValue, envName, envValue))
+				envWarnings = append(envWarnings, fmt.Sprintf("  %s: DB has %q, but env %s=%q takes precedence", key, config.RedactValue(key, dbValue), envName, config.RedactValue(key, envValue)))
 			}
 		}
 	}
@@ -517,7 +565,7 @@ func showConfigYAMLOverrides(dbConfig map[string]string) {
 		}
 		val := config.GetString(key)
 		if val != "" {
-			yamlOverrides = append(yamlOverrides, fmt.Sprintf("  %s = %s", key, val))
+			yamlOverrides = append(yamlOverrides, fmt.Sprintf("  %s = %s", key, config.RedactValue(key, val)))
 		}
 	}
 
@@ -529,7 +577,7 @@ func showConfigYAMLOverrides(dbConfig map[string]string) {
 		if envName := config.EnvVarName(key); envName != "" {
 			src := config.GetValueSource(key)
 			if src == config.SourceEnvVar {
-				envWarnings = append(envWarnings, fmt.Sprintf("  %s: env %s=%q overrides config", key, envName, os.Getenv(envName)))
+				envWarnings = append(envWarnings, fmt.Sprintf("  %s: env %s=%q overrides config", key, envName, config.RedactValue(key, os.Getenv(envName))))
 			}
 		}
 	}
@@ -579,6 +627,9 @@ var configUnsetCmd = &cobra.Command{
 			}
 			if unsetErr != nil {
 				return HandleError("unsetting config: %v", unsetErr)
+			}
+			if err := deleteLegacyDatabaseSecret(rootCtx, key); err != nil {
+				return HandleError("removing legacy secret config: %v", err)
 			}
 
 			if jsonOutput {
@@ -886,6 +937,11 @@ Examples:
 				return HandleError("setting config %s: %v", p.key, setErr)
 			}
 		}
+		for _, p := range yamlPairs {
+			if err := deleteLegacyDatabaseSecret(rootCtx, p.key); err != nil {
+				return HandleError("migrating secret config %s: %v", p.key, err)
+			}
+		}
 
 		for _, p := range gitPairs {
 			cmd := exec.Command("git", "config", "beads.role", p.value) //nolint:gosec // value is validated against allowlist above
@@ -937,7 +993,7 @@ Examples:
 				}
 				results = append(results, map[string]string{
 					"key":      p.key,
-					"value":    p.value,
+					"value":    config.RedactValue(p.key, p.value),
 					"location": location,
 				})
 			}
@@ -954,7 +1010,7 @@ Examples:
 				} else if p.key == "beads.role" {
 					location = " (in git config)"
 				}
-				fmt.Printf("Set %s = %s%s\n", p.key, p.value, location)
+				fmt.Printf("Set %s = %s%s\n", p.key, config.RedactValue(p.key, p.value), location)
 			}
 		}
 		return nil

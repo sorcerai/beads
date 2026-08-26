@@ -16,9 +16,11 @@ import (
 // and wiki-page staleness (reusing the ARCH.md staleness machinery, since a
 // backtick-quoted code reference going stale is the same problem in any .md).
 var docsStatusCmd = &cobra.Command{
-	Use:   "status",
-	Short: "Show bd docs state: opt-in, dirty count, inbox size, wiki staleness",
-	Args:  cobra.NoArgs,
+	SilenceUsage:  true,
+	SilenceErrors: true,
+	Use:           "status",
+	Short:         "Show bd docs state: opt-in, dirty count, inbox size, wiki staleness",
+	Args:          cobra.NoArgs,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		repoRoot := findRepoRootForArch()
 		if repoRoot == "" {

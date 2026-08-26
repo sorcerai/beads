@@ -25,8 +25,10 @@ import (
 // machine graph can't infer. The deterministic scout is what stops invented
 // invariants that don't match reality.
 var archDraftCmd = &cobra.Command{
-	Use:   "draft",
-	Short: "Construct a candidate ARCH.md from the codebase (scout + frontier model)",
+	Use:           "draft",
+	SilenceUsage:  true,
+	SilenceErrors: true,
+	Short:         "Construct a candidate ARCH.md from the codebase (scout + frontier model)",
 	Long: `Construct a candidate ARCH.md from the actual codebase.
 
 Two-stage pipeline:

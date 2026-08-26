@@ -187,6 +187,8 @@ func collectViperEntries() []configEntry {
 			continue
 		}
 
+		value = config.RedactValue(key, value)
+
 		entries = append(entries, configEntry{
 			Key:    key,
 			Value:  value,
@@ -322,7 +324,7 @@ func databaseConfigEntries(dbConfig map[string]string) []configEntry {
 		if workapi.KeyIsOnTheKVPlane(key) {
 			continue
 		}
-		entries = append(entries, configEntry{Key: key, Value: value, Source: "database"})
+		entries = append(entries, configEntry{Key: key, Value: config.RedactValue(key, value), Source: "database"})
 	}
 
 	return entries

@@ -190,7 +190,6 @@ bd close <id>         # Complete work
 - ❌ Do NOT duplicate tracking systems
 
 For more details, see README.md and https://github.com/gastownhall/beads/blob/main/docs/getting-started/quickstart.md.
-
 ## Agent Context Profiles
 
 The managed Beads block is task-tracking guidance, not permission to override repository, user, or orchestrator instructions.

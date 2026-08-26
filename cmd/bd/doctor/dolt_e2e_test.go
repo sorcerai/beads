@@ -73,6 +73,9 @@ func testMainInner(m *testing.M) int {
 	// The dolt.New database-name firewall requires this opt-in to allow
 	// doctor_pkg_shared and doctest_*-prefixed databases through.
 	os.Setenv("BEADS_TEST_SERVER", "1")
+	// An ambient server port must not redirect the isolated E2E container.
+	os.Unsetenv("BEADS_DOLT_SERVER_PORT")
+	os.Unsetenv("BEADS_DOLT_PORT")
 	if err := testutil.EnsureDoltContainerForTestMain(); err != nil {
 		fmt.Fprintf(os.Stderr, "WARN: %v, skipping Dolt tests\n", err)
 	} else {
@@ -104,6 +107,7 @@ func testMainInner(m *testing.M) int {
 	// gastownhall/beads mybd-q6cz.
 	doltserver.SweepOrphanedTestServers(testBDDir)
 
+	os.Unsetenv("BEADS_DOLT_SERVER_PORT")
 	os.Unsetenv("BEADS_DOLT_PORT")
 	os.Unsetenv("BEADS_TEST_MODE")
 	if testBDDir != "" {

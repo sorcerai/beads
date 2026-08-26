@@ -8,8 +8,10 @@ import (
 )
 
 var boardCmd = &cobra.Command{
-	Use:   "board",
-	Short: "Project board rollup (project -> epics -> status columns)",
+	SilenceUsage:  true,
+	SilenceErrors: true,
+	Use:           "board",
+	Short:         "Project board rollup (project -> epics -> status columns)",
 	Long: `Read-only Linear-style rollup. Groups issues by project:<slug> label,
 nests child issues under their epic, and buckets by status category
 (todo/in_progress/done/deferred). --json prints the canonical contract
