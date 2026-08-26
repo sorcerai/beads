@@ -17,6 +17,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/steveyegge/beads/internal/storage/dberrors"
 	"golang.org/x/term"
@@ -33,6 +34,41 @@ func defaultStderr() io.Writer {
 		return os.Stderr
 	}
 	return io.Discard
+}
+
+const largeRigThreshold = 10000
+
+// issueRowCounter returns the current issues-table row count, or an error if
+// the table is unreachable (fresh install → table doesn't exist yet). The
+// caller uses the error as the "no warning" signal. Variable so tests in this
+// package that exercise runMigrations against a non-DB mock can stub out the
+// query without panicking on QueryRowContext.
+var issueRowCounter = func(ctx context.Context, db DBConn) (int64, error) {
+	var n int64
+	err := db.QueryRowContext(ctx, "SELECT COUNT(*) FROM issues").Scan(&n)
+	return n, err
+}
+
+// emitLargeRigNotice writes the one-line large-rig warning to out when the
+// issues count exceeds largeRigThreshold. An error from the counter is
+// treated as "fresh install / table missing" and suppresses the warning —
+// see be-8ja for the UX rationale.
+func emitLargeRigNotice(out io.Writer, count int64, err error) {
+	if err != nil || count <= largeRigThreshold {
+		return
+	}
+	fmt.Fprintf(out, "Large rig detected (%d issues). This migration may take up to 90 seconds; do not interrupt.\n", count)
+}
+
+// humanMigrationName turns "0033_add_date_indexes.up.sql" into
+// "add_date_indexes" for the progress line.
+func humanMigrationName(filename string) string {
+	s := strings.TrimSuffix(filename, ".up.sql")
+	parts := strings.SplitN(s, "_", 2)
+	if len(parts) < 2 {
+		return s
+	}
+	return parts[1]
 }
 
 // DBConn is the minimal interface satisfied by *sql.DB, *sql.Tx, and *sql.Conn.
@@ -189,6 +225,33 @@ type migrationSource struct {
 	files       embed.FS
 	dir         string
 	cursorTable string
+	// sentinelTables are tables this series is responsible for creating. A
+	// non-zero cursor is only believed while they all exist: the cursor is a
+	// claim about the schema, and a claim contradicted by the schema is worth
+	// less than no claim at all. See cursorContradictedBySchema.
+	//
+	// INVARIANT: no future migration in this series may DROP or RENAME a
+	// sentinel. Older binaries in the field check their own sentinel list
+	// against the live schema, so removing one would make every healthy newer
+	// database read as "contradicted" to them and re-run their whole series.
+	// TestSentinelTablesAreCreatedByTheSeries enforces the creating side only;
+	// the dropping side is this comment.
+	sentinelTables []string
+	// sentinelColumns are clone-local columns whose absence contradicts an
+	// otherwise at-latest cursor just as strongly as an absent sentinel table.
+	//
+	// INVARIANT: no future migration in this series may DROP or RENAME a
+	// sentinel column (or the table carrying it). Older binaries in the field
+	// check their own sentinel list against the live schema, so removing one
+	// would make every healthy newer database read as "contradicted" to them
+	// and re-run their whole series. TestSentinelColumnsAreCreatedByTheSeries
+	// enforces the creating side only; the dropping side is this comment.
+	sentinelColumns []schemaSentinelColumn
+}
+
+type schemaSentinelColumn struct {
+	table  string
+	column string
 }
 
 var (
@@ -201,6 +264,14 @@ var (
 		files:       upIgnoredMigrations,
 		dir:         "migrations/ignored",
 		cursorTable: "ignored_schema_migrations",
+		// Created by ignored 0001 (the series' foundation) and required by
+		// the wisp write path. wisp_dependencies is the one gh 5033 reports
+		// missing; wisps is checked too so a partially materialized database
+		// is caught by whichever is absent.
+		sentinelTables: []string{"wisps", "wisp_dependencies"},
+		// A historical ignored-v16 ordinal collision can leave the local
+		// leases table present but without the column frozen 0016 adds.
+		sentinelColumns: []schemaSentinelColumn{{table: "leases", column: "granted_node"}},
 	}
 )
 
@@ -210,6 +281,111 @@ var (
 	latestIgnoredOnce sync.Once
 	latestIgnoredVer  int
 )
+
+// doltIgnorePatterns is the canonical set of clone-local table patterns every
+// database must carry in dolt_ignore. Four of them are historically seeded as
+// one-shot up.sql side effects of migrations 0019/0028, which never re-execute
+// once the schema_migrations cursor is at-latest: a database materialized
+// out-of-band (table-by-table copy/rename, dump restore) arrives with the
+// cursor at-latest and misses them permanently, so wisp/local-state churn
+// pollutes dolt_status and feeds the dirty-table migration gates. MigrateUp
+// re-asserts the full set idempotently at the top of every write-mode open.
+var doltIgnorePatterns = []string{
+	// The events journal tables (bd-opisf) are seeded here rather than
+	// version-gated: they have never existed on the versioned plane, so
+	// asserting the pattern before 0064 runs is what keeps the CREATE from
+	// landing as tracked-at-HEAD in the first place.
+	"bd_events_journal",
+	"bd_events_seq",
+	"ignored_schema_migrations",
+	"leases",
+	"local_metadata",
+	"repo_mtimes",
+	"wisp_%",
+	"wisps",
+}
+
+// versionGatedDoltIgnorePatterns are ignore patterns whose table was moved
+// onto the ignored plane by a specific main-lane migration, so re-asserting
+// them is only correct once the main cursor has reached that version. Seeding
+// them unconditionally would strand a pre-flip database whose migration pass
+// is refused (remote-migrate gate, dirty-table gate): the table would still
+// be tracked-and-versioned while the pattern suppressed all staging of it, so
+// its writes would silently stop being committed. The gate matters only for
+// the out-of-band heal path — on a normal upgrade the flip migration itself
+// registers the pattern in the same pass.
+var versionGatedDoltIgnorePatterns = []struct {
+	pattern        string
+	minMainVersion int
+}{
+	{"events", 62}, // 0062_events_dolt_ignore (bd-red8u)
+}
+
+// seedDoltIgnorePatterns idempotently asserts the canonical dolt_ignore
+// patterns and reports whether it actually changed anything. INSERT IGNORE
+// leaves existing rows untouched, so a healthy database sees no working-set
+// change and an explicit operator override (pattern present with
+// ignored=false) is respected. On an under-seeded database the new rows land
+// in the working set and take effect immediately; who commits them depends on
+// the pass: when migration work is needed, MigrateUp exempts dolt_ignore from
+// the pre-existing-dirty guards as pass-owned state (same treatment as the
+// aux-rekey tables) and stageSchemaTables commits it with the pass; on the
+// no-work short-circuit, MigrateUp commits the seed itself in a scoped,
+// labeled commit (keyed off the changed return value) so the heal converges
+// in one pass instead of riding along inside an unrelated later commit.
+func seedDoltIgnorePatterns(ctx context.Context, db DBConn) (bool, error) {
+	changed := false
+	seedOne := func(pattern string) error {
+		res, err := db.ExecContext(ctx, "INSERT IGNORE INTO dolt_ignore VALUES (?, true)", pattern)
+		if err != nil {
+			return fmt.Errorf("seeding dolt_ignore pattern %q: %w", pattern, err)
+		}
+		// A RowsAffected error degrades to changed=false for that row: the
+		// seed then stays an uncommitted working-set diff swept up by the
+		// next commit, exactly the pre-scoped-commit behavior.
+		if n, raErr := res.RowsAffected(); raErr == nil && n > 0 {
+			changed = true
+		}
+		return nil
+	}
+	for _, pattern := range doltIgnorePatterns {
+		if err := seedOne(pattern); err != nil {
+			return changed, err
+		}
+	}
+	// Version-gated patterns seed only once the main cursor proves the flip
+	// migration applied. The cursor table may not exist yet (first-ever run,
+	// before mainSource.migrate bootstraps it): treat that as version 0 and
+	// skip — the flip migration registers its own pattern when it applies.
+	mainVersion, err := mainSource.currentVersion(ctx, db)
+	if err != nil {
+		mainVersion = 0
+	}
+	for _, gated := range versionGatedDoltIgnorePatterns {
+		if mainVersion < gated.minMainVersion {
+			continue
+		}
+		if err := seedOne(gated.pattern); err != nil {
+			return changed, err
+		}
+	}
+	return changed, nil
+}
+
+// commitSeededDoltIgnore stages and commits freshly seeded dolt_ignore rows
+// in a scoped, labeled commit. Both MigrateUp paths use it: on the no-work
+// short-circuit nothing downstream would ever commit the seed, and on the
+// migration path the seed must be committed before the first step so an
+// interrupted pass leaves a clean working set (#4566 self-heal contract).
+func commitSeededDoltIgnore(ctx context.Context, db DBConn) error {
+	if err := DrainCall(ctx, db, "CALL DOLT_ADD('dolt_ignore')"); err != nil {
+		return fmt.Errorf("staging seeded dolt_ignore patterns: %w", err)
+	}
+	if err := DrainCall(ctx, db, "CALL DOLT_COMMIT('-m', 'schema: seed dolt_ignore patterns')"); err != nil {
+		return fmt.Errorf("committing seeded dolt_ignore patterns: %w", err)
+	}
+	return nil
+}
 
 func LatestVersion() int {
 	latestOnce.Do(func() {
@@ -258,6 +434,37 @@ func AllMigrationsSQL() string {
 	return b.String()
 }
 
+// MigrationSQL returns the frozen SQL content of a main-source migration
+// file by name (e.g. "0057_events_value_columns_idempotent_longtext.up.sql"),
+// read from the same embedded FS runMigrations applies in production
+// (see mainSource.files above). It exists for tests outside this package
+// (internal/storage/embeddeddolt's engine-based frozen-guard tests) that need
+// to execute the byte-exact frozen migration content through a real engine:
+// reading the file from disk by a package-relative path does not reliably
+// resolve across every CI execution context, while the embedded FS is always
+// available and is, in fact, higher-fidelity -- it is the literal bytes
+// runMigrations itself applies, not a copy that could drift from the build.
+// Read-only; callers cannot use it to mutate or bypass the frozen-file
+// hygiene guard (scripts/check-migration-hygiene.sh).
+func MigrationSQL(name string) (string, error) {
+	data, err := mainSource.files.ReadFile(mainSource.dir + "/" + name)
+	if err != nil {
+		return "", err
+	}
+	return string(data), nil
+}
+
+// IgnoredMigrationSQL is MigrationSQL's ignored-lane counterpart: the frozen
+// bytes of an ignored-source migration file (e.g. "0019_create_events.up.sql"),
+// for engine-based frozen-guard tests of clone-local DDL.
+func IgnoredMigrationSQL(name string) (string, error) {
+	data, err := ignoredSource.files.ReadFile(ignoredSource.dir + "/" + name)
+	if err != nil {
+		return "", err
+	}
+	return string(data), nil
+}
+
 func parseVersion(name string) (int, error) {
 	parts := strings.SplitN(name, "_", 2)
 	if len(parts) == 0 {
@@ -279,11 +486,31 @@ func MigrateUpTo(ctx context.Context, db DBConn, maxVersion int) (int, error) {
 }
 
 func MigrateUp(ctx context.Context, db DBConn) (int, error) {
+	// Re-assert the canonical dolt_ignore patterns before anything else, and
+	// in particular before the migrationWorkNeeded short-circuit: a database
+	// whose migration cursors arrived at-latest without executing the seeding
+	// migrations (out-of-band table copy) reports no work needed and
+	// would otherwise never be healed.
+	seedChanged, err := seedDoltIgnorePatterns(ctx, db)
+	if err != nil {
+		return 0, err
+	}
+
 	needed, err := migrationWorkNeeded(ctx, db)
 	if err != nil {
 		return 0, fmt.Errorf("checking schema migration work: %w", err)
 	}
 	if !needed {
+		// No migration pass will run, so nothing downstream commits the seed:
+		// it would sit as an uncommitted working-set diff until an unrelated
+		// write/pull sweeps it into its commit (and a read-only repo carries
+		// it indefinitely). Commit it here, scoped and labeled, so the
+		// out-of-band-copy heal converges in one pass.
+		if seedChanged {
+			if err := commitSeededDoltIgnore(ctx, db); err != nil {
+				return 0, err
+			}
+		}
 		return 0, nil
 	}
 
@@ -291,20 +518,38 @@ func MigrateUp(ctx context.Context, db DBConn) (int, error) {
 	if err != nil {
 		return 0, fmt.Errorf("reading pre-migration status: %w", err)
 	}
+	// dolt_ignore is pass-owned state: seedDoltIgnorePatterns above may have
+	// just dirtied it on an under-seeded database. Exempting it from the
+	// pre-existing-dirty guards (like the aux-rekey tables below) keeps the
+	// pending-migration and changed-signature gates off it.
+	delete(dirtyBeforeAll, "dolt_ignore")
 	if err := unstagePreExistingTables(ctx, db, dirtyBeforeAll); err != nil {
 		return 0, fmt.Errorf("unstaging pre-migration tables: %w", err)
+	}
+	// The seed must not ride the migration pass: every step of the pass
+	// commits atomically, and a pass killed between steps must leave a CLEAN
+	// working set (the #4566 self-heal contract) — but the seeded dolt_ignore
+	// rows would stay dirty until the pass's final commit, so an interrupted
+	// retry sees a dirty working set and refuses to converge. Commit the seed
+	// scoped and labeled now, after pre-existing staged tables were unstaged
+	// (so nothing else rides into the commit) and before the first step runs.
+	if seedChanged {
+		if err := commitSeededDoltIgnore(ctx, db); err != nil {
+			return 0, err
+		}
 	}
 	dirtyBefore, err := committableDirtyTables(ctx, db)
 	if err != nil {
 		return 0, fmt.Errorf("reading pre-migration status: %w", err)
 	}
+	delete(dirtyBefore, "dolt_ignore")
 	// A previous pass that crashed mid-aux-rekey left its partial UPDATEs
 	// dirty in the working set with the in-progress sentinel still recorded
 	// (bd-578h9.16). Those tables are this pass's own migration state, not
 	// pre-existing user writes: dropping them from dirtyBefore exempts them
 	// from the changed-signature guard (the resumed rekey is about to change
 	// them) and lets stageSchemaTables commit them with the rest of the pass.
-	if resuming, err := auxRekeyResumePending(ctx, db); err != nil {
+	if resuming, err := anyAuxRekeyResumePending(ctx, db); err != nil {
 		return 0, fmt.Errorf("reading aux rekey sentinel: %w", err)
 	} else if resuming {
 		for _, t := range auxRekeyTables {
@@ -359,15 +604,15 @@ func MigrateUp(ctx context.Context, db DBConn) (int, error) {
 	// of churning synced rows on every later migration pass — and on the
 	// pre-pass main cursor, so fresh clones of converged lineages record the
 	// marker without re-running the rewrite (bd-578h9.4).
-	auxRekeyed, err := rekeyAuxRowIDs(ctx, db, mainVersionBefore)
+	// ...and the bd-ri8bd sibling: one more pass over the same tables for the
+	// rows minted with random UUIDv7 ids between the initial backfill and the
+	// switch to content-derived ids at insert time. Same machinery, own
+	// marker/sentinel/shipped-version gates, one shared cursor read.
+	auxRekeyed, err := rekeyAuxRowIDsAllPasses(ctx, db, mainVersionBefore)
 	if err != nil {
 		return applied, fmt.Errorf("rekey aux row ids: %w", err)
 	}
 	backfilled = backfilled || auxRekeyed
-
-	if _, err := db.ExecContext(ctx, "REPLACE INTO dolt_ignore VALUES ('ignored_schema_migrations', true)"); err != nil {
-		return applied, fmt.Errorf("registering ignored_schema_migrations in dolt_ignore: %w", err)
-	}
 
 	touchedIgnoredDirtyTables, err := ignoredSource.pendingMigrationDirtyTables(ctx, db, dirtyBeforeAll)
 	if err != nil {
@@ -413,7 +658,7 @@ func MigrateUp(ctx context.Context, db DBConn) (int, error) {
 	if !staged {
 		return applied, nil
 	}
-	if _, err := db.ExecContext(ctx, "CALL DOLT_COMMIT('-m', 'schema: apply migrations')"); err != nil {
+	if err := DrainCall(ctx, db, "CALL DOLT_COMMIT('-m', 'schema: apply migrations')"); err != nil {
 		if !strings.Contains(strings.ToLower(err.Error()), "nothing to commit") {
 			return applied, fmt.Errorf("committing migrations: %w", err)
 		}
@@ -475,7 +720,7 @@ func unstagePreExistingTables(ctx context.Context, db DBConn, tables map[string]
 		log.Printf("schema migration unstaging pre-existing staged tables: %s", strings.Join(staged, ", "))
 	}
 	for _, table := range staged {
-		if _, err := db.ExecContext(ctx, "CALL DOLT_RESET(?)", table); err != nil {
+		if err := DrainCall(ctx, db, "CALL DOLT_RESET(?)", table); err != nil {
 			return fmt.Errorf("dolt reset %s: %w", table, err)
 		}
 	}
@@ -645,7 +890,7 @@ func stageSchemaTables(ctx context.Context, db DBConn, dirtyBefore map[string]di
 	sort.Strings(tables)
 
 	for _, table := range tables {
-		if _, err := db.ExecContext(ctx, "CALL DOLT_ADD('-f', ?)", table); err != nil {
+		if err := DrainCall(ctx, db, "CALL DOLT_ADD('-f', ?)", table); err != nil {
 			return false, fmt.Errorf("dolt add %s: %w", table, err)
 		}
 	}
@@ -885,16 +1130,101 @@ func (m migrationSource) atLatest(ctx context.Context, db DBConn) bool {
 }
 
 func (m migrationSource) currentVersion(ctx context.Context, db DBConn) (int, error) {
-	var current int
-	err := db.QueryRowContext(ctx, "SELECT COALESCE(MAX(version), 0) FROM "+m.cursorTable).Scan(&current)
-	if err == nil || err == sql.ErrNoRows {
-		return current, nil
+	// Probe existence with a query that always SUCCEEDS before ever issuing one
+	// that can fail. A Dolt session that issues a failing statement stays
+	// pinned to its pre-statement catalog snapshot, so a bare SELECT against a
+	// not-yet-created cursor table poisons the pooled connection: tables
+	// created afterwards on other connections stay invisible to this one for
+	// the rest of its life in the pool (be-bv7x).
+	var cursorExists int
+	if err := db.QueryRowContext(ctx,
+		"SELECT COUNT(*) FROM information_schema.tables WHERE table_schema = DATABASE() AND table_name = ?",
+		m.cursorTable,
+	).Scan(&cursorExists); err != nil {
+		return 0, fmt.Errorf("probing %s existence: %w", m.cursorTable, err)
 	}
-	if dberrors.IsTableNotExist(err) {
+	if cursorExists == 0 {
 		return 0, nil
 	}
-	return 0, fmt.Errorf("reading %s version: %w", m.cursorTable, err)
+
+	var current int
+	err := db.QueryRowContext(ctx, "SELECT COALESCE(MAX(version), 0) FROM "+m.cursorTable).Scan(&current)
+	if err != nil && err != sql.ErrNoRows {
+		if dberrors.IsTableNotExist(err) {
+			return 0, nil
+		}
+		return 0, fmt.Errorf("reading %s version: %w", m.cursorTable, err)
+	}
+	if current == 0 {
+		return 0, nil
+	}
+	// A missing cursor TABLE already meant "nothing applied". A cursor whose
+	// tables are absent means the same thing and was previously believed
+	// (gh 5033, gh 4356): ignored_schema_migrations is itself dolt-ignored and
+	// clone-local, so a database materialized out of band — table-by-table
+	// copy, dump restore, or a clone that picked up the cursor rows without
+	// the clone-local tables they describe — arrives claiming at-latest with
+	// no wisps tables. atLatest() then short-circuits migrationWorkNeeded()
+	// and the series never re-runs, surfacing much later and much further away
+	// as "table not found: wisp_dependencies" on `bd close`.
+	contradicted, cerr := m.cursorContradictedBySchema(ctx, db)
+	if cerr != nil {
+		return 0, cerr
+	}
+	if contradicted {
+		return 0, nil
+	}
+	return current, nil
 }
+
+// cursorContradictedBySchema reports whether this series' cursor claims work
+// that the schema does not corroborate.
+//
+// Returning "cursor is 0" rather than an error is deliberate: the series is
+// written to be re-runnable against a database that already has some of it.
+// migrations/ignored/0001 builds each table as __temp__<name> and then
+// `RENAME TABLE __temp__x TO x` only when x does not already exist, DROPping
+// the temp otherwise; later migrations gate their ALTERs on
+// INFORMATION_SCHEMA lookups. So re-running the series repairs the missing
+// tables and leaves existing data untouched — which is why this can heal
+// rather than merely diagnose.
+func (m migrationSource) cursorContradictedBySchema(ctx context.Context, db DBConn) (bool, error) {
+	for _, table := range m.sentinelTables {
+		present, err := sentinelTableExists(ctx, db, table)
+		if err != nil {
+			return false, fmt.Errorf("checking %s sentinel table %s: %w", m.cursorTable, table, err)
+		}
+		if !present {
+			return true, nil
+		}
+	}
+	for _, column := range m.sentinelColumns {
+		present, err := sentinelColumnExists(ctx, db, column.table, column.column)
+		if err != nil {
+			return false, fmt.Errorf("checking %s sentinel column %s.%s: %w", m.cursorTable, column.table, column.column, err)
+		}
+		if !present {
+			return true, nil
+		}
+	}
+	return false, nil
+}
+
+// sentinelTableExists is a function variable for the same reason
+// issueRowCounter is: it lets the cursor-reality tests exercise the real
+// decision without a live database.
+var sentinelTableExists = func(ctx context.Context, db DBConn, table string) (bool, error) {
+	var n int
+	if err := db.QueryRowContext(ctx,
+		`SELECT COUNT(*) FROM INFORMATION_SCHEMA.TABLES
+		 WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = ?`,
+		table).Scan(&n); err != nil {
+		return false, err
+	}
+	return n > 0, nil
+}
+
+var sentinelColumnExists = schemaColumnExists
 
 func (m migrationSource) pendingVersions(ctx context.Context, db DBConn) ([]int, error) {
 	current, err := m.currentVersion(ctx, db)
@@ -964,6 +1294,187 @@ func migrationSQLTouchesTable(sqlText, table string) bool {
 	return false
 }
 
+// procedureCallRe matches a stored-procedure invocation (CALL ...) at a
+// statement boundary, case-insensitively. It decides whether a migration body
+// must have its result sets drained explicitly (see execMigrationBody).
+var procedureCallRe = regexp.MustCompile(`(?i)(?:^|;|\n)\s*CALL\s`)
+
+// DrainCall runs a statement (or multi-statement body) that invokes a Dolt
+// stored procedure and fully consumes EVERY result set it returns, leaving the
+// pinned connection clean for the next command.
+//
+// Why this matters is an ERROR-PATH asymmetry in go-sql-driver/mysql, not a
+// happy-path gap: mysqlConn.exec (behind ExecContext) does end with
+// handleOk.discardResults(), so a CALL that succeeds is drained already. But
+// every failure before that line — readResultSetHeaderPacket, skipColumns,
+// skipRows — returns early, leaving whatever the server still has queued
+// unread on the wire. mysqlRows.Close() has no such exit: it skips unread rows
+// and discards remaining result sets unconditionally, which is why routing
+// through QueryContext + a deferred Close is drain-safe on both paths.
+//
+// That asymmetry is reachable here precisely because these call sites tolerate
+// an error and keep using the same pinned connection: a multi-statement body
+// like 0040 (four INSERT/CALL DOLT_COMMIT pairs) can fail on statement 4 with
+// more results queued behind it, and MigrateUp and commitMigrationStep both
+// swallow "nothing to commit" and carry on. The next command on that conn —
+// the version-record INSERT, a later DOLT_ADD, or RELEASE_LOCK — then dies on
+// the still-busy connection ("busy buffer" -> "driver: bad connection"). The
+// same shape recurs, at far higher call volume, on every transaction-pinned
+// *sql.Tx / *sql.Conn in internal/storage/dolt that runs a tolerate-and-continue
+// CALL DOLT_ADD/DOLT_COMMIT/DOLT_MERGE/DOLT_BRANCH pair — unlike a pooled
+// *sql.DB connection, a pinned connection can't be discarded by the pool on
+// the next checkout, and database/sql does not reset a driver conn before
+// handing it back to a future borrower, so an undrained buffer poisons
+// whoever acquires that connection next.
+//
+// This is the necessary half of the fix, not the sufficient half: a
+// load-induced transient (or a "nothing to commit" from a no-op commit) can
+// still surface mid-migration, and the init retry loop then re-runs the whole
+// migration. The frozen non-idempotent migrations (0040 bare-INSERTs its
+// dolt_nonlocal_tables rows, 0041 DELETEs then commits them) are made
+// replay-safe by pre-migration repairs keyed to their version, not by editing
+// their shipped SQL — see preMigrationRepair and migration_repairs.go.
+// Most Dolt procedures are called for their side effects alone, and DrainCall
+// discards what they return. That is a statement about these CALL SITES, not
+// about stored procedures in general: DOLT_PULL and DOLT_MERGE report what they
+// did — whether anything merged, and whether it conflicted — only in the row
+// they return. A caller that needs that report uses CallReturningRow, which
+// drains identically.
+func DrainCall(ctx context.Context, db DBConn, query string, args ...any) error {
+	rows, err := db.QueryContext(ctx, query, args...)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = rows.Close() }()
+	return drainResultSets(rows, nil)
+}
+
+// CallRow is the first row of a CALL's first result set, keyed by column name.
+// Dolt's procedure rows mix integers with a nullable message, and their column
+// ORDER is a documented-but-unversioned detail (dolt_pull.go pins the
+// fast_forward index in a const with a comment warning it must be updated if
+// the schema changes), so values are read by name and scanned as NullString.
+type CallRow map[string]sql.NullString
+
+// Str returns the named column's text. ok is false when the column is absent
+// from the row or is SQL NULL — DOLT_PULL returns a NULL message whenever its
+// internal message is empty, which is a distinct outcome from any message it
+// might actually spell out.
+func (r CallRow) Str(name string) (value string, ok bool) {
+	v, present := r[name]
+	if !present || !v.Valid {
+		return "", false
+	}
+	return v.String, true
+}
+
+// Int returns the named column parsed as an integer. ok is false when the
+// column is absent, NULL, or not a number.
+func (r CallRow) Int(name string) (value int, ok bool) {
+	s, present := r.Str(name)
+	if !present {
+		return 0, false
+	}
+	n, err := strconv.Atoi(strings.TrimSpace(s))
+	if err != nil {
+		return 0, false
+	}
+	return n, true
+}
+
+// CallReturningRow runs a CALL exactly as DrainCall does — consuming every row
+// of every result set, so the pinned connection is left clean for the next
+// command — and additionally returns the FIRST row of the FIRST result set.
+//
+// The drain is the load-bearing part and is shared with DrainCall verbatim; see
+// DrainCall's comment for the go-sql-driver error-path asymmetry that makes it
+// necessary. Scanning a row does not shorten the drain: the loop keeps running
+// to the end of every result set whether or not the scan succeeded. Reaching
+// for QueryRowContext instead would drain only the first result set and
+// reintroduce the busy-buffer bug on the pinned *sql.Tx that the pull path uses.
+//
+// A CALL that returns no rows at all yields a nil CallRow and a nil error;
+// reading a column from a nil CallRow reports absent rather than panicking.
+func CallReturningRow(ctx context.Context, db DBConn, query string, args ...any) (CallRow, error) {
+	rows, err := db.QueryContext(ctx, query, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = rows.Close() }()
+	var first CallRow
+	if err := drainResultSets(rows, &first); err != nil {
+		return nil, err
+	}
+	return first, nil
+}
+
+// drainResultSets consumes every row of every result set the statement
+// produced. When capture is non-nil the first row of the first result set is
+// also scanned into it; every other row is read and discarded, which is what
+// frees the connection buffer for the next command.
+//
+// A scan failure is recorded and the drain continues, so a row this package
+// cannot decode still leaves a usable connection behind. The drain's own error
+// wins over the scan's: a broken result set explains a failed scan, not the
+// other way round.
+func drainResultSets(rows *sql.Rows, capture *CallRow) error {
+	var scanErr error
+	firstSet := true
+	for {
+		for rows.Next() {
+			if capture != nil && firstSet && *capture == nil && scanErr == nil {
+				row, err := scanRowByColumn(rows)
+				if err != nil {
+					scanErr = err
+					continue
+				}
+				*capture = row
+			}
+		}
+		firstSet = false
+		if !rows.NextResultSet() {
+			break
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return err
+	}
+	return scanErr
+}
+
+// scanRowByColumn reads the row the cursor is on into a column-name-keyed map.
+func scanRowByColumn(rows *sql.Rows) (CallRow, error) {
+	cols, err := rows.Columns()
+	if err != nil {
+		return nil, err
+	}
+	values := make([]sql.NullString, len(cols))
+	targets := make([]any, len(cols))
+	for i := range values {
+		targets[i] = &values[i]
+	}
+	if err := rows.Scan(targets...); err != nil {
+		return nil, err
+	}
+	row := make(CallRow, len(cols))
+	for i, name := range cols {
+		row[name] = values[i]
+	}
+	return row, nil
+}
+
+// execMigrationBody applies one migration file's SQL on the pinned migration
+// connection. Bodies that invoke a stored procedure (today 0040 and 0041, both
+// CALL DOLT_COMMIT) are routed through DrainCall so their result sets are
+// consumed; all other migrations keep the unchanged ExecContext path.
+func execMigrationBody(ctx context.Context, db DBConn, sqlText string) error {
+	if !procedureCallRe.MatchString(sqlText) {
+		_, err := db.ExecContext(ctx, sqlText)
+		return err
+	}
+	return DrainCall(ctx, db, sqlText)
+}
+
 // migrate brings the source up to its latest version and returns the number of
 // numbered migrations applied plus whether it added the content_hash column to a
 // pre-existing cursor table. The column signal lets MigrateUp stage and commit
@@ -985,9 +1496,15 @@ func (m migrationSource) migrate(ctx context.Context, db DBConn, upTo int) (int,
 		target = upTo
 	}
 
-	var current int
-	if err := db.QueryRowContext(ctx, "SELECT COALESCE(MAX(version), 0) FROM "+m.cursorTable).Scan(&current); err != nil && err != sql.ErrNoRows {
-		return 0, columnAdded, fmt.Errorf("reading %s version: %w", m.cursorTable, err)
+	// The cursor is read through currentVersion, never raw: that is where the
+	// cursor-reality check lives (gh 5033). A raw read here would believe the
+	// contradicted cursor that migrationWorkNeeded just disbelieved — MigrateUp
+	// would decide "work needed" on every open, run the whole pass, and then
+	// apply nothing, leaving the missing tables missing and the pass to repeat
+	// forever. The heal only happens if the applier disbelieves the cursor too.
+	current, err := m.currentVersion(ctx, db)
+	if err != nil {
+		return 0, columnAdded, err
 	}
 
 	if current >= target {
@@ -1020,6 +1537,23 @@ func runMigrations(ctx context.Context, db DBConn, src migrationSource, minVersi
 	if upTo == 0 {
 		upTo = src.latest()
 	}
+
+	// One-shot large-rig notice, ahead of the migration loop below — gated to
+	// the main-source pass only. MigrateUp calls runMigrations once for
+	// mainSource and once for ignoredSource in the same pass; without this
+	// gate a large rig with pending migrations in both sources would print
+	// the warning twice (and issue the COUNT(*) query twice) despite the
+	// "one-shot" framing. Treats a missing issues table as "fresh install"
+	// and emits nothing — on a first-ever run there is no rig to warn about,
+	// and the COUNT(*) query would error on the missing table.
+	// issueRowCounter/emitLargeRigNotice predate this call site (be-8ja);
+	// this just threads them onto main's existing TTY-gated `stderr` writer
+	// instead of a second progressOut.
+	if src.cursorTable == mainSource.cursorTable {
+		rowCount, rowCountErr := issueRowCounter(ctx, db)
+		emitLargeRigNotice(stderr, rowCount, rowCountErr)
+	}
+
 	count := 0
 	for _, mf := range src.list() {
 		if mf.version <= minVersion || mf.version > upTo {
@@ -1029,13 +1563,21 @@ func runMigrations(ctx context.Context, db DBConn, src migrationSource, minVersi
 		if err != nil {
 			return count, fmt.Errorf("reading migration %s: %w", mf.name, err)
 		}
-		if err := src.preMigrationRepair(ctx, db, mf.version); err != nil {
-			return count, fmt.Errorf("pre-repair for migration %s: %w", mf.name, err)
-		}
 
-		// Snapshot the working set before the migration runs so the per-step
-		// commit can force-stage only the tables this migration newly dirties,
-		// leaving pre-existing writes to untouched tables in the working set.
+		// Snapshot the working set BEFORE the pre-migration repair runs, not
+		// just before the migration's own SQL. preMigrationRepair (below) can
+		// itself mutate synced tables (e.g. #4690's ensureDependenciesIDColumn
+		// ALTERs `dependencies`); snapshotting after it ran would misclassify
+		// that mutation as pre-existing dirt to exclude from this step's
+		// commit, so the repair would sit uncommitted in the working set while
+		// the cursor row for this version was already committed -- a killed
+		// process between this step and the pass's final commit would leave
+		// history claiming the version applied while the repaired table's
+		// change was never durably recorded, and the version-gated repair
+		// hook cannot re-run to fix it (its version is no longer pending).
+		// Snapshotting first makes repair-hook mutations count as this step's
+		// own newly-dirtied work, so they land in the same atomic commit as
+		// the migration and its cursor row.
 		var dirtyBeforeStep map[string]dirtyTableState
 		if commitEachStep {
 			dirtyBeforeStep, err = dirtyTables(ctx, db, true)
@@ -1044,8 +1586,13 @@ func runMigrations(ctx context.Context, db DBConn, src migrationSource, minVersi
 			}
 		}
 
-		fmt.Fprintf(stderr, "migrating schema: %s\n", mf.name)
-		if _, err := db.ExecContext(ctx, string(data)); err != nil {
+		if err := src.preMigrationRepair(ctx, db, mf.version); err != nil {
+			return count, fmt.Errorf("pre-repair for migration %s: %w", mf.name, err)
+		}
+
+		fmt.Fprintf(stderr, "Applying migration %04d: %s…\n", mf.version, humanMigrationName(mf.name))
+		start := time.Now()
+		if err := execMigrationBody(ctx, db, string(data)); err != nil {
 			return count, fmt.Errorf("migration %s: %w", mf.name, err)
 		}
 		sum := sha256.Sum256(data)
@@ -1055,11 +1602,19 @@ func runMigrations(ctx context.Context, db DBConn, src migrationSource, minVersi
 		}
 		count++
 
+		// commitEachStep's DOLT_ADD/DOLT_COMMIT is the expensive, fallible
+		// part of this step on the production embedded path. The "done" line
+		// (and its timing) must land after that commit succeeds, not before
+		// it: printing "done" and then hitting a commit error would show an
+		// operator a false completion, and timing that stopped before the
+		// commit would understate the step's real cost. A failed commit
+		// returns before either print statement below runs.
 		if commitEachStep {
 			if err := commitMigrationStep(ctx, db, src.cursorTable, mf.name, dirtyBeforeStep); err != nil {
 				return count, fmt.Errorf("committing migration %s: %w", mf.name, err)
 			}
 		}
+		fmt.Fprintf(stderr, "  done (%.1fs)\n", time.Since(start).Seconds())
 
 		if migrateStepFaultHook != nil {
 			if err := migrateStepFaultHook(ctx, db, mf.version); err != nil {
@@ -1113,11 +1668,11 @@ func commitMigrationStep(ctx context.Context, db DBConn, cursorTable, migrationN
 	}
 	sort.Strings(tables)
 	for _, table := range tables {
-		if _, err := db.ExecContext(ctx, "CALL DOLT_ADD('-f', ?)", table); err != nil {
+		if err := DrainCall(ctx, db, "CALL DOLT_ADD('-f', ?)", table); err != nil {
 			return fmt.Errorf("dolt add %s: %w", table, err)
 		}
 	}
-	if _, err := db.ExecContext(ctx, "CALL DOLT_COMMIT('-m', ?)", "schema: apply migration "+migrationName); err != nil {
+	if err := DrainCall(ctx, db, "CALL DOLT_COMMIT('-m', ?)", "schema: apply migration "+migrationName); err != nil {
 		if !strings.Contains(strings.ToLower(err.Error()), "nothing to commit") {
 			return fmt.Errorf("committing migration step: %w", err)
 		}

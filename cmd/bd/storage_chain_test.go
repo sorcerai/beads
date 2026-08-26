@@ -1,7 +1,7 @@
 package main
 
 import (
-	"os"
+	"context"
 	"testing"
 
 	"github.com/steveyegge/beads/internal/hooks"
@@ -9,26 +9,23 @@ import (
 	"github.com/steveyegge/beads/internal/telemetry"
 )
 
-// stubChainStore is a stand-in for a concrete DoltStorage. It only carries
-// identity for type-assertion; method invocations would panic on the embedded
-// nil — the chain composition tests must not trigger any of them.
+// stubChainStore is a stand-in for a concrete DoltStorage. The embedded
+// interface exists only for decorator identity tests; ActiveDatabaseSize is
+// implemented explicitly so the sizing-capability test never reaches a nil
+// promoted method.
 type stubChainStore struct {
 	storage.DoltStorage
+	databaseSize int64
 }
 
-// clearTelemetryEnv unsets every BD_OTEL_* variable telemetry.Enabled
-// inspects, so each test starts from a known baseline.
-func clearTelemetryEnv(t *testing.T) {
-	t.Helper()
-	for _, k := range []string{
-		"BD_OTEL_METRICS_URL",
-		"BD_OTEL_LOGS_URL",
-		"BD_OTEL_STDOUT",
-	} {
-		t.Setenv(k, "")
-		_ = os.Unsetenv(k)
-	}
+func (s *stubChainStore) ActiveDatabaseSize(context.Context) (int64, error) {
+	return s.databaseSize, nil
 }
+
+// clearTelemetryEnv is defined once for the package, in
+// command_telemetry_test.go; it unsets every BD_OTEL_* / OTEL_* variable
+// telemetry.Enabled or the SDK looks at, so each test starts from a known
+// baseline.
 
 func TestWireStorageDecorators_NilStorePassesThrough(t *testing.T) {
 	if got := wireStorageDecorators(nil, hooks.NewRunner("/nonexistent"), false); got != nil {
@@ -74,6 +71,32 @@ func TestWireStorageDecorators_TelemetryOn_HookOn(t *testing.T) {
 
 	if peeled := storage.UnwrapStore(got); peeled.(*stubChainStore) != raw {
 		t.Errorf("storage.UnwrapStore should peel both decorator layers; got %T", peeled)
+	}
+}
+
+func TestDoltBackupSizeUnwrapsStorageDecorators(t *testing.T) {
+	clearTelemetryEnv(t)
+	t.Setenv("BD_OTEL_STDOUT", "true")
+	raw := &stubChainStore{databaseSize: 99}
+	wrapped := wireStorageDecorators(raw, hooks.NewRunner("/nonexistent"), false)
+
+	size, available, err := doltBackupSizeForStore(t.Context(), wrapped)
+	if err != nil {
+		t.Fatalf("doltBackupSizeForStore: %v", err)
+	}
+	if !available || size != 99 {
+		t.Fatalf("doltBackupSizeForStore = (%d, %v), want (99, true)", size, available)
+	}
+}
+
+func TestGCStoreSizeUnwrapsStorageDecorators(t *testing.T) {
+	clearTelemetryEnv(t)
+	t.Setenv("BD_OTEL_STDOUT", "true")
+	raw := &stubChainStore{databaseSize: 99}
+	wrapped := wireStorageDecorators(raw, hooks.NewRunner("/nonexistent"), false)
+
+	if got := storeSizeBytesForStore(t.Context(), wrapped); got != 99 {
+		t.Fatalf("storeSizeBytesForStore = %d, want 99", got)
 	}
 }
 

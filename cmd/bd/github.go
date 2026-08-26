@@ -294,6 +294,9 @@ func getGitHubClient(config GitHubConfig) *github.Client {
 
 // runGitHubStatus implements the github status command.
 func runGitHubStatus(cmd *cobra.Command, args []string) error {
+	if usesProxiedServer() {
+		return HandleErrorRespectJSON("github status is not supported in proxied-server mode")
+	}
 	evt := metrics.NewCommandEvent("github-status")
 	defer func() {
 		if c := metrics.Global(); c != nil {
@@ -326,6 +329,9 @@ func runGitHubStatus(cmd *cobra.Command, args []string) error {
 
 // runGitHubRepos implements the github repos command.
 func runGitHubRepos(cmd *cobra.Command, args []string) error {
+	if usesProxiedServer() {
+		return HandleErrorRespectJSON("github repos is not supported in proxied-server mode")
+	}
 	evt := metrics.NewCommandEvent("github-repos")
 	defer func() {
 		if c := metrics.Global(); c != nil {
@@ -368,6 +374,9 @@ func runGitHubRepos(cmd *cobra.Command, args []string) error {
 // runGitHubSync implements the github sync command.
 // Uses the tracker.Engine for all sync operations.
 func runGitHubSync(cmd *cobra.Command, args []string) error {
+	if usesProxiedServer() {
+		return HandleErrorRespectJSON("github sync is not supported in proxied-server mode")
+	}
 	evt := metrics.NewCommandEvent("github-sync")
 	defer func() {
 		if c := metrics.Global(); c != nil {
@@ -410,8 +419,9 @@ func runGitHubSync(cmd *cobra.Command, args []string) error {
 	engine.OnMessage = func(msg string) { _, _ = fmt.Fprintln(out, "  "+msg) }
 	engine.OnWarning = func(msg string) { _, _ = fmt.Fprintf(os.Stderr, "Warning: %s\n", msg) }
 
-	// Set up GitHub-specific pull hooks
+	// Set up GitHub-specific pull and push hooks
 	engine.PullHooks = buildGitHubPullHooks(ctx)
+	engine.PushHooks = buildGitHubPushHooks(gt)
 
 	// Build sync options from CLI flags
 	pull := !githubSyncPushOnly
@@ -466,6 +476,40 @@ func runGitHubSync(cmd *cobra.Command, args []string) error {
 	}
 
 	return nil
+}
+
+// buildGitHubPushHooks creates PushHooks for GitHub-specific push behavior.
+// The ContentEqual hook lets the engine skip issues whose pushable fields
+// already match GitHub, so repeated `github sync --push-only` / `github push`
+// runs don't re-PATCH unchanged issues (gastownhall/beads#4214).
+func buildGitHubPushHooks(gt *github.Tracker) *tracker.PushHooks {
+	config := gt.MappingConfig()
+	if config == nil {
+		config = github.DefaultMappingConfig()
+	}
+	return &tracker.PushHooks{
+		ContentEqual: func(local *types.Issue, remote *tracker.TrackerIssue) bool {
+			if remote == nil {
+				return false
+			}
+			gh, ok := remote.Raw.(*github.Issue)
+			if !ok || gh == nil {
+				return false
+			}
+			return github.PushFieldsEqual(local, gh, config)
+		},
+		// ContentHash lets the engine skip the per-issue GitHub fetch entirely
+		// when an issue is unchanged since its last push, so a no-op
+		// `github sync --push-only` makes ~zero REST calls instead of one GET
+		// per linked issue (gastownhall/beads#4214).
+		ContentHash: func(local *types.Issue) string {
+			return github.PushContentHash(local, config)
+		},
+		// TargetScope supplies the host and repository omitted by shorthand refs
+		// such as github:42, so changing GitHub target configuration invalidates
+		// the local no-op cache.
+		TargetScope: gt.PushTargetScope,
+	}
 }
 
 // buildGitHubPullHooks creates PullHooks for GitHub-specific pull behavior.

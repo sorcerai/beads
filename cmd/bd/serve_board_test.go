@@ -66,11 +66,13 @@ func TestMergeRollups_RenamesUnassignedToWorkspaceName(t *testing.T) {
 
 func TestWorkspaceName(t *testing.T) {
 	cases := []struct{ dir, want string }{
-		{"WORKSPACE_A", "creator-kb-factory"},
-		{"WORKSPACE_B", "KreatorFlow"},
-		{"/tmp/beads-workspace", ""}, // generic, no project name
-		{"", ""},                            // CWD default
-		{"/home/admin/other-dir", ""},       // doesn't match convention
+		// Scrubbed paths (no infra topology), but still matching the
+		// beads-<project>-workspace convention the parser expects.
+		{"/srv/beads-creator-kb-factory-workspace", "creator-kb-factory"},
+		{"/srv/beads-KreatorFlow-workspace", "KreatorFlow"},
+		{"/tmp/beads-workspace", ""},  // generic, no project name
+		{"", ""},                      // CWD default
+		{"/home/admin/other-dir", ""}, // doesn't match convention
 	}
 	for _, c := range cases {
 		if got := workspaceName(c.dir); got != c.want {

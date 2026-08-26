@@ -61,9 +61,8 @@ func RunServerHealthChecks(path string) ServerHealthResult {
 		result.Checks = append(result.Checks, DoctorCheck{
 			Name:     "Server Config",
 			Status:   StatusWarning,
-			Message:  fmt.Sprintf("Backend is '%s', not Dolt", cfg.GetBackend()),
-			Detail:   "Server mode health checks are only relevant for Dolt backend",
-			Fix:      "Set backend: dolt in metadata.json to use Dolt server mode",
+			Message:  fmt.Sprintf("Server checks require Dolt; configured backend is %q", cfg.GetBackend()),
+			Detail:   "Dolt server health checks do not apply to this backend",
 			Category: CategoryFederation,
 		})
 		result.OverallOK = false
@@ -263,7 +262,7 @@ func checkStaleDatabases(db *sql.DB) DoctorCheck {
 // checkServerReachable checks if the server is reachable via TCP
 func checkServerReachable(host string, port int) DoctorCheck {
 	addr := net.JoinHostPort(host, fmt.Sprintf("%d", port))
-	conn, err := net.DialTimeout("tcp", addr, 5*time.Second)
+	_, err := doltserver.ProbeSQLServer("tcp", addr, 5*time.Second)
 	if err != nil {
 		return DoctorCheck{
 			Name:     "Server Reachable",
@@ -274,7 +273,6 @@ func checkServerReachable(host string, port int) DoctorCheck {
 			Category: CategoryFederation,
 		}
 	}
-	_ = conn.Close() // Best effort cleanup
 
 	return DoctorCheck{
 		Name:     "Server Reachable",

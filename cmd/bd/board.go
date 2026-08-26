@@ -14,7 +14,7 @@ var boardCmd = &cobra.Command{
 nests child issues under their epic, and buckets by status category
 (todo/in_progress/done/deferred). --json prints the canonical contract
 consumed by the web dashboard and the MCP tool.`,
-	Run: func(cmd *cobra.Command, args []string) {
+	RunE: func(cmd *cobra.Command, args []string) error {
 		project, _ := cmd.Flags().GetString("project")
 		limit, _ := cmd.Flags().GetInt("limit")
 		ctx := rootCtx
@@ -22,13 +22,14 @@ consumed by the web dashboard and the MCP tool.`,
 		opts := buildBoardOptions(project, limit)
 		r, err := rollup.Compute(ctx, store, opts)
 		if err != nil {
-			FatalErrorRespectJSON("computing board: %v", err)
+			return HandleErrorRespectJSON("computing board: %v", err)
 		}
 		if jsonOutput {
 			outputJSON(r)
-			return
+			return nil
 		}
 		renderBoardText(r)
+		return nil
 	},
 }
 

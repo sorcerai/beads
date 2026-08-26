@@ -14,6 +14,7 @@ import (
 	"sync"
 	"testing"
 
+	"github.com/steveyegge/beads/internal/doltserver"
 	"github.com/steveyegge/beads/internal/storage/dolt"
 	"github.com/steveyegge/beads/internal/testutil"
 )
@@ -68,6 +69,10 @@ func testMainInner(m *testing.M) int {
 	// fix for internal/storage/dolt TestMain).
 	os.Unsetenv("BEADS_DOLT_SERVER_PORT")
 	os.Unsetenv("BEADS_DOLT_PORT")
+	// AD-01 (be-c5p): doctor e2e tests connect to a per-package test server.
+	// The dolt.New database-name firewall requires this opt-in to allow
+	// doctor_pkg_shared and doctest_*-prefixed databases through.
+	os.Setenv("BEADS_TEST_SERVER", "1")
 	if err := testutil.EnsureDoltContainerForTestMain(); err != nil {
 		fmt.Fprintf(os.Stderr, "WARN: %v, skipping Dolt tests\n", err)
 	} else {
@@ -94,6 +99,11 @@ func testMainInner(m *testing.M) int {
 	code := m.Run()
 
 	os.Unsetenv("BEADS_DOLT_SERVER_PORT")
+	// Best-effort reap of any dolt sql-server left running under a temp dir
+	// this suite created (e.g. a SIGKILLed run) — see
+	// gastownhall/beads mybd-q6cz.
+	doltserver.SweepOrphanedTestServers(testBDDir)
+
 	os.Unsetenv("BEADS_DOLT_PORT")
 	os.Unsetenv("BEADS_TEST_MODE")
 	if testBDDir != "" {
@@ -281,7 +291,7 @@ func runBDDoctor(t *testing.T, bdPath, path string) (e2eDoctorResult, string, er
 	return result, string(out), execErr
 }
 
-// TestE2E_DoctorSQLiteBackend was removed: SQLite backend no longer exists.
+// TestE2E_DoctorSQLiteBackend is covered by the backend-neutral doctor tests.
 // GetBackend() always returns "dolt" after the dolt-native cleanup (bd-yqpwy).
 
 // TestE2E_DoctorDoltBackendNoDB was removed: the embedded Dolt driver

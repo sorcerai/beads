@@ -1,4 +1,4 @@
-// corpus.go — producer-side logic for the Beads↔Gas City cross-version
+// corpus.go — producer-side logic for the Beads↔consumer cross-version
 // contract-test system (Phase 2).
 //
 // This file is the dependency-free, unit-testable core: it defines the
@@ -7,7 +7,7 @@
 // independent runs produce byte-identical output, and the manifest that
 // records the corpus's provenance.
 //
-// Gas City vendors the generated corpus (testdata/corpus/) and replays it
+// A downstream consumer vendors the generated corpus (testdata/corpus/) and replays it
 // against its own consumer to detect cross-version drift without needing a
 // live bd. Everything here must stay free of test-only and bd-internal
 // imports so it can be reasoned about (and reused) in isolation.
@@ -100,7 +100,8 @@ func CorpusPlan() []Capture {
 			Args: []string{"dep", "list", CorpusRootID, "--json"},
 		},
 		// MUTATIONS: update/close/reopen return an array of the affected issue;
-		// update pins label + metadata coercion (phase=2 -> integer); close pins
+		// update pins label + metadata coercion (phase=2 -> string "2", since
+		// --set-metadata always stores values as JSON strings); close pins
 		// close_reason + closed_at; dep_remove/delete pin their confirmation shapes.
 		{
 			Name: "update",
@@ -142,7 +143,7 @@ func CorpusPlan() []Capture {
 			Args: []string{"version", "--json"},
 		},
 		// The error capture pins the {error, schema_version} envelope bd emits on
-		// stdout for a missing issue — gascity's isBdNotFound classifier depends on
+		// stdout for a missing issue — a downstream consumer's isBdNotFound classifier depends on
 		// it — plus the non-zero exit status bd returns (see checkCaptureExit).
 		{
 			Name: errorCaptureName,
@@ -180,16 +181,38 @@ var provenanceValueKeys = map[string]string{
 	"build":   "<BUILD>",
 }
 
+// revisionPlaceholder is the canonical stand-in for a guarded-write revision
+// (row_lock) token value.
+const revisionPlaceholder = "<REVISION>"
+
+// volatileValueKeys have a stable presence but a per-write-random value, so the
+// corpus pins that the field EXISTS (its wire shape) while replacing its value
+// with a placeholder — exactly as it does for timestamps. `bd show --json`
+// exposes the guarded-write revision (the row_lock optimistic-concurrency
+// token), which the engine rewrites to a fresh random value on every
+// lifecycle/ownership write; pinning its literal value would break both the
+// golden byte-comparison and the double-run determinism check. Same bare-key-
+// name scope caveat as the provenance transforms below: `revision` is currently
+// emitted only by `bd show --json`. If a future command ever emits a
+// deterministic field named `revision`, scope this to the show capture (thread
+// Capture.Name through generation) before relying on it.
+var volatileValueKeys = map[string]string{
+	"revision": revisionPlaceholder,
+}
+
 // CanonicalizeJSON normalizes a bd JSON blob so that two independent runs
 // produce byte-identical output:
 //
 //  1. Any string value that is an RFC3339/RFC3339Nano timestamp is replaced
 //     with "<TS>".
-//  2. Any array whose elements are all objects is stably sorted by the
+//  2. Any per-write-random token value (the guarded-write "revision" /
+//     row_lock, matched by key name) is replaced with "<REVISION>", pinning
+//     the field's presence without its nondeterministic value.
+//  3. Any array whose elements are all objects is stably sorted by the
 //     element's "id" field (falling back to the element's canonical-JSON
 //     form when "id" is absent or equal), so list/ready/sql ordering is
 //     deterministic regardless of storage iteration order.
-//  3. The result is re-marshaled with 2-space indentation and sorted keys
+//  4. The result is re-marshaled with 2-space indentation and sorted keys
 //     (Go's encoding/json sorts map keys), yielding a minimal, byte-stable
 //     diff.
 //
@@ -253,6 +276,16 @@ func canonValue(v any) any {
 					t[k] = ph
 					continue
 				}
+			}
+			// Replace per-write-random token values (the guarded-write revision /
+			// row_lock) with a placeholder: pin that bd show exposes a revision
+			// field, not its nondeterministic value. Unlike the provenance keys
+			// above this is unconditional — the value is a JSON number, not a
+			// string — but it stays a bare-key match, so keep the scope caveat in
+			// mind (see volatileValueKeys).
+			if ph, ok := volatileValueKeys[k]; ok {
+				t[k] = ph
+				continue
 			}
 			t[k] = canonValue(child)
 		}
@@ -330,7 +363,7 @@ type BlobMeta struct {
 
 // Manifest is the corpus index. It pins the schema version (the coordination
 // canary), the generator identity, and a per-blob SHA-256 checksum so consumers
-// (Gas City) can detect tampering or partial vendoring. It deliberately does not
+// can detect tampering or partial vendoring. It deliberately does not
 // pin the live bd version/commit — see the field comment below for why the
 // corpus stays version-agnostic.
 type Manifest struct {

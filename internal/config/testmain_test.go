@@ -26,6 +26,7 @@ func TestMain(m *testing.M) {
 	_ = os.Chdir(tmp)
 	_ = os.Setenv("HOME", tmp)
 	_ = os.Setenv("USERPROFILE", tmp) // Windows compatibility
+	_ = os.Setenv("APPDATA", filepath.Join(tmp, "AppData", "Roaming"))
 	_ = os.Setenv("XDG_CONFIG_HOME", filepath.Join(tmp, "xdg-config"))
 
 	// Clear an inherited BEADS_DIR so tests that don't call envSnapshot stay

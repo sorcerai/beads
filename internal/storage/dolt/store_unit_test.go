@@ -9,6 +9,7 @@ import (
 	"time"
 
 	mysql "github.com/go-sql-driver/mysql"
+	"github.com/steveyegge/beads/internal/doltserver"
 	"github.com/steveyegge/beads/internal/storage/doltutil"
 	"github.com/steveyegge/beads/internal/storage/schema"
 )
@@ -215,15 +216,21 @@ func TestGetAdaptiveIDLength_QueryError(t *testing.T) {
 // BEADS_DOLT_PORT is not set, preventing accidental connections to
 // the production server while allowing tests to handle connection errors.
 func TestApplyConfigDefaults_TestModeUseSentinelPort(t *testing.T) {
-	// Isolate every env var applyConfigDefaults reads for port resolution.
-	// t.Setenv restores them after the test and forbids parallel execution,
-	// so an ambient BEADS_DOLT_SERVER_PORT (a running dev/test Dolt server, or
-	// the shared test container that TestMain sets process-wide) cannot leak in.
-	// BEADS_DOLT_SERVER_PORT outranks the legacy BEADS_DOLT_PORT, so clearing
-	// only BEADS_DOLT_PORT is insufficient — both must be cleared.
-	t.Setenv("BEADS_TEST_MODE", "1")
-	t.Setenv("BEADS_DOLT_PORT", "")
-	t.Setenv("BEADS_DOLT_SERVER_PORT", "")
+	// Save and restore env vars.
+	origTestMode := os.Getenv("BEADS_TEST_MODE")
+	origPort := os.Getenv("BEADS_DOLT_PORT")
+	defer func() {
+		os.Setenv("BEADS_TEST_MODE", origTestMode)
+		if origPort == "" {
+			os.Unsetenv("BEADS_DOLT_PORT")
+		} else {
+			os.Setenv("BEADS_DOLT_PORT", origPort)
+		}
+	}()
+	t.Setenv("BEADS_DOLT_SERVER_PORT", "") // clear new primary port env so legacy path runs
+
+	os.Setenv("BEADS_TEST_MODE", "1")
+	os.Unsetenv("BEADS_DOLT_PORT")
 
 	cfg := &Config{} // ServerPort defaults to 0
 	applyConfigDefaults(cfg)
@@ -236,11 +243,20 @@ func TestApplyConfigDefaults_TestModeUseSentinelPort(t *testing.T) {
 // TestApplyConfigDefaults_TestModeWithPort verifies that applyConfigDefaults
 // does NOT panic when BEADS_TEST_MODE=1 and BEADS_DOLT_PORT is properly set.
 func TestApplyConfigDefaults_TestModeWithPort(t *testing.T) {
-	// Clear BEADS_DOLT_SERVER_PORT so the legacy BEADS_DOLT_PORT fallback is
-	// what gets exercised; otherwise an ambient server port would outrank it.
-	t.Setenv("BEADS_TEST_MODE", "1")
-	t.Setenv("BEADS_DOLT_PORT", "13307")
-	t.Setenv("BEADS_DOLT_SERVER_PORT", "")
+	origTestMode := os.Getenv("BEADS_TEST_MODE")
+	origPort := os.Getenv("BEADS_DOLT_PORT")
+	defer func() {
+		os.Setenv("BEADS_TEST_MODE", origTestMode)
+		if origPort == "" {
+			os.Unsetenv("BEADS_DOLT_PORT")
+		} else {
+			os.Setenv("BEADS_DOLT_PORT", origPort)
+		}
+	}()
+	t.Setenv("BEADS_DOLT_SERVER_PORT", "") // clear new primary port env so legacy path runs
+
+	os.Setenv("BEADS_TEST_MODE", "1")
+	os.Setenv("BEADS_DOLT_PORT", "13307")
 
 	cfg := &Config{}
 	applyConfigDefaults(cfg)
@@ -254,10 +270,40 @@ func TestApplyConfigDefaults_TestModeWithPort(t *testing.T) {
 // forces port 1 even when BEADS_DOLT_PORT is explicitly set to the production port.
 // This is the fix for Clown Show #14: The orchestrator's beads module injects
 // BEADS_DOLT_PORT=3307 from metadata.json, bypassing the test mode guard.
+//
+// AD-01 (be-c5p): port == DefaultSQLPort (3307) is never suppressed by
+// BEADS_TEST_SERVER=1 (see productionPortReasons Rule 1); only the
+// BEADS_PRODUCTION_PORT and dolt-server.port heuristics honor that opt-in.
+// This case covers the no-opt-in path (operator did NOT signal "I'm on a
+// test server"), where the guard must still force port 1. See
+// TestApplyConfigDefaults_TestModeBlocksProdPort_EvenWithTestServerOptIn for
+// the opt-in case, which must reach the same outcome.
 func TestApplyConfigDefaults_TestModeBlocksProdPort(t *testing.T) {
-	t.Setenv("BEADS_TEST_MODE", "1")
-	t.Setenv("BEADS_DOLT_PORT", "3307") // Production port
-	t.Setenv("BEADS_DOLT_SERVER_PORT", "")
+	origTestMode := os.Getenv("BEADS_TEST_MODE")
+	origPort := os.Getenv("BEADS_DOLT_PORT")
+	origTestServer := os.Getenv("BEADS_TEST_SERVER")
+	defer func() {
+		if origTestMode == "" {
+			os.Unsetenv("BEADS_TEST_MODE")
+		} else {
+			os.Setenv("BEADS_TEST_MODE", origTestMode)
+		}
+		if origPort == "" {
+			os.Unsetenv("BEADS_DOLT_PORT")
+		} else {
+			os.Setenv("BEADS_DOLT_PORT", origPort)
+		}
+		if origTestServer == "" {
+			os.Unsetenv("BEADS_TEST_SERVER")
+		} else {
+			os.Setenv("BEADS_TEST_SERVER", origTestServer)
+		}
+	}()
+
+	t.Setenv("BEADS_DOLT_SERVER_PORT", "") // clear new primary port env so legacy path runs
+	os.Setenv("BEADS_TEST_MODE", "1")
+	os.Setenv("BEADS_DOLT_PORT", "3307") // Production port
+	os.Unsetenv("BEADS_TEST_SERVER")     // No test-server opt-in for this case.
 
 	cfg := &Config{}
 	applyConfigDefaults(cfg)
@@ -267,22 +313,166 @@ func TestApplyConfigDefaults_TestModeBlocksProdPort(t *testing.T) {
 	}
 }
 
-// TestApplyConfigDefaults_EnvOverridesConfig verifies that BEADS_DOLT_PORT
-// overrides a port already set by metadata.json, even outside test mode.
-// This is the fix for hq-27t (test pollution): callers like the orchestrator set
-// BEADS_DOLT_PORT to route bd to a test server instead of production.
-func TestApplyConfigDefaults_EnvOverridesConfig(t *testing.T) {
-	t.Setenv("BEADS_TEST_MODE", "") // NOT in test mode
-	t.Setenv("BEADS_DOLT_PORT", "19999")
-	t.Setenv("BEADS_DOLT_SERVER_PORT", "")
+// TestApplyConfigDefaults_TestModeBlocksProdPort_EvenWithTestServerOptIn
+// verifies that BEADS_TEST_SERVER=1 does NOT suppress Rule 1 of
+// productionPortReasons (port == DefaultSQLPort): even with the operator's
+// dedicated-test-server opt-in set, port 3307 must still be forced to 1
+// under BEADS_TEST_MODE=1. Only the BEADS_PRODUCTION_PORT and
+// dolt-server.port heuristics (Rules 2 and 3) are suppressed by that
+// opt-in — the well-known default port is never suppressible, so a
+// dedicated test server must still not bind to it.
+func TestApplyConfigDefaults_TestModeBlocksProdPort_EvenWithTestServerOptIn(t *testing.T) {
+	origTestMode := os.Getenv("BEADS_TEST_MODE")
+	origPort := os.Getenv("BEADS_DOLT_PORT")
+	origTestServer := os.Getenv("BEADS_TEST_SERVER")
+	defer func() {
+		if origTestMode == "" {
+			os.Unsetenv("BEADS_TEST_MODE")
+		} else {
+			os.Setenv("BEADS_TEST_MODE", origTestMode)
+		}
+		if origPort == "" {
+			os.Unsetenv("BEADS_DOLT_PORT")
+		} else {
+			os.Setenv("BEADS_DOLT_PORT", origPort)
+		}
+		if origTestServer == "" {
+			os.Unsetenv("BEADS_TEST_SERVER")
+		} else {
+			os.Setenv("BEADS_TEST_SERVER", origTestServer)
+		}
+	}()
 
-	// Simulate metadata.json having set port to production default
+	t.Setenv("BEADS_DOLT_SERVER_PORT", "") // clear new primary port env so legacy path runs
+	os.Setenv("BEADS_TEST_MODE", "1")
+	os.Setenv("BEADS_DOLT_PORT", "3307") // Production port
+	os.Setenv("BEADS_TEST_SERVER", "1")  // Opt-in IS set for this case.
+
+	cfg := &Config{}
+	applyConfigDefaults(cfg)
+
+	if cfg.ServerPort != 1 {
+		t.Errorf("BEADS_TEST_MODE=1 with BEADS_DOLT_PORT=3307 should force port 1 even with "+
+			"BEADS_TEST_SERVER=1 (Rule 1 is unconditional), got %d", cfg.ServerPort)
+	}
+}
+
+// TestApplyConfigDefaults_ExplicitPortOverridesEnv verifies that a
+// caller-preset, already-nonzero cfg.ServerPort wins over
+// BEADS_DOLT_PORT/BEADS_DOLT_SERVER_PORT, and that the resulting
+// ServerPortSource is PortSourceCallerExplicit (authoritative) so
+// newServerMode's auto-start fail-closed check (GH#4052) still protects it.
+//
+// Until be-wf9a.1, BEADS_DOLT_PORT unconditionally clobbered any pre-set
+// ServerPort here (formerly asserted by this same test under the name
+// TestApplyConfigDefaults_EnvOverridesConfig, added for hq-27t). That let an
+// ambient orchestrator env var silently override an explicit caller
+// assertion (e.g. `bd init --server-port`); this test now asserts the fixed,
+// correct precedence instead.
+func TestApplyConfigDefaults_ExplicitPortOverridesEnv(t *testing.T) {
+	origTestMode := os.Getenv("BEADS_TEST_MODE")
+	origPort := os.Getenv("BEADS_DOLT_PORT")
+	defer func() {
+		if origTestMode == "" {
+			os.Unsetenv("BEADS_TEST_MODE")
+		} else {
+			os.Setenv("BEADS_TEST_MODE", origTestMode)
+		}
+		if origPort == "" {
+			os.Unsetenv("BEADS_DOLT_PORT")
+		} else {
+			os.Setenv("BEADS_DOLT_PORT", origPort)
+		}
+	}()
+
+	t.Setenv("BEADS_DOLT_SERVER_PORT", "") // clear new primary port env so legacy path runs
+	os.Unsetenv("BEADS_TEST_MODE")         // NOT in test mode
+	os.Setenv("BEADS_DOLT_PORT", "19999")
+
+	// Caller (e.g. `bd init --server-port`) preset an explicit port before
+	// applyConfigDefaults runs.
 	cfg := &Config{ServerPort: DefaultSQLPort}
 	applyConfigDefaults(cfg)
 
-	if cfg.ServerPort != 19999 {
-		t.Errorf("expected BEADS_DOLT_PORT=19999 to override config port %d, got %d",
+	if cfg.ServerPort != DefaultSQLPort {
+		t.Errorf("expected explicit ServerPort=%d to win over BEADS_DOLT_PORT=19999, got %d",
 			DefaultSQLPort, cfg.ServerPort)
+	}
+	if cfg.ServerPortSource != doltserver.PortSourceCallerExplicit {
+		t.Errorf("expected ServerPortSource=%q, got %q",
+			doltserver.PortSourceCallerExplicit, cfg.ServerPortSource)
+	}
+	if !cfg.ServerPortSource.IsAuthoritative() {
+		t.Errorf("expected PortSourceCallerExplicit to be authoritative (GH#4052 fail-closed guard)")
+	}
+}
+
+// TestApplyConfigDefaults_EnvWinsWhenExplicitUnset verifies that when no
+// caller has preset ServerPort (it is still the zero value), BEADS_DOLT_PORT
+// resolves it — unchanged from before be-wf9a.1.
+func TestApplyConfigDefaults_EnvWinsWhenExplicitUnset(t *testing.T) {
+	origTestMode := os.Getenv("BEADS_TEST_MODE")
+	origPort := os.Getenv("BEADS_DOLT_PORT")
+	defer func() {
+		if origTestMode == "" {
+			os.Unsetenv("BEADS_TEST_MODE")
+		} else {
+			os.Setenv("BEADS_TEST_MODE", origTestMode)
+		}
+		if origPort == "" {
+			os.Unsetenv("BEADS_DOLT_PORT")
+		} else {
+			os.Setenv("BEADS_DOLT_PORT", origPort)
+		}
+	}()
+
+	t.Setenv("BEADS_DOLT_SERVER_PORT", "") // clear new primary port env so legacy path runs
+	os.Unsetenv("BEADS_TEST_MODE")         // NOT in test mode
+	os.Setenv("BEADS_DOLT_PORT", "19999")
+
+	cfg := &Config{} // ServerPort left unset (0)
+	applyConfigDefaults(cfg)
+
+	if cfg.ServerPort != 19999 {
+		t.Errorf("expected BEADS_DOLT_PORT=19999 to resolve unset config port, got %d", cfg.ServerPort)
+	}
+	if cfg.ServerPortSource != doltserver.PortSourceEnv {
+		t.Errorf("expected ServerPortSource=%q, got %q", doltserver.PortSourceEnv, cfg.ServerPortSource)
+	}
+}
+
+// TestApplyConfigDefaults_ExplicitPortPreservedWhenEnvUnset verifies that an
+// explicit ServerPort survives when no env var is set — unchanged from
+// before be-wf9a.1 — and is stamped PortSourceCallerExplicit (authoritative).
+func TestApplyConfigDefaults_ExplicitPortPreservedWhenEnvUnset(t *testing.T) {
+	origTestMode := os.Getenv("BEADS_TEST_MODE")
+	origPort := os.Getenv("BEADS_DOLT_PORT")
+	defer func() {
+		if origTestMode == "" {
+			os.Unsetenv("BEADS_TEST_MODE")
+		} else {
+			os.Setenv("BEADS_TEST_MODE", origTestMode)
+		}
+		if origPort == "" {
+			os.Unsetenv("BEADS_DOLT_PORT")
+		} else {
+			os.Setenv("BEADS_DOLT_PORT", origPort)
+		}
+	}()
+
+	t.Setenv("BEADS_DOLT_SERVER_PORT", "") // clear new primary port env so legacy path runs
+	os.Unsetenv("BEADS_TEST_MODE")         // NOT in test mode
+	os.Unsetenv("BEADS_DOLT_PORT")
+
+	cfg := &Config{ServerPort: 25432}
+	applyConfigDefaults(cfg)
+
+	if cfg.ServerPort != 25432 {
+		t.Errorf("expected explicit ServerPort=25432 to survive with no env set, got %d", cfg.ServerPort)
+	}
+	if cfg.ServerPortSource != doltserver.PortSourceCallerExplicit {
+		t.Errorf("expected ServerPortSource=%q, got %q",
+			doltserver.PortSourceCallerExplicit, cfg.ServerPortSource)
 	}
 }
 
@@ -290,9 +480,24 @@ func TestApplyConfigDefaults_EnvOverridesConfig(t *testing.T) {
 // BEADS_TEST_MODE and no env port, ServerPort stays 0 (ephemeral).
 // Auto-start (EnsureRunning) will allocate the port at connection time.
 func TestApplyConfigDefaults_ProductionFallback(t *testing.T) {
-	t.Setenv("BEADS_TEST_MODE", "")
-	t.Setenv("BEADS_DOLT_PORT", "")
-	t.Setenv("BEADS_DOLT_SERVER_PORT", "")
+	origTestMode := os.Getenv("BEADS_TEST_MODE")
+	origPort := os.Getenv("BEADS_DOLT_PORT")
+	defer func() {
+		if origTestMode == "" {
+			os.Unsetenv("BEADS_TEST_MODE")
+		} else {
+			os.Setenv("BEADS_TEST_MODE", origTestMode)
+		}
+		if origPort == "" {
+			os.Unsetenv("BEADS_DOLT_PORT")
+		} else {
+			os.Setenv("BEADS_DOLT_PORT", origPort)
+		}
+	}()
+
+	t.Setenv("BEADS_DOLT_SERVER_PORT", "") // clear new primary port env
+	os.Unsetenv("BEADS_TEST_MODE")
+	os.Unsetenv("BEADS_DOLT_PORT")
 
 	cfg := &Config{}
 	applyConfigDefaults(cfg)
@@ -442,6 +647,72 @@ func TestExecWithLongTimeoutDSNRewrite(t *testing.T) {
 	}
 	if reParsed.ReadTimeout != 5*time.Minute {
 		t.Errorf("expected readTimeout=5m, got %v", reParsed.ReadTimeout)
+	}
+}
+
+// TestBuildServerDSN_PoolTimeouts verifies the shared pool's per-I/O deadlines:
+// 10s defaults when unset, and Config.PoolReadTimeout/PoolWriteTimeout
+// overrides carried through to the DSN (bd-vz0y9).
+func TestBuildServerDSN_PoolTimeouts(t *testing.T) {
+	tests := []struct {
+		name         string
+		readTimeout  time.Duration
+		writeTimeout time.Duration
+		wantRead     time.Duration
+		wantWrite    time.Duration
+	}{
+		{"defaults when unset", 0, 0, 10 * time.Second, 10 * time.Second},
+		{"read override only", 90 * time.Second, 0, 90 * time.Second, 10 * time.Second},
+		{"write override only", 0, 45 * time.Second, 10 * time.Second, 45 * time.Second},
+		{"both overridden", 2 * time.Minute, 30 * time.Second, 2 * time.Minute, 30 * time.Second},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := &Config{
+				ServerUser:       "root",
+				ServerHost:       "127.0.0.1",
+				ServerPort:       3307,
+				Database:         "testdb",
+				PoolReadTimeout:  tt.readTimeout,
+				PoolWriteTimeout: tt.writeTimeout,
+			}
+			parsed, err := mysql.ParseDSN(buildServerDSN(cfg, cfg.Database))
+			if err != nil {
+				t.Fatalf("failed to parse DSN: %v", err)
+			}
+			if parsed.ReadTimeout != tt.wantRead {
+				t.Errorf("expected readTimeout=%v, got %v", tt.wantRead, parsed.ReadTimeout)
+			}
+			if parsed.WriteTimeout != tt.wantWrite {
+				t.Errorf("expected writeTimeout=%v, got %v", tt.wantWrite, parsed.WriteTimeout)
+			}
+		})
+	}
+}
+
+// TestParseTimeout verifies the shared duration-setting parser: ParseDuration
+// strings, bare seconds, and fallback on empty/invalid/non-positive input.
+func TestParseTimeout(t *testing.T) {
+	tests := []struct {
+		raw  string
+		want time.Duration
+	}{
+		{"", 0},
+		{"30s", 30 * time.Second},
+		{"2m", 2 * time.Minute},
+		{"90", 90 * time.Second},
+		{" 45 ", 45 * time.Second},
+		{"bogus", 0},
+		{"-5s", 0},
+		{"0", 0},
+	}
+	for _, tt := range tests {
+		if got := parseTimeout(tt.raw, 0); got != tt.want {
+			t.Errorf("parseTimeout(%q, 0) = %v, want %v", tt.raw, got, tt.want)
+		}
+	}
+	if got := parseTimeout("bogus", 7*time.Second); got != 7*time.Second {
+		t.Errorf("parseTimeout(bogus, 7s) = %v, want fallback 7s", got)
 	}
 }
 

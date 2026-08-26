@@ -9,12 +9,17 @@ import (
 	"strings"
 	"time"
 
+	"github.com/steveyegge/beads/internal/storage/dberrors"
 	"github.com/steveyegge/beads/internal/storage/sqlbuild"
 	"github.com/steveyegge/beads/internal/types"
 )
 
 type readyWorkPredicates struct {
-	whereSQL         string
+	whereSQL string
+	// whereArgs binds only the WHERE placeholders (no ORDER BY params); it is
+	// what a bare COUNT(*) over the ready predicate needs. args carries the
+	// WHERE params followed by the ORDER BY params for the full page query.
+	whereArgs        []interface{}
 	orderBySQL       string
 	limitSQL         string
 	args             []interface{}
@@ -60,21 +65,24 @@ func buildReadyWorkPredicates(ctx context.Context, tx DBTX, filter types.WorkFil
 		inputs.ParentDescendantIDs = descendantIDs
 	}
 
-	whereSQL, args, err := sqlbuild.BuildReadyWorkWhere(filter, tables, inputs)
+	whereSQL, whereArgs, err := sqlbuild.BuildReadyWorkWhere(filter, tables, inputs)
 	if err != nil {
 		return nil, err
 	}
 
 	orderBy := buildReadyWorkOrder(filter.SortPolicy)
+	args := make([]interface{}, 0, len(whereArgs)+len(orderBy.Args))
+	args = append(args, whereArgs...)
 	args = append(args, orderBy.Args...)
 
 	var limitSQL string
-	if filter.Limit > 0 {
-		limitSQL = fmt.Sprintf("LIMIT %d", filter.Limit)
+	if eff := EffectiveSearchLimit(filter.Limit, filter.MaxRows); eff > 0 {
+		limitSQL = fmt.Sprintf("LIMIT %d", eff)
 	}
 
 	return &readyWorkPredicates{
 		whereSQL:         whereSQL,
+		whereArgs:        whereArgs,
 		orderBySQL:       orderBy.SQL,
 		limitSQL:         limitSQL,
 		args:             args,
@@ -129,6 +137,12 @@ func GetReadyWorkInTx(
 		ordered = mergeReadyWisps(ordered, wisps, filter)
 	}
 
+	// Apply the defensive cap on the row count returned to the caller.
+	// LIMIT cap+1 was issued above so a count of cap+1 indicates overage.
+	if err := EnforceMaxRowsCap(len(ordered), filter.MaxRows, filter.MaxRowsSource); err != nil {
+		return nil, err
+	}
+
 	return ordered, nil
 }
 
@@ -166,7 +180,7 @@ func getReadyWispsInTx(ctx context.Context, tx DBTX, filter types.WorkFilter, de
 		wispFilter.Limit = 0
 		wisps, err := searchTableInTxT(ctx, tx, "", wispFilter, WispsFilterTables, issueProjection)
 		if err != nil {
-			if isTableNotExistError(err) {
+			if missingOptionalWispTable(err) {
 				return nil, nil
 			}
 			return nil, fmt.Errorf("search wisps (ready work): %w", err)
@@ -180,7 +194,7 @@ func getReadyWispsInTx(ctx context.Context, tx DBTX, filter types.WorkFilter, de
 	for offset := 0; len(ready) < filter.Limit; offset += pageSize {
 		pageIDs, err := queryReadyWispIssueIDPage(ctx, tx, wispFilter, !filter.IncludeDeferred, orderBy, pageSize, offset)
 		if err != nil {
-			if isTableNotExistError(err) {
+			if missingOptionalWispTable(err) {
 				return nil, nil
 			}
 			return nil, fmt.Errorf("search wisps (ready work): %w", err)
@@ -297,11 +311,23 @@ func readyWorkWispIssueFilter(filter types.WorkFilter) types.IssueFilter {
 		Pinned:         &pinnedFalse,
 		MetadataFields: filter.MetadataFields,
 		HasMetadataKey: filter.HasMetadataKey,
+		// be-x42v.4 follow-up (review SHOULD-FIX 8): without this,
+		// getReadyWispsInTx's unbounded (Limit<=0) branch called
+		// searchTableInTxT with MaxRows=0, so EffectiveSearchLimit emitted
+		// no SQL LIMIT at all — the entire wisps table matching the
+		// predicate was scanned and hydrated before GetReadyWorkInTx's
+		// post-merge EnforceMaxRowsCap ever ran. Propagating the cap here
+		// lets EffectiveSearchLimit bound that query to cap+1 up front.
+		MaxRows:       filter.MaxRows,
+		MaxRowsSource: filter.MaxRowsSource,
 	}
-	if filter.Status != "" {
+	switch {
+	case filter.Status != "":
 		s := filter.Status
 		wispFilter.Status = &s
-	} else {
+	case len(filter.Statuses) > 0:
+		wispFilter.Statuses = append([]types.Status(nil), filter.Statuses...)
+	default:
 		wispFilter.Statuses = []types.Status{types.StatusOpen, types.StatusInProgress}
 	}
 	if filter.Type != "" {
@@ -446,7 +472,7 @@ func issuePriorityBefore(a, b *types.Issue) bool {
 		return a.Priority < b.Priority
 	}
 	if !a.CreatedAt.Equal(b.CreatedAt) {
-		return a.CreatedAt.After(b.CreatedAt)
+		return a.CreatedAt.Before(b.CreatedAt)
 	}
 	return a.ID < b.ID
 }
@@ -527,10 +553,15 @@ func getChildrenOfDeferredParentsInTx(ctx context.Context, tx DBTX) ([]string, e
 				  AND parent.defer_until > UTC_TIMESTAMP()
 			`, depTable, issueTable, targetCol))
 			if err != nil {
-				if depTable == "wisp_dependencies" && isTableNotExistError(err) {
+				// This FROM names two tables at once, so the gate has to key on
+				// which one the driver reports missing. The wisp plane is the
+				// only half a database may legitimately lack; keyed on the error
+				// class alone, the tolerance written for it also excused a
+				// missing dependencies or issues on the same leg.
+				if optionalBlockedTable(depTable) && dberrors.IsMissingTable(err, depTable) {
 					break
 				}
-				if issueTable == "wisps" && isTableNotExistError(err) {
+				if optionalBlockedTable(issueTable) && dberrors.IsMissingTable(err, issueTable) {
 					continue
 				}
 				return nil, fmt.Errorf("deferred parents: get deferred children from %s/%s: %w", depTable, issueTable, err)

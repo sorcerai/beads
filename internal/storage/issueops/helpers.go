@@ -14,7 +14,6 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/google/uuid"
 	"github.com/steveyegge/beads/internal/config"
 	"github.com/steveyegge/beads/internal/debug"
 	"github.com/steveyegge/beads/internal/idgen"
@@ -22,24 +21,22 @@ import (
 	"github.com/steveyegge/beads/internal/types"
 )
 
-// NewEventID mints the app-side primary key for an events/wisp_events row.
-// Events have no natural identity (the same logical event can legitimately
-// occur twice), so the id is random — but minted app-side, once, at creation.
-// Insert sites must never fall back to the DB-side DEFAULT (UUID()): that is
-// the 0043-era pattern that let bulk/import paths silently mint clone-random
-// keys for logically identical rows, the same failure class as #4259 on
-// dependencies (bd-6dnrw.18). UUIDv7 matches the comments-table convention
-// and keeps ids time-sortable.
-func NewEventID() string {
-	return uuid.Must(uuid.NewV7()).String()
-}
-
 // IsWisp returns true if the issue should be routed to the wisps table.
 // Routes based on flags only — not the ID pattern. The "-wisp-" ID prefix is
 // a naming convention for generated wisp IDs, but promoted wisps keep their
 // ID while moving to the issues table (Ephemeral=false). Routing on the ID
 // would send promoted wisps back to the wisps table on re-insert.
+//
+// WispPlaneOverride, when set, wins over the flags. Import sets it from the
+// export stream's explicit "wisp" plane marker: a record carrying
+// no_history=true but NO marker is a promoted no-history wisp — a durable
+// issues-table row whose stray flag must not re-plane it into the wisps
+// table on re-insert, which is how export→import→export silently dropped
+// such rows' relations (bd-r9uce).
 func IsWisp(issue *types.Issue) bool {
+	if issue.WispPlaneOverride != nil {
+		return *issue.WispPlaneOverride
+	}
 	return issue.Ephemeral || issue.NoHistory
 }
 
@@ -58,11 +55,19 @@ func TableRouting(issue *types.Issue) (issueTable, eventTable string) {
 // updated_at in every assignment, and ON DUPLICATE KEY UPDATE assignments are
 // evaluated in order, so the comparison column must not be reassigned until
 // all other columns have been decided.
+//
+// Leases are NOT issues columns (bd-lrgn1): they live in the ephemeral
+// leases table and are restored by RestoreLeaseOnImportInTx, which enforces
+// the never-clobber-a-live-local-lease rule (protocol L1.2: lease fields MUST
+// round-trip the JSONL interchange, wy-urlct). row_lock rides along because
+// any write that can change status/assignee must rewrite it to collide with a
+// concurrent reclaim/close on the same row (see freshRowLock in lease.go).
 var issueUpsertColumns = []string{
 	"content_hash", "title", "description", "design", "acceptance_criteria",
 	"notes", "status", "priority", "issue_type", "assignee",
 	"estimated_minutes", "started_at", "closed_at", "external_ref",
-	"source_repo", "close_reason", "metadata", "updated_at",
+	"source_repo", "close_reason", "closed_by_session", "metadata",
+	"row_lock", "updated_at",
 }
 
 // issueUpsertAssignments renders the ON DUPLICATE KEY UPDATE clause. With
@@ -77,12 +82,15 @@ var issueUpsertColumns = []string{
 // Tie rows are deliberately NOT short-circuited by the staleRejected
 // pre-check in InsertIssueIfNew, so their aux data (labels/comments/deps,
 // which never bump updated_at) still merges additively.
-func issueUpsertAssignments(rejectStaleUpdate bool) string {
+func issueUpsertAssignments(table string, rejectStaleUpdate bool) string {
 	assignments := make([]string, 0, len(issueUpsertColumns))
 	for _, col := range issueUpsertColumns {
 		if rejectStaleUpdate {
+			// Qualify existing-row references with the table name so the target value
+			// remains unambiguous after the SQLite upsert translation. VALUES(...) is
+			// the incoming row in the canonical Dolt/MySQL-dialect statement.
 			assignments = append(assignments,
-				fmt.Sprintf("%s = IF(VALUES(updated_at) > updated_at, VALUES(%s), %s)", col, col, col))
+				fmt.Sprintf("%s = IF(VALUES(updated_at) > %s.updated_at, VALUES(%s), %s.%s)", col, table, col, table, col))
 		} else {
 			assignments = append(assignments, fmt.Sprintf("%s = VALUES(%s)", col, col))
 		}
@@ -92,12 +100,22 @@ func issueUpsertAssignments(rejectStaleUpdate bool) string {
 
 // InsertIssueIntoTable inserts an issue into the specified table ("issues" or "wisps"),
 // using ON DUPLICATE KEY UPDATE to handle pre-existing records gracefully.
-func InsertIssueIntoTable(ctx context.Context, tx *sql.Tx, table string, issue *types.Issue) error {
+func InsertIssueIntoTable(ctx context.Context, tx DBTX, table string, issue *types.Issue) error {
 	return insertIssueIntoTable(ctx, tx, table, issue, false)
 }
 
 //nolint:gosec // G201: table is a hardcoded constant ("issues" or "wisps")
-func insertIssueIntoTable(ctx context.Context, tx *sql.Tx, table string, issue *types.Issue, rejectStaleUpdate bool) error {
+func insertIssueIntoTable(ctx context.Context, tx DBTX, table string, issue *types.Issue, rejectStaleUpdate bool) error {
+	return executeIssueInsert(ctx, tx, table, issue, "ON DUPLICATE KEY UPDATE\n\t\t\t"+issueUpsertAssignments(table, rejectStaleUpdate))
+}
+
+//nolint:gosec // G201: table is a hardcoded constant ("issues" or "wisps")
+func insertIssueCreateOnly(ctx context.Context, tx DBTX, table string, issue *types.Issue) error {
+	return executeIssueInsert(ctx, tx, table, issue, "")
+}
+
+//nolint:gosec // G201: table is a hardcoded constant ("issues" or "wisps")
+func executeIssueInsert(ctx context.Context, tx DBTX, table string, issue *types.Issue, suffix string) error {
 	_, err := tx.ExecContext(ctx, fmt.Sprintf(`
 		INSERT INTO %s (
 			id, content_hash, title, description, design, acceptance_criteria, notes,
@@ -105,33 +123,35 @@ func insertIssueIntoTable(ctx context.Context, tx *sql.Tx, table string, issue *
 			created_at, created_by, owner, updated_at, started_at, closed_at, external_ref, spec_id,
 			compaction_level, compacted_at, compacted_at_commit, original_size,
 			sender, ephemeral, no_history, wisp_type, pinned, is_template,
-			mol_type, work_type, source_system, source_repo, close_reason,
+			mol_type, work_type, source_system, source_repo, close_reason, closed_by_session,
 			event_kind, actor, target, payload,
 			await_type, await_id, timeout_ns, waiters,
-			due_at, defer_until, metadata
+			due_at, defer_until, metadata,
+			row_lock, storage_class
 		) VALUES (
 			?, ?, ?, ?, ?, ?, ?,
-			?, ?, ?, ?, ?,
+			?, ?, ?, ?, ?, ?,
 			?, ?, ?, ?, ?, ?, ?, ?,
 			?, ?, ?, ?,
 			?, ?, ?, ?, ?, ?,
 			?, ?, ?, ?, ?,
 			?, ?, ?, ?,
 			?, ?, ?, ?,
-			?, ?, ?
+			?, ?, ?,
+			?, ?
 		)
-		ON DUPLICATE KEY UPDATE
-			%s
-	`, table, issueUpsertAssignments(rejectStaleUpdate)),
+		%s
+	`, table, suffix),
 		issue.ID, issue.ContentHash, issue.Title, issue.Description, issue.Design, issue.AcceptanceCriteria, issue.Notes,
 		issue.Status, issue.Priority, issue.IssueType, NullString(issue.Assignee), NullInt(issue.EstimatedMinutes),
 		issue.CreatedAt, issue.CreatedBy, issue.Owner, issue.UpdatedAt, issue.StartedAt, issue.ClosedAt, NullStringPtr(issue.ExternalRef), issue.SpecID,
 		issue.CompactionLevel, issue.CompactedAt, NullStringPtr(issue.CompactedAtCommit), NullIntVal(issue.OriginalSize),
 		issue.Sender, issue.Ephemeral, issue.NoHistory, issue.WispType, issue.Pinned, issue.IsTemplate,
-		issue.MolType, issue.WorkType, issue.SourceSystem, issue.SourceRepo, issue.CloseReason,
+		issue.MolType, issue.WorkType, issue.SourceSystem, issue.SourceRepo, issue.CloseReason, issue.ClosedBySession,
 		issue.EventKind, issue.Actor, issue.Target, issue.Payload,
 		issue.AwaitType, issue.AwaitID, issue.Timeout.Nanoseconds(), FormatJSONStringArray(issue.Waiters),
 		issue.DueAt, issue.DeferUntil, JSONMetadata(issue.Metadata),
+		freshRowLock(), NullString(string(issue.StorageClass.Normalize())),
 	)
 	if err != nil {
 		return fmt.Errorf("insert issue into %s: %w", table, err)
@@ -140,24 +160,21 @@ func insertIssueIntoTable(ctx context.Context, tx *sql.Tx, table string, issue *
 }
 
 // RecordEventInTable records an event in the specified events table.
-//
-//nolint:gosec // G201: table is a hardcoded constant ("events" or "wisp_events")
 func RecordEventInTable(ctx context.Context, tx DBTX, table, issueID string, eventType types.EventType, actor, newValue string) error {
-	_, err := tx.ExecContext(ctx, fmt.Sprintf(`
-		INSERT INTO %s (id, issue_id, event_type, actor, old_value, new_value)
-		VALUES (?, ?, ?, ?, ?, ?)
-	`, table), NewEventID(), issueID, eventType, actor, "", newValue)
-	if err != nil {
-		return fmt.Errorf("record event in %s: %w", table, err)
-	}
-	return nil
+	return InsertDerivedEvent(ctx, tx, table, AuxEvent{
+		IssueID:   issueID,
+		EventType: eventType,
+		Actor:     actor,
+		OldValue:  str(""),
+		NewValue:  str(newValue),
+	})
 }
 
 // GenerateIssueIDInTable generates a unique ID, checking for collisions
 // in the specified table. Supports counter mode for non-ephemeral issues.
 //
 //nolint:gosec // G201: table is a hardcoded constant
-func GenerateIssueIDInTable(ctx context.Context, tx *sql.Tx, table, prefix string, issue *types.Issue, actor string) (string, error) {
+func GenerateIssueIDInTable(ctx context.Context, tx DBTX, table, prefix string, issue *types.Issue, actor string) (string, error) {
 	// Counter mode only applies to the issues table (not wisps).
 	if table == "issues" {
 		counterMode, err := IsCounterModeTx(ctx, tx)
@@ -200,7 +217,7 @@ func GenerateIssueIDInTable(ctx context.Context, tx *sql.Tx, table, prefix strin
 }
 
 // IsCounterModeTx checks whether issue_id_mode=counter is configured.
-func IsCounterModeTx(ctx context.Context, tx *sql.Tx) (bool, error) {
+func IsCounterModeTx(ctx context.Context, tx DBTX) (bool, error) {
 	var idMode string
 	err := tx.QueryRowContext(ctx, "SELECT value FROM config WHERE `key` = ?", "issue_id_mode").Scan(&idMode)
 	if err != nil && err != sql.ErrNoRows {
@@ -210,7 +227,7 @@ func IsCounterModeTx(ctx context.Context, tx *sql.Tx) (bool, error) {
 }
 
 // NextCounterIDTx atomically increments and returns the next sequential issue ID.
-func NextCounterIDTx(ctx context.Context, tx *sql.Tx, prefix string) (string, error) {
+func NextCounterIDTx(ctx context.Context, tx DBTX, prefix string) (string, error) {
 	res, err := tx.ExecContext(ctx, "UPDATE issue_counter SET last_id = last_id + 1 WHERE prefix = ?", prefix)
 	if err != nil {
 		return "", fmt.Errorf("failed to increment issue counter for prefix %q: %w", prefix, err)
@@ -251,7 +268,7 @@ func NextCounterIDTx(ctx context.Context, tx *sql.Tx, prefix string) (string, er
 
 // SeedCounterFromExistingIssuesTx scans existing issues to find the highest numeric suffix
 // for the given prefix, then seeds the issue_counter table if no row exists yet.
-func SeedCounterFromExistingIssuesTx(ctx context.Context, tx *sql.Tx, prefix string) error {
+func SeedCounterFromExistingIssuesTx(ctx context.Context, tx DBTX, prefix string) error {
 	var existing int
 	err := tx.QueryRowContext(ctx, "SELECT last_id FROM issue_counter WHERE prefix = ?", prefix).Scan(&existing)
 	if err == nil {
@@ -299,7 +316,7 @@ func SeedCounterFromExistingIssuesTx(ctx context.Context, tx *sql.Tx, prefix str
 // GetAdaptiveIDLengthTx returns the appropriate hash length based on database size.
 //
 //nolint:gosec // G201: table is a hardcoded constant
-func GetAdaptiveIDLengthTx(ctx context.Context, tx *sql.Tx, table, prefix string) (int, error) {
+func GetAdaptiveIDLengthTx(ctx context.Context, tx DBTX, table, prefix string) (int, error) {
 	var count int
 	err := tx.QueryRowContext(ctx, fmt.Sprintf(`
 		SELECT COUNT(*)
@@ -332,7 +349,7 @@ func DefaultAdaptiveConfig() AdaptiveIDConfig {
 }
 
 // GetAdaptiveConfigTx reads adaptive ID config from the database.
-func GetAdaptiveConfigTx(ctx context.Context, tx *sql.Tx) AdaptiveIDConfig {
+func GetAdaptiveConfigTx(ctx context.Context, tx DBTX) AdaptiveIDConfig {
 	cfg := DefaultAdaptiveConfig()
 
 	var probStr string
@@ -378,34 +395,12 @@ func ComputeAdaptiveLength(numIssues int, cfg AdaptiveIDConfig) int {
 }
 
 // GetCustomStatusesTx reads custom statuses from config within a transaction.
-func GetCustomStatusesTx(ctx context.Context, tx *sql.Tx) ([]string, error) {
+func GetCustomStatusesTx(ctx context.Context, tx DBTX) ([]string, error) {
 	detailed, err := ResolveCustomStatusesDetailedInTx(ctx, tx)
 	if err != nil {
 		return nil, err
 	}
 	return types.CustomStatusNames(detailed), nil
-}
-
-// GetCustomTypesTx reads custom types from config within a transaction.
-func GetCustomTypesTx(ctx context.Context, tx *sql.Tx) ([]string, error) {
-	var raw string
-	err := tx.QueryRowContext(ctx, "SELECT value FROM config WHERE `key` = ?", "types.custom").Scan(&raw)
-	if err == sql.ErrNoRows || raw == "" {
-		return nil, nil
-	}
-	if err != nil {
-		return nil, fmt.Errorf("failed to read custom_types config: %w", err)
-	}
-	var customTypes []string
-	if err := json.Unmarshal([]byte(raw), &customTypes); err != nil {
-		for _, s := range strings.Split(raw, ",") {
-			s = strings.TrimSpace(s)
-			if s != "" {
-				customTypes = append(customTypes, s)
-			}
-		}
-	}
-	return customTypes, nil
 }
 
 // ValidateMetadataIfConfigured checks metadata against the schema from config.
@@ -521,7 +516,7 @@ func IsDoltNothingToCommit(err error) bool {
 }
 
 // ReadConfigPrefix reads and normalizes issue_prefix from the config table.
-func ReadConfigPrefix(ctx context.Context, tx *sql.Tx) (string, error) {
+func ReadConfigPrefix(ctx context.Context, tx DBTX) (string, error) {
 	var configPrefix string
 	err := tx.QueryRowContext(ctx, "SELECT value FROM config WHERE `key` = ?", "issue_prefix").Scan(&configPrefix)
 	if err == sql.ErrNoRows || configPrefix == "" {

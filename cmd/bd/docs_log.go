@@ -18,18 +18,18 @@ var docsLogCmd = &cobra.Command{
 	Use:   "log",
 	Short: "Render closed issues since a date from Dolt (regeneration-on-demand)",
 	Args:  cobra.NoArgs,
-	Run: func(cmd *cobra.Command, args []string) {
+	RunE: func(cmd *cobra.Command, args []string) error {
 		since, _ := cmd.Flags().GetString("since")
 		if since == "" {
-			FatalErrorRespectJSON("--since is required (RFC3339 or YYYY-MM-DD)")
+			return HandleErrorRespectJSON("--since is required (RFC3339 or YYYY-MM-DD)")
 		}
 		sinceTime, err := timeparsing.ParseRelativeTime(since, time.Now())
 		if err != nil {
-			FatalErrorRespectJSON("parsing --since: %v", err)
+			return HandleErrorRespectJSON("parsing --since: %v", err)
 		}
 		repoRoot := findRepoRootForArch()
 		if repoRoot == "" {
-			FatalErrorRespectJSON("not in a git repository")
+			return HandleErrorRespectJSON("not in a git repository")
 		}
 		write, _ := cmd.Flags().GetBool("write")
 
@@ -39,7 +39,7 @@ var docsLogCmd = &cobra.Command{
 			ClosedAfter: &sinceTime,
 		})
 		if err != nil {
-			FatalErrorRespectJSON("querying closed issues: %v", err)
+			return HandleErrorRespectJSON("querying closed issues: %v", err)
 		}
 
 		docsDir := docsDirName()
@@ -55,6 +55,7 @@ var docsLogCmd = &cobra.Command{
 			}
 		}
 		fmt.Print(strings.Join(rendered, "\n---\n"))
+		return nil
 	},
 }
 

@@ -19,12 +19,13 @@ var docsStatusCmd = &cobra.Command{
 	Use:   "status",
 	Short: "Show bd docs state: opt-in, dirty count, inbox size, wiki staleness",
 	Args:  cobra.NoArgs,
-	Run: func(cmd *cobra.Command, args []string) {
+	RunE: func(cmd *cobra.Command, args []string) error {
 		repoRoot := findRepoRootForArch()
 		if repoRoot == "" {
-			FatalErrorRespectJSON("not in a git repository")
+			return HandleErrorRespectJSON("not in a git repository")
 		}
 		printDocsStatus(repoRoot, docsDirName())
+		return nil
 	},
 }
 

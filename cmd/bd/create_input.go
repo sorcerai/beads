@@ -13,6 +13,7 @@ import (
 	"github.com/steveyegge/beads/internal/timeparsing"
 	"github.com/steveyegge/beads/internal/types"
 	"github.com/steveyegge/beads/internal/ui"
+	"github.com/steveyegge/beads/internal/utils"
 	"github.com/steveyegge/beads/internal/validation"
 )
 
@@ -38,6 +39,7 @@ type createInput struct {
 	deps               []string
 	waitsFor           string
 	waitsForGate       string
+	waitsForGateSet    bool // true when --waits-for-gate was explicitly passed (not relying on default)
 	silent             bool
 	dryRun             bool
 	force              bool
@@ -61,6 +63,24 @@ type createInput struct {
 	owner              string
 	jsonOutput         bool
 	validationMode     string
+}
+
+// graphApplyOptions projects the plan-wide CLI flags into the options every
+// graph validation/materialization helper takes.
+func (in createInput) graphApplyOptions() GraphApplyOptions {
+	return GraphApplyOptions{Ephemeral: in.ephemeral, NoHistory: in.noHistory, Force: in.force}
+}
+
+// graphApplyOptionsFromFlags is the embedded-path projection of the plan-wide
+// flags, delegating to graphApplyOptions so both transports share one
+// flags→options mapping (the embedded create path reads flags directly
+// rather than through gatherCreateInput).
+func graphApplyOptionsFromFlags(cmd *cobra.Command) GraphApplyOptions {
+	var in createInput
+	in.ephemeral, _ = cmd.Flags().GetBool("ephemeral")
+	in.noHistory, _ = cmd.Flags().GetBool("no-history")
+	in.force, _ = cmd.Flags().GetBool("force")
+	return in.graphApplyOptions()
 }
 
 func gatherCreateInput(cmd *cobra.Command, args []string) (createInput, error) {
@@ -111,9 +131,12 @@ func gatherCreateInput(cmd *cobra.Command, args []string) (createInput, error) {
 	}
 	in.title = title
 
-	desc, _, err := getDescriptionFlag(cmd)
+	desc, descChanged, err := getDescriptionFlag(cmd)
 	if err != nil {
 		return in, err
+	}
+	if err := validateDescriptionUpdate(cmd, desc, descChanged); err != nil {
+		return in, HandleError("%v", err)
 	}
 	in.description = desc
 	skills, _ := cmd.Flags().GetString("skills")
@@ -164,6 +187,7 @@ func gatherCreateInput(cmd *cobra.Command, args []string) (createInput, error) {
 	in.parentID, _ = cmd.Flags().GetString("parent")
 	in.waitsFor, _ = cmd.Flags().GetString("waits-for")
 	in.waitsForGate, _ = cmd.Flags().GetString("waits-for-gate")
+	in.waitsForGateSet = cmd.Flags().Changed("waits-for-gate")
 
 	if in.explicitID != "" && in.parentID != "" {
 		return in, HandleError("cannot specify both --id and --parent flags")
@@ -174,6 +198,12 @@ func gatherCreateInput(cmd *cobra.Command, args []string) (createInput, error) {
 	if len(labelAlias) > 0 {
 		in.labels = append(in.labels, labelAlias...)
 	}
+	// Normalize after merging the alias so dedupe spans both flags. Read paths
+	// (list, search, ready, orphans) already do this; without it here, `--labels
+	// 'a, b'` stores " b" with pflag's leading space and can never match its own
+	// filter.
+	in.labels = utils.NormalizeLabels(in.labels)
+	warnLabelsContainingWhitespace(in.labels)
 	in.deps, _ = cmd.Flags().GetStringSlice("deps")
 
 	in.repoOverride, _ = cmd.Flags().GetString("repo")
@@ -182,14 +212,14 @@ func gatherCreateInput(cmd *cobra.Command, args []string) (createInput, error) {
 	if molTypeStr, _ := cmd.Flags().GetString("mol-type"); molTypeStr != "" {
 		mt := types.MolType(molTypeStr)
 		if !mt.IsValid() {
-			return in, HandleError("invalid mol-type %q (must be swarm, patrol, or work)", molTypeStr)
+			return in, HandleError("invalid mol-type %q (must be %s)", molTypeStr, types.ValidMolTypeNames())
 		}
 		in.molType = mt
 	}
 	if wispTypeStr, _ := cmd.Flags().GetString("wisp-type"); wispTypeStr != "" {
 		wt := types.WispType(wispTypeStr)
 		if !wt.IsValid() {
-			return in, HandleError("invalid wisp-type %q (must be heartbeat, ping, patrol, gc_report, recovery, error, or escalation)", wispTypeStr)
+			return in, HandleError("invalid wisp-type %q (must be %s)", wispTypeStr, types.ValidWispTypeNames())
 		}
 		in.wispType = wt
 	}
@@ -217,7 +247,7 @@ func gatherCreateInput(cmd *cobra.Command, args []string) (createInput, error) {
 		}
 		if t.Before(time.Now()) && !in.silent && !debug.IsQuiet() {
 			fmt.Fprintf(os.Stderr, "%s Defer date %q is in the past. Issue will appear in bd ready immediately.\n",
-				ui.RenderWarn("!"), t.Format("2006-01-02 15:04"))
+				ui.RenderWarn("!"), t.Local().Format("2006-01-02 15:04"))
 			fmt.Fprintf(os.Stderr, "  Did you mean a future date? Use --defer=+1h or --defer=tomorrow\n")
 		}
 		in.deferUntil = &t
@@ -273,10 +303,11 @@ var singleIssueOnlyFlags = []string{
 	"status",
 	"description", "body", "message", "body-file", "description-file", "stdin",
 	"design", "design-file", "acceptance", "notes", "append-notes",
+	"allow-empty-description",
 	"labels", "label", "skills", "context",
 	"event-category", "event-actor", "event-target", "event-payload",
 	"due", "defer",
-	"metadata", "estimate", "force", "wisp-type",
+	"metadata", "estimate", "wisp-type",
 }
 
 func rejectSingleIssueFlagsForMarkdown(cmd *cobra.Command) error {
@@ -284,6 +315,12 @@ func rejectSingleIssueFlagsForMarkdown(cmd *cobra.Command) error {
 		if cmd.Flags().Changed(name) {
 			return HandleError("--%s is not valid with --file (markdown templates supply per-issue fields)", name)
 		}
+	}
+	// --force is plan-wide for --graph (foreign-prefix explicit IDs) but the
+	// markdown path never consults it, so reject it here rather than accept
+	// and silently ignore.
+	if cmd.Flags().Changed("force") {
+		return HandleError("--force is not valid with --file (markdown templates supply per-issue fields)")
 	}
 	return nil
 }
@@ -295,7 +332,7 @@ func rejectSingleIssueFlagsForGraph(cmd *cobra.Command) error {
 		}
 	}
 	if cmd.Flags().Changed("mol-type") {
-		return HandleError("--mol-type is not valid with --graph (graph plans don't carry molecule semantics)")
+		return HandleError("--mol-type is not valid with --graph (set mol_type per node in the plan instead)")
 	}
 	return nil
 }
@@ -305,20 +342,26 @@ func resolveTitle(args []string, titleFlag, markdownFile, graphFile string) (str
 		return "", nil
 	}
 
+	var title string
 	switch {
 	case len(args) > 0 && titleFlag != "":
 		if args[0] != titleFlag {
 			return "", HandleError("cannot specify different titles as both positional argument and --title flag\n  Positional: %q\n  --title:    %q", args[0], titleFlag)
 		}
-		return args[0], nil
+		title = args[0]
 	case len(args) > 0:
 		if strings.HasPrefix(args[0], "-") {
 			return "", HandleError("title %q looks like a flag (starts with '-').\n  Run 'bd create --help' for available options.\n  To use this title anyway, pass it explicitly: bd create --title=%q", args[0], args[0])
 		}
-		return args[0], nil
+		title = args[0]
 	case titleFlag != "":
-		return titleFlag, nil
+		title = titleFlag
 	default:
 		return "", HandleError("title required (or use --file to create from markdown)")
 	}
+
+	if strings.TrimSpace(title) == "" {
+		return "", HandleError("title cannot be empty or whitespace-only")
+	}
+	return title, nil
 }

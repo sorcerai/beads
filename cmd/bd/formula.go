@@ -41,7 +41,7 @@ Discovering primitives:
   bd formula schema loop            # show LoopSpec fields, types, and tags
   bd formula primitives gate        # alias; same handler as 'schema'
   examples/formulas/primitives/     # curated, smoke-tested wired fixtures
-  website/docs/workflows/formulas.md  # narrative reference`,
+  docs/workflows/formulas.md          # narrative reference`,
 }
 
 // formulaListCmd lists all available formulas.
@@ -418,10 +418,7 @@ func truncateDescription(desc string, maxLen int) string {
 	if idx := strings.Index(desc, "\n"); idx >= 0 {
 		desc = desc[:idx]
 	}
-	if len(desc) > maxLen {
-		return desc[:maxLen-3] + "..."
-	}
-	return desc
+	return truncate(desc, maxLen)
 }
 
 // getTypeIcon returns an icon for the formula type.

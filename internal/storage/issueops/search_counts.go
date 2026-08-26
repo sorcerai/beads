@@ -23,11 +23,11 @@ func SearchIssuesWithCountsInTx(ctx context.Context, tx *sql.Tx, query string, f
 		}
 		if !empty && wispDepsExist {
 			wisps, err := runFilterSearchQueryInTx(ctx, tx, query, filter, WispsFilterTables, true)
-			if err != nil && !isTableNotExistError(err) {
+			if err != nil && !missingOptionalWispTable(err) {
 				return nil, err
 			}
 			if len(wisps) > 0 {
-				return finishSearchIssuesWithCounts(wisps, filter), nil
+				return finishSearchIssuesWithCounts(wisps, filter)
 			}
 		}
 		// Fall through: the wisps tier is missing/empty or matched no rows.
@@ -40,7 +40,7 @@ func SearchIssuesWithCountsInTx(ctx context.Context, tx *sql.Tx, query string, f
 		if err != nil {
 			return nil, err
 		}
-		return finishSearchIssuesWithCounts(out, filter), nil
+		return finishSearchIssuesWithCounts(out, filter)
 	}
 
 	out, err := runFilterSearchQueryInTx(ctx, tx, query, filter, IssuesFilterTables, wispDepsExist)
@@ -50,7 +50,7 @@ func SearchIssuesWithCountsInTx(ctx context.Context, tx *sql.Tx, query string, f
 
 	// Skip wisps merge entirely when caller opts out (Q2: perf escape hatch).
 	if filter.SkipWisps {
-		return finishSearchIssuesWithCounts(out, filter), nil
+		return finishSearchIssuesWithCounts(out, filter)
 	}
 
 	empty, probeErr := wispsTableEmptyOrMissingInTx(ctx, tx)
@@ -58,21 +58,21 @@ func SearchIssuesWithCountsInTx(ctx context.Context, tx *sql.Tx, query string, f
 		return nil, fmt.Errorf("search issues with counts: wisp probe: %w", probeErr)
 	}
 	if empty {
-		return finishSearchIssuesWithCounts(out, filter), nil
+		return finishSearchIssuesWithCounts(out, filter)
 	}
 	if !wispDepsExist {
-		return finishSearchIssuesWithCounts(out, filter), nil
+		return finishSearchIssuesWithCounts(out, filter)
 	}
 
 	wisps, err := runFilterSearchQueryInTx(ctx, tx, query, filter, WispsFilterTables, true)
 	if err != nil {
-		if isTableNotExistError(err) {
-			return finishSearchIssuesWithCounts(out, filter), nil
+		if missingOptionalWispTable(err) {
+			return finishSearchIssuesWithCounts(out, filter)
 		}
 		return nil, err
 	}
 	if len(wisps) == 0 {
-		return finishSearchIssuesWithCounts(out, filter), nil
+		return finishSearchIssuesWithCounts(out, filter)
 	}
 
 	// Prefer the canonical wisp record when an ID exists in both tables (be-iabdi).
@@ -93,7 +93,14 @@ func SearchIssuesWithCountsInTx(ctx context.Context, tx *sql.Tx, query string, f
 		}
 	}
 	kept = append(kept, wisps...)
-	return finishSearchIssuesWithCounts(kept, filter), nil
+	return finishSearchIssuesWithCounts(kept, filter)
+}
+
+// hydrationFor reads the two hydration opt-outs off a search filter. It is one
+// function rather than two field reads at each call site so a path cannot pick
+// up one of the pair and quietly drop the other.
+func hydrationFor(filter types.IssueFilter) sqlbuild.CountsHydration {
+	return sqlbuild.CountsHydration{SkipLabels: filter.SkipLabels, SkipCounts: filter.SkipCounts, Lite: filter.Lite}
 }
 
 func runFilterSearchQueryInTx(ctx context.Context, tx *sql.Tx, query string, filter types.IssueFilter, tables FilterTables, includeWispReverseDeps bool) ([]*types.IssueWithCounts, error) {
@@ -105,28 +112,58 @@ func runFilterSearchQueryInTx(ctx context.Context, tx *sql.Tx, query string, fil
 	if len(whereClauses) > 0 {
 		whereSQL = "WHERE " + joinAnd(whereClauses)
 	}
+	// A PAGE BOUND IS ONLY EVER PUSHED UNDER AN ORDER THE QUERY CAN EXPRESS —
+	// the same rule searchTableInTxT applies on the plain seam. sqlbuild.OrderBy
+	// renders no ORDER BY for a Go-side sort key ("id"), and a LIMIT with no
+	// ORDER BY returns n rows, not the first n; this is the seam
+	// bd query '<expr>' --sort id reaches on the store-shaped backends
+	// (storequerier → SearchIssuesWithCounts), where BuildQueryPlan always
+	// pushes a bound. So under a Go-side sort the query scans the complete
+	// matching set and the same eff bound is applied below, after the order
+	// exists — leaving every downstream count (the merge, the terminal
+	// finishSearchIssuesWithCounts trim-then-cap) exactly what the SQL LIMIT
+	// used to hand it.
+	goSideSort := sqlbuild.IsGoSideSort(filter.SortBy)
+	eff := EffectiveSearchLimit(filter.Limit, filter.MaxRows)
 	limitSQL := ""
-	if filter.Limit > 0 {
-		limitSQL = fmt.Sprintf("LIMIT %d", filter.Limit)
+	if eff > 0 && !goSideSort {
+		limitSQL = fmt.Sprintf("LIMIT %d", eff)
 	}
 	orderBy := sqlbuild.OrderBy(filter.SortBy, filter.SortDesc, "i")
-	return runSearchQueryInTx(ctx, tx, tables, whereSQL, orderBy, limitSQL, args, includeWispReverseDeps, filter.SkipLabels)
+	out, err := runSearchQueryInTx(ctx, tx, tables, whereSQL, orderBy, limitSQL, args, includeWispReverseDeps, hydrationFor(filter))
+	if err != nil {
+		return nil, err
+	}
+	if goSideSort {
+		// scanCountsRowsInTx drops nil-Issue rows, so the accessor is safe.
+		out = goSideSortAndTrim(out, func(iwc *types.IssueWithCounts) string { return iwc.Issue.ID }, filter.SortDesc, eff)
+	}
+	return out, nil
 }
 
 //nolint:gosec // G201: SQL fragments are caller-built from hardcoded shapes
-func runSearchQueryInTx(ctx context.Context, tx *sql.Tx, tables FilterTables, whereSQL, orderBySQL, limitSQL string, args []interface{}, includeWispReverseDeps bool, skipLabels bool) ([]*types.IssueWithCounts, error) {
-	searchSQL := sqlbuild.SearchCountsSQL(tables, whereSQL, orderBySQL, limitSQL, includeWispReverseDeps, skipLabels)
+func runSearchQueryInTx(ctx context.Context, tx *sql.Tx, tables FilterTables, whereSQL, orderBySQL, limitSQL string, args []interface{}, includeWispReverseDeps bool, hyd sqlbuild.CountsHydration) ([]*types.IssueWithCounts, error) {
+	searchSQL, _ := sqlbuild.SearchCountsSQL(tables, nil, whereSQL, orderBySQL, limitSQL, includeWispReverseDeps, hyd)
+	return scanCountsRowsInTx(ctx, tx, tables.Main, searchSQL, args, hyd)
+}
 
-	rows, err := tx.QueryContext(ctx, searchSQL, args...)
+// scanCountsRowsInTx runs a prebuilt counts mega-query and hydrates each row
+// through ScanReadyWorkRowWithCounts, deduping by issue ID. It is the single
+// scan/dedupe loop shared by the predicate-form search path and the by-IDs
+// ready-counts path.
+//
+//nolint:gosec // G201: query is builder-produced; user input rides ? placeholders.
+func scanCountsRowsInTx(ctx context.Context, tx *sql.Tx, mainTable, query string, args []interface{}, hyd sqlbuild.CountsHydration) ([]*types.IssueWithCounts, error) {
+	rows, err := tx.QueryContext(ctx, query, args...)
 	if err != nil {
-		return nil, fmt.Errorf("search count %s: %w", tables.Main, err)
+		return nil, fmt.Errorf("search count %s: %w", mainTable, err)
 	}
 	defer func() { _ = rows.Close() }()
 
 	var out []*types.IssueWithCounts
 	seen := make(map[string]bool)
 	for rows.Next() {
-		iwc, scanErr := ScanReadyWorkRowWithCounts(rows)
+		iwc, scanErr := ScanReadyWorkRowWithCounts(rows, hyd)
 		if scanErr != nil {
 			return nil, scanErr
 		}
@@ -140,17 +177,42 @@ func runSearchQueryInTx(ctx context.Context, tx *sql.Tx, tables FilterTables, wh
 		out = append(out, iwc)
 	}
 	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("search count %s: rows: %w", tables.Main, err)
+		return nil, fmt.Errorf("search count %s: rows: %w", mainTable, err)
 	}
 	return out, nil
 }
 
-func finishSearchIssuesWithCounts(items []*types.IssueWithCounts, filter types.IssueFilter) []*types.IssueWithCounts {
+// finishSearchIssuesWithCounts is the single terminal hook every
+// SearchIssuesWithCountsInTx exit path routes through: it sorts the merged
+// result, applies the caller-facing Limit trim, and only then enforces the
+// defensive MaxRows cap (be-x42v) on the delivered count — mirroring
+// searchInTx's trimToSearchLimit-before-EnforceMaxRowsCap ordering and
+// finishReadyWorkWithCounts in ready_work_counts.go.
+//
+// Trim-before-cap matters for the merged (issues+wisps) case:
+// runFilterSearchQueryInTx sizes each leg's SQL LIMIT independently via
+// EffectiveSearchLimit(filter.Limit, filter.MaxRows), so the merged
+// pre-trim slice can hold up to ~2x that per-leg bound — e.g. Limit=2,
+// MaxRows=5, 3 rows in each table merges to 6, which would trip MaxRows
+// even though the page actually handed back to the caller (trimmed to
+// Limit=2) is well within the cap. Checking the cap against the delivered
+// count instead avoids that false positive.
+//
+// This does not weaken cap enforcement for a single-source result: a lone
+// query's LIMIT is already bounded to at most max(Limit, MaxRows+1), so its
+// result never exceeds Limit when Limit>0 and the trim is a no-op there —
+// only the two-source merge can produce more rows than Limit pre-trim, and
+// a genuine overage (Limit=0, or Limit>MaxRows overage that survives the
+// trim) still fires.
+func finishSearchIssuesWithCounts(items []*types.IssueWithCounts, filter types.IssueFilter) ([]*types.IssueWithCounts, error) {
 	sortSearchIssuesWithCounts(items, filter.SortBy, filter.SortDesc)
 	if filter.Limit > 0 && len(items) > filter.Limit {
-		return items[:filter.Limit]
+		items = items[:filter.Limit]
 	}
-	return items
+	if err := EnforceMaxRowsCap(len(items), filter.MaxRows, filter.MaxRowsSource); err != nil {
+		return nil, err
+	}
+	return items, nil
 }
 
 // sortSearchIssuesWithCounts must order the merged issues+wisps rows the same

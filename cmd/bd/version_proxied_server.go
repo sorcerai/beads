@@ -2,31 +2,48 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 
 	"github.com/steveyegge/beads/internal/debug"
+	"github.com/steveyegge/beads/internal/storage/uow"
+	"github.com/steveyegge/beads/issueops"
 )
 
+// proxiedVersionReconciler hands back the clone-local version markers for the
+// proxied-server provider, through the provider's OWN capability accessor —
+// the same two-step proxiedCounter performs.
+func proxiedVersionReconciler() (issueops.VersionReconciler, error) {
+	if uowProvider == nil {
+		return nil, errors.New("proxied-server UOW provider not initialized")
+	}
+	src, ok := uowProvider.(uow.VersionReconcilerSource)
+	if !ok {
+		return nil, fmt.Errorf("proxied-server provider %T does not offer the version-marker surface", uowProvider)
+	}
+	return src.VersionReconciler()
+}
+
+// reconcileVersionProxiedServer records this binary's version on the proxied
+// route, and is the twin of autoMigrateOnVersionBump's tail.
+//
+// EVERY FAILURE HERE IS SWALLOWED TO A DEBUG LINE, as
+// issueops.VersionReconciler says its callers do. This runs from
+// PersistentPreRun before every proxied command: a workspace whose markers
+// cannot be read is a workspace whose commands must still run.
 func reconcileVersionProxiedServer(ctx context.Context) {
 	if !versionUpgradeDetected || uowProvider == nil {
 		return
 	}
 
-	uw, err := uowProvider.NewUOW(ctx)
-	if err != nil {
-		debug.Logf("reconcile-version: open uow: %v", err)
-		return
-	}
-	defer uw.Close(ctx)
-
-	res, err := uw.ConfigUseCase().ReconcileVersion(ctx, Version)
+	reconciler, err := proxiedVersionReconciler()
 	if err != nil {
 		debug.Logf("reconcile-version: %v", err)
 		return
 	}
-
-	if err := uw.Commit(ctx, fmt.Sprintf("bd: reconcile version -> %s", res.Current)); err != nil && !isDoltNothingToCommit(err) {
-		debug.Logf("reconcile-version: commit: %v", err)
+	res, err := reconciler.ReconcileVersion(ctx, issueops.VersionReconcileRequest{CLIVersion: Version})
+	if err != nil {
+		debug.Logf("reconcile-version: %v", err)
 		return
 	}
 

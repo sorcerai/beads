@@ -45,14 +45,14 @@ Models (via agy): --model "Gemini 3.1 Pro (High)" (default, longest context for
 whole-graph synthesis), with --backup-model "Claude Opus 4.6 (Thinking)" used
 automatically if the primary errors/times out. Run 'agy models' to see options.`,
 	Args: cobra.NoArgs,
-	Run: func(cmd *cobra.Command, args []string) {
+	RunE: func(cmd *cobra.Command, args []string) error {
 		model, _ := cmd.Flags().GetString("model")
 		backupModel, _ := cmd.Flags().GetString("backup-model")
 		out, _ := cmd.Flags().GetString("out")
 
 		repoRoot := findRepoRootForArch()
 		if repoRoot == "" {
-			FatalErrorRespectJSON("not in a git repository")
+			return HandleErrorRespectJSON("not in a git repository")
 		}
 
 		if model == "" {
@@ -69,17 +69,17 @@ automatically if the primary errors/times out. Run 'agy models' to see options.`
 		fmt.Printf("%s Stage 1: extracting dependency graph (scout)...\n", ui.RenderAccent("◆"))
 		graph, lang, err := scoutDependencyGraph(repoRoot)
 		if err != nil {
-			FatalErrorRespectJSON("scout failed: %v", err)
+			return HandleErrorRespectJSON("scout failed: %v", err)
 		}
 		if graph == "" {
-			FatalErrorRespectJSON("could not detect a supported project (Rust/Go/Python) — no graph to synthesize from. Fill ARCH.md by hand.")
+			return HandleErrorRespectJSON("could not detect a supported project (Rust/Go/Python) — no graph to synthesize from. Fill ARCH.md by hand.")
 		}
 		fmt.Printf("  %s language: %s\n", ui.RenderPass("✓"), lang)
 		fmt.Printf("  %s graph extracted (%d bytes)\n", ui.RenderPass("✓"), len(graph))
 
 		// --- Stage 2: frontier synthesis (via agy) ---
 		if _, err := exec.LookPath("agy"); err != nil {
-			FatalErrorRespectJSON("`agy` not found on PATH (install it, or fill ARCH.md by hand): %v", err)
+			return HandleErrorRespectJSON("`agy` not found on PATH (install it, or fill ARCH.md by hand): %v", err)
 		}
 		// NOTE: agy's --model flag is broken in --print mode (returns a static
 		// persona greeting instead of acting, for any model name). agy's DEFAULT
@@ -93,14 +93,14 @@ automatically if the primary errors/times out. Run 'agy models' to see options.`
 		prompt := buildArchDraftPrompt(graph, lang, repoRoot)
 		synthesis, err := callAgWithFallback(prompt)
 		if err != nil {
-			FatalErrorRespectJSON("synthesis failed (agy default + any backup command): %v", err)
+			return HandleErrorRespectJSON("synthesis failed (agy default + any backup command): %v", err)
 		}
 		fmt.Printf("  %s synthesis complete\n", ui.RenderPass("✓"))
 
 		// --- Write candidate (never ARCH.md) ---
 		candidate := wrapDraftCandidate(synthesis, lang)
 		if err := os.WriteFile(out, []byte(candidate), 0o644); err != nil {
-			FatalErrorRespectJSON("writing %s: %v", out, err)
+			return HandleErrorRespectJSON("writing %s: %v", out, err)
 		}
 
 		fmt.Printf("\n%s Candidate written to %s\n", ui.RenderPass("✓"), ui.RenderAccent(out))
@@ -109,6 +109,7 @@ automatically if the primary errors/times out. Run 'agy models' to see options.`
 		fmt.Printf("  %s\n\n", ui.RenderAccent(fmt.Sprintf("mv %s ARCH.md", out)))
 		fmt.Printf("Then (optional) make the structural ones machine-checkable:\n")
 		fmt.Printf("  %s\n", ui.RenderAccent("write scripts/arch-check.sh  (see reverie for a reference)"))
+		return nil
 	},
 }
 
