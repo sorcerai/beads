@@ -53,12 +53,14 @@ The scaffolded ARCH.md is a STRUCTURE, not content: it encodes the philosophy
 (negatives > positives; a checkable negative beats a readable positive) and
 leaves the actual invariants for the human/agent to fill in from the real
 architecture. Filling it in is the work; this just makes the empty form visible.`,
-	Args: cobra.NoArgs,
-	Run: func(cmd *cobra.Command, args []string) {
+	Args:          cobra.NoArgs,
+	SilenceUsage:  true,
+	SilenceErrors: true,
+	RunE: func(cmd *cobra.Command, args []string) error {
 		force, _ := cmd.Flags().GetBool("force")
 		repoRoot := findRepoRootForArch()
 		if repoRoot == "" {
-			FatalErrorRespectJSON("not in a git repository (ARCH.md needs a repo root)")
+			return HandleErrorRespectJSON("not in a git repository (ARCH.md needs a repo root)")
 		}
 
 		createdArch := false
@@ -71,7 +73,7 @@ architecture. Filling it in is the work; this just makes the empty form visible.
 			}
 		} else {
 			if err := os.WriteFile(archPath, []byte(archMdTemplate), 0o644); err != nil {
-				FatalErrorRespectJSON("writing ARCH.md: %v", err)
+				return HandleErrorRespectJSON("writing ARCH.md: %v", err)
 			}
 			createdArch = true
 			fmt.Printf("%s Created ARCH.md (construction blueprint stub)\n", ui.RenderPass("✓"))
@@ -90,6 +92,7 @@ architecture. Filling it in is the work; this just makes the empty form visible.
 			fmt.Printf("name what must NOT happen, plus a 2-line positive anchor of what the system is.\n")
 			fmt.Printf("Then add a deterministic check (scripts/arch-check.sh) for the structural ones.\n")
 		}
+		return nil
 	},
 }
 
@@ -117,13 +120,15 @@ a crash the baseline cannot grandfather, so it fails the gate regardless.
 Staleness: backtick-quoted paths/packages/identifiers in ARCH.md are verified
 to still exist in the repo. Dangling references are ADVISORY (they print in
 their own section but do not fail the gate) unless --strict is set.`,
-	Args: cobra.NoArgs,
-	Run: func(cmd *cobra.Command, args []string) {
+	Args:          cobra.NoArgs,
+	SilenceUsage:  true,
+	SilenceErrors: true,
+	RunE: func(cmd *cobra.Command, args []string) error {
 		updateBaseline, _ := cmd.Flags().GetBool("update-baseline")
 		strict, _ := cmd.Flags().GetBool("strict")
 		repoRoot := findRepoRootForArch()
 		if repoRoot == "" {
-			FatalErrorRespectJSON("not in a git repository")
+			return HandleErrorRespectJSON("not in a git repository")
 		}
 
 		// --- Tier 1: the deterministic gate script ---
@@ -143,10 +148,10 @@ their own section but do not fail the gate) unless --strict is set.`,
 		gateFailed := false
 		if updateBaseline {
 			if gateCrashed(scriptErr) || (scriptErr != nil && len(current) == 0) {
-				FatalErrorRespectJSON("arch-check crashed (exit != 1) or produced no machine-readable violations — not writing a baseline: %v", scriptErr)
+				return HandleErrorRespectJSON("arch-check crashed (exit != 1) or produced no machine-readable violations — not writing a baseline: %v", scriptErr)
 			}
 			if err := writeBaseline(baselinePath, current); err != nil {
-				FatalErrorRespectJSON("writing baseline: %v", err)
+				return HandleErrorRespectJSON("writing baseline: %v", err)
 			}
 			fmt.Printf("%s Baseline updated: %s\n", ui.RenderPass("✓"), summarizeGrandfathered(len(current)))
 		} else if baseline, err := readBaseline(baselinePath); err == nil {
@@ -176,11 +181,12 @@ their own section but do not fail the gate) unless --strict is set.`,
 		}
 
 		if gateFailed {
-			FatalErrorRespectJSON("architecture gate failed (see violations above)")
+			return HandleErrorRespectJSON("architecture gate failed (see violations above)")
 		}
 		if strict && len(stale) > 0 {
-			FatalErrorRespectJSON("ARCH.md is stale (%d dangling reference(s); --strict)", len(stale))
+			return HandleErrorRespectJSON("ARCH.md is stale (%d dangling reference(s); --strict)", len(stale))
 		}
+		return nil
 	},
 }
 

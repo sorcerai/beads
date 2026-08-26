@@ -15,26 +15,28 @@ import (
 // regeneration-on-demand for history the inbox no longer holds (compacted
 // into backlog.md or already consumed by a regen).
 var docsLogCmd = &cobra.Command{
-	Use:   "log",
-	Short: "Render closed issues since a date from Dolt (regeneration-on-demand)",
-	Args:  cobra.NoArgs,
-	Run: func(cmd *cobra.Command, args []string) {
+	Use:           "log",
+	Short:         "Render closed issues since a date from Dolt (regeneration-on-demand)",
+	Args:          cobra.NoArgs,
+	SilenceUsage:  true,
+	SilenceErrors: true,
+	RunE: func(cmd *cobra.Command, args []string) error {
 		since, _ := cmd.Flags().GetString("since")
 		if since == "" {
-			FatalErrorRespectJSON("--since is required (RFC3339 or YYYY-MM-DD)")
+			return HandleErrorRespectJSON("--since is required (RFC3339 or YYYY-MM-DD)")
 		}
 		sinceTime, err := timeparsing.ParseRelativeTime(since, time.Now())
 		if err != nil {
-			FatalErrorRespectJSON("parsing --since: %v", err)
+			return HandleErrorRespectJSON("parsing --since: %v", err)
 		}
 		repoRoot := findRepoRootForArch()
 		if repoRoot == "" {
-			FatalErrorRespectJSON("not in a git repository")
+			return HandleErrorRespectJSON("not in a git repository")
 		}
 		write, _ := cmd.Flags().GetBool("write")
 		docsDir, err := validatedDocsDir(repoRoot)
 		if err != nil {
-			FatalErrorRespectJSON("bd docs log: %v", err)
+			return HandleErrorRespectJSON("bd docs log: %v", err)
 		}
 
 		statusClosed := types.StatusClosed
@@ -43,7 +45,7 @@ var docsLogCmd = &cobra.Command{
 			ClosedAfter: &sinceTime,
 		})
 		if err != nil {
-			FatalErrorRespectJSON("querying closed issues: %v", err)
+			return HandleErrorRespectJSON("querying closed issues: %v", err)
 		}
 
 		rendered := make([]string, 0, len(issues))
@@ -58,6 +60,7 @@ var docsLogCmd = &cobra.Command{
 			}
 		}
 		fmt.Print(strings.Join(rendered, "\n---\n"))
+		return nil
 	},
 }
 

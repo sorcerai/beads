@@ -724,20 +724,25 @@ func (f *proxiedConfigUseCase) GetAllConfig(context.Context) (map[string]string,
 
 type proxiedConfigUOW struct {
 	uow.UnitOfWork
-	config *proxiedConfigUseCase
+	config  *proxiedConfigUseCase
+	commits *[]string
 }
 
-func (f *proxiedConfigUOW) ConfigUseCase() domain.ConfigUseCase  { return f.config }
-func (f *proxiedConfigUOW) Commit(context.Context, string) error { return nil }
-func (f *proxiedConfigUOW) Close(context.Context)                {}
+func (f *proxiedConfigUOW) ConfigUseCase() domain.ConfigUseCase { return f.config }
+func (f *proxiedConfigUOW) Commit(_ context.Context, message string) error {
+	*f.commits = append(*f.commits, message)
+	return nil
+}
+func (f *proxiedConfigUOW) Close(context.Context) {}
 
 type proxiedConfigUOWProvider struct {
 	uow.UnitOfWorkProvider
-	config *proxiedConfigUseCase
+	config  *proxiedConfigUseCase
+	commits []string
 }
 
 func (f *proxiedConfigUOWProvider) NewUOW(context.Context) (uow.UnitOfWork, error) {
-	return &proxiedConfigUOW{config: f.config}, nil
+	return &proxiedConfigUOW{config: f.config, commits: &f.commits}, nil
 }
 
 func TestProxiedConfigSetSecretDeletesLegacyValue(t *testing.T) {
@@ -747,8 +752,12 @@ func TestProxiedConfigSetSecretDeletesLegacyValue(t *testing.T) {
 	const key = "custom.password"
 	const value = "new-yaml-secret"
 	fake := &proxiedConfigUseCase{values: map[string]string{key: "legacy-proxied-secret"}}
-	uowProvider = &proxiedConfigUOWProvider{config: fake}
+	provider := &proxiedConfigUOWProvider{config: fake}
+	uowProvider = provider
 	proxiedServerMode = true
+	oldCommandContext := cmdCtx
+	cmdCtx = nil
+	t.Cleanup(func() { cmdCtx = oldCommandContext })
 	t.Cleanup(func() {
 		uowProvider = oldProvider
 		proxiedServerMode = oldProxiedServerMode
@@ -763,6 +772,9 @@ func TestProxiedConfigSetSecretDeletesLegacyValue(t *testing.T) {
 	}
 	if got, exists := fake.values[key]; exists {
 		t.Errorf("proxied secret key %q remains in Dolt as %q", key, got)
+	}
+	if len(provider.commits) != 1 {
+		t.Errorf("proxied secret deletion committed %d times, want 1", len(provider.commits))
 	}
 	if got := config.GetStringFromDir(os.Getenv("BEADS_DIR"), key); got != value {
 		t.Errorf("proxied secret key %q config.yaml value = %q, want %q", key, got, value)

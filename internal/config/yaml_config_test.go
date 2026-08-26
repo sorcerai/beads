@@ -408,6 +408,74 @@ func TestSetYamlConfigInDir_WritesTargetConfigDespiteLocalStub(t *testing.T) {
 	}
 }
 
+func TestSetYamlConfigInDir_WritesNestedKeyToEmptyConfig(t *testing.T) {
+	beadsDir := filepath.Join(t.TempDir(), ".beads")
+	if err := os.MkdirAll(beadsDir, 0o755); err != nil {
+		t.Fatalf("failed to create beads dir: %v", err)
+	}
+	configPath := filepath.Join(beadsDir, "config.yaml")
+	if err := os.WriteFile(configPath, nil, 0o600); err != nil {
+		t.Fatalf("failed to write config.yaml: %v", err)
+	}
+
+	const remoteURL = "file:///tmp/fake-origin.git"
+	if err := SetYamlConfigInDir(beadsDir, "sync.remote", remoteURL); err != nil {
+		t.Fatalf("SetYamlConfigInDir() error = %v", err)
+	}
+
+	content, err := os.ReadFile(configPath)
+	if err != nil {
+		t.Fatalf("failed to read config.yaml: %v", err)
+	}
+	var values struct {
+		Sync struct {
+			Remote string `yaml:"remote"`
+		} `yaml:"sync"`
+	}
+	if err := yaml.Unmarshal(content, &values); err != nil {
+		t.Fatalf("updated config.yaml is invalid: %v\n%s", err, content)
+	}
+	if values.Sync.Remote != remoteURL {
+		t.Errorf("sync.remote = %q, want %q\n%s", values.Sync.Remote, remoteURL, content)
+	}
+}
+
+func TestSetYamlConfigInDir_WritesNestedKeyToCommentOnlyConfig(t *testing.T) {
+	beadsDir := filepath.Join(t.TempDir(), ".beads")
+	if err := os.MkdirAll(beadsDir, 0o755); err != nil {
+		t.Fatalf("failed to create beads dir: %v", err)
+	}
+	configPath := filepath.Join(beadsDir, "config.yaml")
+	const existingComment = "# shared configuration\n"
+	if err := os.WriteFile(configPath, []byte(existingComment), 0o600); err != nil {
+		t.Fatalf("failed to write config.yaml: %v", err)
+	}
+
+	const remoteURL = "file:///tmp/fake-origin.git"
+	if err := SetYamlConfigInDir(beadsDir, "sync.remote", remoteURL); err != nil {
+		t.Fatalf("SetYamlConfigInDir() error = %v", err)
+	}
+
+	content, err := os.ReadFile(configPath)
+	if err != nil {
+		t.Fatalf("failed to read config.yaml: %v", err)
+	}
+	if !strings.Contains(string(content), existingComment) {
+		t.Fatalf("updated config.yaml lost comment:\n%s", content)
+	}
+	var values struct {
+		Sync struct {
+			Remote string `yaml:"remote"`
+		} `yaml:"sync"`
+	}
+	if err := yaml.Unmarshal(content, &values); err != nil {
+		t.Fatalf("updated config.yaml is invalid: %v\n%s", err, content)
+	}
+	if values.Sync.Remote != remoteURL {
+		t.Errorf("sync.remote = %q, want %q\n%s", values.Sync.Remote, remoteURL, content)
+	}
+}
+
 func TestSetYamlConfigInDir_ValidatesBeforeOpeningConfig(t *testing.T) {
 	beadsDir := filepath.Join(t.TempDir(), ".beads")
 

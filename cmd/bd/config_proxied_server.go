@@ -107,6 +107,19 @@ func runConfigListProxiedServer(ctx context.Context) error {
 	return nil
 }
 
+func deleteConfigProxiedServer(ctx context.Context, key string) error {
+	if uowProvider == nil {
+		return fmt.Errorf("proxied-server UOW provider not initialized")
+	}
+
+	return uow.RunTx(ctx, uowProvider, func(ctx context.Context, uw uow.UnitOfWork) (string, error) {
+		if err := uw.ConfigUseCase().DeleteConfig(ctx, key); err != nil {
+			return "", fmt.Errorf("deleting config: %w", err)
+		}
+		return fmt.Sprintf("bd: config remove legacy secret %s", key), nil
+	})
+}
+
 func runConfigUnsetProxiedServer(ctx context.Context, key string) error {
 	if uowProvider == nil {
 		return HandleErrorRespectJSON("proxied-server UOW provider not initialized")

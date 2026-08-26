@@ -14,12 +14,77 @@ report() {
     fail=1
 }
 
+readonly FOLDED_RUN_PATTERN="^([[:space:]]*)(-[[:space:]]*)?['\"]?run['\"]?[[:space:]]*:[[:space:]]*>[0-9+-]*([[:space:]]+#.*)?$"
+readonly WORKFLOW_USES_PATTERN="^([[:space:]]*)(-[[:space:]]*)?['\"]?uses['\"]?[[:space:]]*:[[:space:]]*([^[:space:]#]+)"
+readonly DOCUMENTED_USES_PATTERN='^[[:space:]]*((>[[:space:]]*)*([-*+][[:space:]]+|[0-9]+[.)][[:space:]]+)?)?uses:[[:space:]]*([^[:space:]#]+)'
+
+check_dolt_download_command() {
+    local workflow=$1
+    local line_no=$2
+    local command=$3
+    local normalized_command
+
+    [[ "$command" =~ (curl|wget) ]] || return 0
+    normalized_command="${command//[[:space:]]/}"
+    normalized_command="${normalized_command//\'/}"
+    normalized_command="${normalized_command//\"/}"
+    if [[ "$normalized_command" == *"github.com/dolthub/dolt/releases/download/"* ]]; then
+        report "$workflow" "$line_no" "Dolt release archives must be installed through scripts/install-dolt-ci.sh"
+    fi
+}
+
 for workflow in .github/workflows/*.yml .github/workflows/*.yaml; do
     [[ -f "$workflow" ]] || continue
     line_no=0
+    dolt_download_command=""
+    dolt_download_line_no=0
+    dolt_download_continues=no
+    folded_run_command=""
+    folded_run_indent=""
+    folded_run_line_no=0
     while IFS= read -r line || [[ -n "$line" ]]; do
         line_no=$((line_no + 1))
         [[ "$line" =~ ^[[:space:]]*# ]] && continue
+
+        if [[ "$line" =~ $FOLDED_RUN_PATTERN ]]; then
+            new_folded_run_indent=$((${#BASH_REMATCH[1]} + ${#BASH_REMATCH[2]}))
+            check_dolt_download_command "$workflow" "$folded_run_line_no" "$folded_run_command"
+            folded_run_command=""
+            folded_run_indent=$new_folded_run_indent
+            folded_run_line_no=$line_no
+            continue
+        fi
+        if [[ -n "$folded_run_indent" ]]; then
+            line_indent="${line%%[^[:space:]]*}"
+            if [[ "$line" =~ ^[[:space:]]*$ || ${#line_indent} -gt $folded_run_indent ]]; then
+                folded_run_command+=" $line"
+            else
+                check_dolt_download_command "$workflow" "$folded_run_line_no" "$folded_run_command"
+                folded_run_command=""
+                folded_run_indent=""
+                folded_run_line_no=0
+            fi
+        fi
+
+        if [[ "$line" =~ (curl|wget) ]]; then
+            dolt_download_command="$line"
+            dolt_download_line_no=$line_no
+        elif [[ -n "$dolt_download_command" && ! ( "$dolt_download_continues" == yes && "$line" =~ ^[[:space:]]*$ ) ]]; then
+            dolt_download_command+=" $line"
+        fi
+        if [[ -n "$dolt_download_command" ]]; then
+            if [[ "$dolt_download_continues" == yes && "$line" =~ ^[[:space:]]*$ ]]; then
+                continue
+            fi
+            if [[ "$dolt_download_command" == *\\ ]]; then
+                dolt_download_command="${dolt_download_command%\\} "
+                dolt_download_continues=yes
+                continue
+            fi
+            check_dolt_download_command "$workflow" "$dolt_download_line_no" "$dolt_download_command"
+            dolt_download_command=""
+            dolt_download_continues=no
+        fi
 
         if [[ "$line" == *"dolthub/dolt/releases/latest"* && "$line" == *"|"* && \
               "$line" =~ sudo[[:space:]]+(ba)?sh ]]; then
@@ -37,8 +102,8 @@ for workflow in .github/workflows/*.yml .github/workflows/*.yaml; do
         if [[ "$line" =~ pip([0-9.]*)?[[:space:]]+install[[:space:]]+uv([=[:space:]]|$) ]]; then
             report "$workflow" "$line_no" "uv must be installed through the checksum-verifying pinned setup-uv action"
         fi
-        if [[ "$line" =~ (^|[[:space:]-])uses:[[:space:]]*([^[:space:]#]+) ]]; then
-            action_ref="${BASH_REMATCH[2]}"
+        if [[ "$line" =~ $WORKFLOW_USES_PATTERN ]]; then
+            action_ref="${BASH_REMATCH[3]}"
             if [[ "$action_ref" != ./* && ! "$action_ref" =~ @[0-9a-f]{40}$ ]]; then
                 report "$workflow" "$line_no" "third-party actions must be pinned to a full commit SHA"
             fi
@@ -56,6 +121,7 @@ for workflow in .github/workflows/*.yml .github/workflows/*.yaml; do
             esac
         fi
     done < "$workflow"
+    check_dolt_download_command "$workflow" "$folded_run_line_no" "$folded_run_command"
 done
 
 flake_workflow=.github/workflows/update-flake-lock.yml
@@ -168,8 +234,8 @@ while IFS= read -r -d '' file; do
                 ;;
         esac
 
-        if [[ "$line" =~ (^|[[:space:]-])uses:[[:space:]]*([^[:space:]#]+) ]]; then
-            action_ref="${BASH_REMATCH[2]}"
+        if [[ "$line" =~ $DOCUMENTED_USES_PATTERN ]]; then
+            action_ref="${BASH_REMATCH[4]}"
             if [[ "$action_ref" != ./* && ! "$action_ref" =~ @[0-9a-f]{40}$ ]]; then
                 report "$file" "$line_no" "documented third-party actions must be pinned to a full commit SHA"
             fi

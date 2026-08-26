@@ -64,9 +64,8 @@ jobs:
     timeout-minutes: 25
     env:
       CGO_ENABLED: "1"
-      # Pinned so the lane tests a known dolt CLI, not whatever the installer
-      # resolves on a given day. Bump deliberately.
-      DOLT_VERSION: 2.2.2
+      # Pinned by scripts/install-dolt-ci.sh, which verifies each archive's
+      # SHA-256 before installing it.
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v6
 
@@ -76,11 +75,7 @@ jobs:
           go-version-file: 'go.mod'
 
       - name: Install pinned Dolt CLI
-        run: |
-          curl -fsSL "https://github.com/dolthub/dolt/releases/download/v${DOLT_VERSION}/dolt-linux-amd64.tar.gz" -o /tmp/dolt.tar.gz
-          tar -xzf /tmp/dolt.tar.gz -C /tmp
-          sudo install /tmp/dolt-linux-amd64/bin/dolt /usr/local/bin/dolt
-          dolt version
+        run: ./scripts/install-dolt-ci.sh
 
       - name: Build bd and compile the test binary (online)
         run: |

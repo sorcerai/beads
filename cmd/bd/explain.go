@@ -15,8 +15,10 @@ var explainCmd = &cobra.Command{
 	Long: `Explain parses the issue details from beads (Description, Design,
 Acceptance Criteria, Notes, Comments) and intersects them with associated
 code changes from git history, git status, and .understand-anything/knowledge-graph.json.`,
-	Args: cobra.ExactArgs(1),
-	Run: func(cmd *cobra.Command, args []string) {
+	Args:          cobra.ExactArgs(1),
+	SilenceUsage:  true,
+	SilenceErrors: true,
+	RunE: func(cmd *cobra.Command, args []string) error {
 		issueID := args[0]
 		workspaces, _ := cmd.Flags().GetStringArray("workspace")
 		globs, _ := cmd.Flags().GetStringArray("workspace-glob")
@@ -55,16 +57,17 @@ code changes from git history, git status, and .understand-anything/knowledge-gr
 
 		resp, err := explainIssueInWorkspace(ctx, targetDir, issueID)
 		if err != nil {
-			FatalErrorRespectJSON("failed to explain issue: %v", err)
+			return HandleErrorRespectJSON("failed to explain issue: %v", err)
 		}
 
 		if jsonOutput {
 			outputJSON(resp)
-			return
+			return nil
 		}
 
 		// Text output
 		renderExplainText(resp)
+		return nil
 	},
 }
 

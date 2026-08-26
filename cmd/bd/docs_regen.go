@@ -32,15 +32,17 @@ var docsRegenCmd = &cobra.Command{
 		"titles/descriptions/comments (e.g. public trackers with external " +
 		"reporters), --exec feeds that content to a headless agent unattended — " +
 		"review who can create/edit issues before enabling --exec there.",
-	Args: cobra.NoArgs,
-	Run: func(cmd *cobra.Command, args []string) {
+	Args:          cobra.NoArgs,
+	SilenceUsage:  true,
+	SilenceErrors: true,
+	RunE: func(cmd *cobra.Command, args []string) error {
 		repoRoot := findRepoRootForArch()
 		if repoRoot == "" {
-			FatalErrorRespectJSON("not in a git repository")
+			return HandleErrorRespectJSON("not in a git repository")
 		}
 		docsDir, err := validatedDocsDir(repoRoot)
 		if err != nil {
-			FatalErrorRespectJSON("bd docs regen: %v", err)
+			return HandleErrorRespectJSON("bd docs regen: %v", err)
 		}
 		complete, _ := cmd.Flags().GetBool("complete")
 		execCLI, _ := cmd.Flags().GetString("exec")
@@ -52,16 +54,17 @@ var docsRegenCmd = &cobra.Command{
 		switch {
 		case complete:
 			if err := runDocsRegenComplete(repoRoot, docsDir); err != nil {
-				FatalErrorRespectJSON("bd docs regen --complete: %v", err)
+				return HandleErrorRespectJSON("bd docs regen --complete: %v", err)
 			}
 			fmt.Println("bd docs regen: inbox consumed, watermark advanced")
 		case execCLI != "":
 			if err := runDocsRegenExec(repoRoot, docsDir, execCLI); err != nil {
-				FatalErrorRespectJSON("bd docs regen --exec %s: %v", execCLI, err)
+				return HandleErrorRespectJSON("bd docs regen --exec %s: %v", execCLI, err)
 			}
 		default:
 			fmt.Print(buildDocsRegenPrompt(repoRoot, docsDir))
 		}
+		return nil
 	},
 }
 

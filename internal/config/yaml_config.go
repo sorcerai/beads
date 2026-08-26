@@ -695,6 +695,10 @@ func updateNestedYamlKey(content, key, value string) (string, bool, error) {
 	if err := yaml.Unmarshal([]byte(content), &root); err != nil {
 		return "", false, err
 	}
+	commentOnlyPrefix := ""
+	if len(root.Content) == 0 && strings.TrimSpace(content) != "" {
+		commentOnlyPrefix = strings.TrimRight(content, "\r\n") + "\n"
+	}
 	var mapping *yaml.Node
 	if len(root.Content) == 0 {
 		mapping = &yaml.Node{Kind: yaml.MappingNode, Tag: "!!map"}
@@ -725,7 +729,7 @@ func updateNestedYamlKey(content, key, value string) (string, bool, error) {
 	if err != nil {
 		return "", false, err
 	}
-	return string(out), true, nil
+	return commentOnlyPrefix + string(out), true, nil
 }
 
 func findOrCreateNestedScalar(mapping *yaml.Node, parts []string) (*yaml.Node, bool) {

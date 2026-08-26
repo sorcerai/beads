@@ -16,17 +16,20 @@ import (
 // never resets an existing .docs-state, never rewrites an existing README,
 // never duplicates the hook block.
 var docsInitCmd = &cobra.Command{
-	Use:   "init",
-	Short: "Scaffold the wiki + wire the post-close hook (idempotent)",
-	Args:  cobra.NoArgs,
-	Run: func(cmd *cobra.Command, args []string) {
+	Use:           "init",
+	Short:         "Scaffold the wiki + wire the post-close hook (idempotent)",
+	Args:          cobra.NoArgs,
+	SilenceUsage:  true,
+	SilenceErrors: true,
+	RunE: func(cmd *cobra.Command, args []string) error {
 		repoRoot := findRepoRootForArch()
 		if repoRoot == "" {
-			FatalErrorRespectJSON("not in a git repository (bd docs init needs a repo root)")
+			return HandleErrorRespectJSON("not in a git repository (bd docs init needs a repo root)")
 		}
 		if err := runDocsInit(repoRoot, docsDirName()); err != nil {
-			FatalErrorRespectJSON("bd docs init: %v", err)
+			return HandleErrorRespectJSON("bd docs init: %v", err)
 		}
+		return nil
 	},
 }
 

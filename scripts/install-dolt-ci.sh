@@ -1,25 +1,25 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-readonly DOLT_VERSION="2.1.10"
+readonly DOLT_VERSION="2.2.2"
 readonly BASE_URL="https://github.com/dolthub/dolt/releases/download/v${DOLT_VERSION}"
 
 case "$(uname -s)-$(uname -m)" in
   Linux-x86_64)
     archive="dolt-linux-amd64.tar.gz"
-    expected="bf6528c10db5b304eef3ee0107762ab4a93baa4c42be36b9f37eb67b35bb422c"
+    expected="16517e03e1d6e380654f2804de9e05357fb8a2d660ccb535fc1dc5410552e1bb"
     ;;
   Linux-aarch64|Linux-arm64)
     archive="dolt-linux-arm64.tar.gz"
-    expected="e816feb7294192e6292a0756e836248f63fb19bf0f18416bb66909c9e77d1b73"
+    expected="68b52bc2dfbb53d7df761d4a6d660b302e6ba2850a62baa1ff78b1b15bffddb6"
     ;;
   Darwin-x86_64)
     archive="dolt-darwin-amd64.tar.gz"
-    expected="f2e548e89839a014f2f2b8caed0552110695699077f7e837596ff2ce6038852d"
+    expected="6ce092b0f2dd45a4ece9d6e087df5b9f1a858e9e437ed48550af65ccf6fd0150"
     ;;
   Darwin-arm64)
     archive="dolt-darwin-arm64.tar.gz"
-    expected="f2f784ee5905cdc573330d4c2813825633b72281408cb6cca3af948689d5284b"
+    expected="13feab5b3ad36f365cf3a5eb0a45de8bfd9b54268daa8ed705c37acb511fad4a"
     ;;
   *)
     echo "Unsupported Dolt CI platform: $(uname -s)-$(uname -m)" >&2

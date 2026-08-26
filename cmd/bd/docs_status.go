@@ -16,19 +16,22 @@ import (
 // and wiki-page staleness (reusing the ARCH.md staleness machinery, since a
 // backtick-quoted code reference going stale is the same problem in any .md).
 var docsStatusCmd = &cobra.Command{
-	Use:   "status",
-	Short: "Show bd docs state: opt-in, dirty count, inbox size, wiki staleness",
-	Args:  cobra.NoArgs,
-	Run: func(cmd *cobra.Command, args []string) {
+	Use:           "status",
+	Short:         "Show bd docs state: opt-in, dirty count, inbox size, wiki staleness",
+	Args:          cobra.NoArgs,
+	SilenceUsage:  true,
+	SilenceErrors: true,
+	RunE: func(cmd *cobra.Command, args []string) error {
 		repoRoot := findRepoRootForArch()
 		if repoRoot == "" {
-			FatalErrorRespectJSON("not in a git repository")
+			return HandleErrorRespectJSON("not in a git repository")
 		}
 		docsDir, err := validatedDocsDir(repoRoot)
 		if err != nil {
-			FatalErrorRespectJSON("bd docs status: %v", err)
+			return HandleErrorRespectJSON("bd docs status: %v", err)
 		}
 		printDocsStatus(repoRoot, docsDir)
+		return nil
 	},
 }
 
