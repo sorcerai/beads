@@ -376,8 +376,8 @@ go list -f {{.Target}} github.com/steveyegge/beads/cmd/bd
 # Add Go bin to PATH (add to ~/.bashrc or ~/.zshrc)
 export PATH="$PATH:$(go env GOPATH)/bin"
 
-# Or reinstall with the recommended installer
-curl -fsSL https://raw.githubusercontent.com/gastownhall/beads/main/scripts/install.sh | bash
+# Reinstall the documented release
+go install github.com/steveyegge/beads/cmd/bd@v1.1.0
 ```
 
 ### `zsh: killed bd` or crashes on macOS

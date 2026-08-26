@@ -1,0 +1,15 @@
+name: unsafe inputs
+on: workflow_dispatch
+x-unsafe-step: &unsafe_step
+  run: "echo ${{ inputs.aliased }}"
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    steps:
+      - "run": "echo ${{ format('{0}', inputs.versions) }}"
+      - run: |
+          # ${{ inputs['comment'] }}
+          echo okay
+      - run: "echo ${{ github.event['inputs'].command }}"
+      - run: "echo ${{ toJSON(inputs) }}"
+      - *unsafe_step

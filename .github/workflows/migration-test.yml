@@ -66,15 +66,37 @@ jobs:
         env:
           CANDIDATE_BIN: ./bd
           GIT_CONFIG_NOSYSTEM: "1"
+          MIGRATION_MODE: ${{ github.event.inputs.mode }}
+          MIGRATION_VERSIONS: ${{ github.event.inputs.versions }}
         run: |
-          ARGS=""
-          if [ "${{ github.event.inputs.mode }}" = "direct-only" ]; then
-            ARGS="--direct-only"
-          elif [ "${{ github.event.inputs.mode }}" = "stepping-only" ]; then
-            ARGS="--stepping-only"
+          set -euo pipefail
+          mode_args=()
+          case "${MIGRATION_MODE:-}" in
+            ""|all)
+              ;;
+            direct-only)
+              mode_args=(--direct-only)
+              ;;
+            stepping-only)
+              mode_args=(--stepping-only)
+              ;;
+            *)
+              echo "Invalid migration test mode." >&2
+              exit 1
+              ;;
+          esac
+
+          version_args=()
+          if [[ -n "${MIGRATION_VERSIONS:-}" ]]; then
+            if [[ ! "$MIGRATION_VERSIONS" =~ ^v[0-9]+\.[0-9]+\.[0-9]+( +v[0-9]+\.[0-9]+\.[0-9]+)*$ ]]; then
+              echo "Migration versions must be space-separated vMAJOR.MINOR.PATCH values." >&2
+              exit 1
+            fi
+            read -r -a version_args <<< "$MIGRATION_VERSIONS"
           fi
-          if [ -n "${{ github.event.inputs.versions }}" ]; then
-            ./scripts/migration-test/run.sh ${{ github.event.inputs.versions }}
+
+          if ((${#version_args[@]} > 0)); then
+            ./scripts/migration-test/run.sh "${version_args[@]}"
           else
-            ./scripts/migration-test/run.sh $ARGS
+            ./scripts/migration-test/run.sh "${mode_args[@]}"
           fi

@@ -58,6 +58,116 @@ for workflow in .github/workflows/*.yml .github/workflows/*.yaml; do
     done < "$workflow"
 done
 
+
+check_pr_permissions() {
+    local workflow="$1"
+    local line
+    local line_no=0
+    local permissions_block=no
+    local contents_read=no
+    local value
+
+    while IFS= read -r line || [[ -n "$line" ]]; do
+        line_no=$((line_no + 1))
+        [[ "$line" =~ ^[[:space:]]*# ]] && continue
+
+        if [[ "$line" == "permissions:" ]]; then
+            permissions_block=yes
+            continue
+        fi
+
+        if [[ "$permissions_block" == yes ]]; then
+            if [[ "$line" =~ ^[^[:space:]] && "$line" != "permissions:" ]]; then
+                permissions_block=no
+            elif [[ "$line" =~ ^[[:space:]]{2}contents:[[:space:]] ]]; then
+                value="${line#*:}"
+                value="${value%%#*}"
+                value="${value// /}"
+                value="${value//$'\t'/}"
+                value="${value//\"/}"
+                value="${value//\'/}"
+                if [[ "$value" == read ]]; then
+                    contents_read=yes
+                fi
+            fi
+        fi
+    done < "$workflow"
+
+    if [[ "$contents_read" != yes ]]; then
+        report "$workflow" 1 "PR workflows must declare top-level permissions: contents: read"
+    fi
+}
+
+check_run_input_interpolation() {
+    local workflow="$1"
+    local line_no
+    local matches
+
+    if ! matches=$(ruby -ryaml - "$workflow" <<'RUBY'
+INPUT_CONTEXT = /(?:^|[^[:alnum:]_.'"])(?:inputs(?:\s*(?:\.|\[)|(?=\s*(?:[,)]|$)))|github\s*(?:\.\s*event|\[\s*['"]event['"]\s*\])\s*(?:\.\s*inputs|\[\s*['"]inputs['"]\s*\])(?=\s*(?:\.|\[|[,)]|$)))/
+
+def interpolates_input?(value)
+    value.scan(/\$\{\{(.*?)\}\}/m) do
+        return true if Regexp.last_match(1).match?(INPUT_CONTEXT)
+    end
+    false
+end
+
+def visit(node, path = [], &block)
+    if node.is_a?(Psych::Nodes::Alias) && path.first == "jobs" && path.include?("steps")
+        yield node.start_line + 1
+        return
+    end
+
+    case node
+    when Psych::Nodes::Mapping
+        node.children.each_slice(2) do |key, value|
+            key_name = key.is_a?(Psych::Nodes::Scalar) ? key.value : nil
+            value_path = path + [key_name]
+            if value_path.length == 4 && value_path[0] == "jobs" &&
+                    value_path[2] == "steps" && key_name == "run" &&
+                    value.is_a?(Psych::Nodes::Scalar) && interpolates_input?(value.value)
+                yield value.start_line + 1
+            end
+            visit(key, path, &block)
+            visit(value, value_path, &block)
+        end
+    when Psych::Nodes::Sequence, Psych::Nodes::Document, Psych::Nodes::Stream
+        node.children.each { |child| visit(child, path, &block) }
+    end
+end
+
+Psych.parse_stream(File.read(ARGV.fetch(0))).children.each { |document| visit(document) { |line| puts line } }
+RUBY
+    ); then
+        report "$workflow" 0 "unable to parse workflow YAML"
+        return 1
+    fi
+
+    while IFS= read -r line_no; do
+        [[ -z "$line_no" ]] && continue
+        report "$workflow" "$line_no" "workflow-dispatch inputs must be passed through env, not interpolated in run blocks"
+    done <<< "$matches"
+}
+
+for pr_workflow in .github/workflows/pr.yml .github/workflows/pr-risk.yml; do
+    if [[ -f "$pr_workflow" ]]; then
+        check_pr_permissions "$pr_workflow"
+    fi
+done
+
+if (( $# > 0 )); then
+    workflows=("$@")
+else
+    workflows=(.github/workflows/*.yml .github/workflows/*.yaml)
+fi
+
+for workflow in "${workflows[@]}"; do
+    [[ -f "$workflow" ]] || continue
+    check_run_input_interpolation "$workflow"
+done
+
+
 flake_workflow=.github/workflows/update-flake-lock.yml
 canonical_guard=no
 if [[ -f "$flake_workflow" ]]; then
@@ -203,6 +313,7 @@ while IFS= read -r -d '' file; do
 done < <(
     git ls-files -z -- \
         ':(top,glob)*.md' \
+        ':(top,glob)docs/**' \
         ':(top,glob)*.yml' \
         ':(top,glob)*.yaml' \
         ':(top,glob)cmd/**' \

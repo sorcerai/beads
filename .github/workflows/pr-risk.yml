@@ -5,6 +5,9 @@ on:
     branches: [ main ]
   merge_group:
 
+permissions:
+  contents: read
+
 concurrency:
   group: ${{ github.workflow }}-${{ github.event_name }}-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: true
@@ -67,7 +70,7 @@ jobs:
       - name: Install Dolt CLI
         # TestProxiedServerExternalCreate needs the dolt binary on PATH; the
         # shared harness itself uses the dolt sql-server container image.
-        run: curl -fsSL https://github.com/dolthub/dolt/releases/latest/download/install.sh | sudo bash
+        run: ./scripts/install-dolt-ci.sh
 
       - name: Configure Git and Dolt identity
         run: |

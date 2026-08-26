@@ -1,0 +1,9 @@
+name: safe inputs
+on: workflow_dispatch
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    steps:
+      - run: echo ${{ steps.validate_inputs.outputs.value }}
+        env:
+          VERSION: ${{ inputs.versions }}
