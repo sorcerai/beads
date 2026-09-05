@@ -62,6 +62,7 @@ Thumbs.db
 .beads/.gitignore
 .beads/db.sqlite
 .beads/bd.db
+.beads/codemap.cache.json
 
 # Ignore nix result
 result
