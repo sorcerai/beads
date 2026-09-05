@@ -71,9 +71,15 @@ func (GoScout) Scan(root string, only []string) (codemapops.Graph, error) {
 	if err != nil {
 		return codemapops.Graph{}, err
 	}
+	if only != nil && len(only) == 0 {
+		return codemapops.Graph{Lang: "go"}, nil // nothing in scope
+	}
 	patterns := []string{"./..."}
 	if only != nil {
-		patterns = only
+		patterns = make([]string, 0, len(only))
+		for _, o := range only {
+			patterns = append(patterns, goPattern(mod, o))
+		}
 	}
 	cmd := exec.Command("go", append([]string{"list", "-json", "-e"}, patterns...)...) // #nosec G204 -- patterns are import paths from the caller's own repo
 	cmd.Dir = root
@@ -163,6 +169,17 @@ func (GoScout) Scan(root string, only []string) (codemapops.Graph, error) {
 	return resolveEdges(g), nil
 }
 
+// goPattern turns one `only` entry into a `go list` pattern. Callers name a
+// package either by import path or, as PackageDirsFor produces, by
+// repo-relative directory; only the latter needs the "./" that tells `go list`
+// it is a path and not an import path.
+func goPattern(mod, only string) string {
+	if only == mod || strings.HasPrefix(only, mod+"/") || strings.HasPrefix(only, ".") {
+		return only
+	}
+	return "./" + only
+}
+
 type weighted struct {
 	path   string
 	weight int
@@ -203,7 +220,9 @@ func resolveEdges(g codemapops.Graph) codemapops.Graph {
 		}
 		if _, ok := known[e.Dst]; !ok {
 			// A contains edge names a file; an unknown file is a dropped
-			// endpoint. Every other kind names a package.
+			// endpoint. Every other kind names a package — including the Rust
+			// scout's file-to-file imports, which it emits only for files it
+			// has already indexed, so an unknown Dst here is never a file.
 			if e.Kind == codemapops.EdgeContains {
 				continue
 			}

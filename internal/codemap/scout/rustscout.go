@@ -86,7 +86,7 @@ func (RustScout) Scan(root string, only []string) (codemapops.Graph, error) {
 			c.deps = append(c.deps, d.Name)
 		}
 		byModule[strings.ReplaceAll(p.Name, "-", "_")] = c
-		if only == nil || wanted[p.Name] {
+		if only == nil || wanted[p.Name] || wantedDir(wanted, path.Dir(c.srcDir)) {
 			crates = append(crates, c)
 		}
 	}
@@ -171,6 +171,18 @@ func (RustScout) Scan(root string, only []string) (codemapops.Graph, error) {
 		}
 	}
 	return resolveEdges(g), nil
+}
+
+// wantedDir reports whether any requested scope names crateDir or something
+// inside it, so a caller may ask for a crate by repo-relative directory (what
+// PackageDirsFor produces) as well as by crate name.
+func wantedDir(wanted map[string]bool, crateDir string) bool {
+	for w := range wanted {
+		if crateDir == "." || w == crateDir || strings.HasPrefix(w, crateDir+"/") {
+			return true
+		}
+	}
+	return false
 }
 
 // workspacePackages returns the workspace members' manifests. --no-deps keeps

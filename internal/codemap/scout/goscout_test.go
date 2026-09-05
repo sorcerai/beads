@@ -63,6 +63,26 @@ func TestGoScoutMini(t *testing.T) {
 	}
 }
 
+// TestGoScoutIncrementalByDirectory pins the handoff from PackageDirsFor, whose
+// output is repo-relative directories rather than import paths.
+func TestGoScoutIncrementalByDirectory(t *testing.T) {
+	root := copyFixture(t, "go-mini")
+	g, err := (GoScout{}).Scan(root, PackageDirsFor([]string{"b/b.go"}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(g.Nodes) != 3 {
+		t.Fatalf("directory scope must scan package b: %d nodes %+v", len(g.Nodes), g.Nodes)
+	}
+	if err := g.Validate(); err != nil {
+		t.Fatal(err)
+	}
+	empty, err := (GoScout{}).Scan(root, []string{})
+	if err != nil || len(empty.Nodes) != 0 {
+		t.Fatalf("empty scope must scan nothing: %d nodes %v", len(empty.Nodes), err)
+	}
+}
+
 func TestGoScoutModulePathAndDetect(t *testing.T) {
 	root := copyFixture(t, "go-mini")
 	mod, err := ModulePath(root)

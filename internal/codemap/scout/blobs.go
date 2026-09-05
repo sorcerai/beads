@@ -34,7 +34,9 @@ func BlobHashes(root string) (map[string]string, error) {
 }
 
 // PackageDirsFor returns the sorted, unique parent directories of changed —
-// the coarsest scan scope that still covers every changed file.
+// the coarsest scan scope that still covers every changed file. The result is
+// repo-relative directories, which is what a scout's Scan accepts for `only`
+// alongside that language's own package identifiers.
 func PackageDirsFor(changed []string) []string {
 	set := map[string]struct{}{}
 	for _, f := range changed {

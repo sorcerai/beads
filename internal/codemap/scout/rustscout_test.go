@@ -47,3 +47,36 @@ func TestRustScoutMini(t *testing.T) {
 		t.Error("Detect should key off Cargo.toml")
 	}
 }
+
+// TestRustScoutIncrementalScope pins both spellings of `only`: a crate name and
+// a repo-relative directory as PackageDirsFor produces.
+func TestRustScoutIncrementalScope(t *testing.T) {
+	if _, err := exec.LookPath("cargo"); err != nil {
+		t.Skip("cargo not installed")
+	}
+	root := copyFixture(t, "rust-mini")
+	for _, only := range [][]string{{"cli"}, PackageDirsFor([]string{"cli/src/main.rs"})} {
+		g, err := (RustScout{}).Scan(root, only)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := g.Validate(); err != nil {
+			t.Fatalf("scope %v: %v", only, err)
+		}
+		crates := 0
+		for _, n := range g.Nodes {
+			if n.Kind == codemapops.NodePackage {
+				crates++
+				if n.Path != "cli" {
+					t.Errorf("scope %v pulled in crate %s", only, n.Path)
+				}
+			}
+		}
+		if crates != 1 {
+			t.Errorf("scope %v: %d crates, want 1", only, crates)
+		}
+		if len(g.ExternalPackages) != 1 || g.ExternalPackages[0] != "core" {
+			t.Errorf("scope %v: unscanned dependency must be external, got %v", only, g.ExternalPackages)
+		}
+	}
+}
