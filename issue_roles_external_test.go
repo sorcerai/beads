@@ -784,3 +784,65 @@ func TestDeleterExposesTypedUnsupportedError(t *testing.T) {
 		t.Fatalf("Deleter() error = %v, want *beads.ErrUnsupported", err)
 	}
 }
+
+// TestCodeMapIndexerKeepsTelemetryOutermost is the settings role's answer for
+// the code-map plane.
+//
+// Apply and SetSummaries WRITE, so the reflex is to expect the hook wrapper
+// here. The hook vocabulary is what decides it: on_create, on_update and
+// on_close each hand a script an ISSUE, and an index pass produces none —
+// it replaces nodes and edges. There is no on_index to fire and inventing one
+// is a hook proposal, not a role commit. See internal/storage/hook_codemap.go.
+func TestCodeMapIndexerKeepsTelemetryOutermost(t *testing.T) {
+	t.Setenv("BD_OTEL_STDOUT", "true")
+	instrumented, ok := telemetry.WrapStorage(&dolt.DoltStore{}).(*telemetry.InstrumentedStorage)
+	if !ok {
+		t.Fatal("WrapStorage() did not create InstrumentedStorage")
+	}
+
+	indexer, err := storage.NewHookFiringStore(instrumented, nil).CodeMapIndexer()
+	if err != nil {
+		t.Fatalf("CodeMapIndexer() error = %v", err)
+	}
+	if got := reflect.TypeOf(indexer).String(); got != "*telemetry.instrumentedCodeMapIndexer" {
+		t.Fatalf("outer layer = %s, want the telemetry wrapper unwrapped by the hook decorator", got)
+	}
+}
+
+// TestCodeMapReaderKeepsTelemetryOutermost is the plain read case: reads fire
+// no completion hooks, so the telemetry wrapper is outermost.
+func TestCodeMapReaderKeepsTelemetryOutermost(t *testing.T) {
+	t.Setenv("BD_OTEL_STDOUT", "true")
+	instrumented, ok := telemetry.WrapStorage(&dolt.DoltStore{}).(*telemetry.InstrumentedStorage)
+	if !ok {
+		t.Fatal("WrapStorage() did not create InstrumentedStorage")
+	}
+
+	reader, err := storage.NewHookFiringStore(instrumented, nil).CodeMapReader()
+	if err != nil {
+		t.Fatalf("CodeMapReader() error = %v", err)
+	}
+	if got := reflect.TypeOf(reader).String(); got != "*telemetry.instrumentedCodeMapReader" {
+		t.Fatalf("outer layer = %s, want the telemetry wrapper unwrapped by the hook decorator", got)
+	}
+}
+
+// TestIssueFilesKeepsTelemetryOutermost is the CodeMapIndexer reason once more,
+// for the role whose write does name a bead: a Record binds an issue that
+// ALREADY EXISTED to a path, so no on_create, on_update or on_close describes
+// it either.
+func TestIssueFilesKeepsTelemetryOutermost(t *testing.T) {
+	t.Setenv("BD_OTEL_STDOUT", "true")
+	instrumented, ok := telemetry.WrapStorage(&dolt.DoltStore{}).(*telemetry.InstrumentedStorage)
+	if !ok {
+		t.Fatal("WrapStorage() did not create InstrumentedStorage")
+	}
+
+	files, err := storage.NewHookFiringStore(instrumented, nil).IssueFiles()
+	if err != nil {
+		t.Fatalf("IssueFiles() error = %v", err)
+	}
+	if got := reflect.TypeOf(files).String(); got != "*telemetry.instrumentedIssueFiles" {
+		t.Fatalf("outer layer = %s, want the telemetry wrapper unwrapped by the hook decorator", got)
+	}
+}

@@ -9,6 +9,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/steveyegge/beads/codemapops"
 	"github.com/steveyegge/beads/internal/storage"
 	"github.com/steveyegge/beads/issueops"
 	"github.com/steveyegge/beads/memoryops"
@@ -41,6 +42,7 @@ func roleAccessorNamesOf(surface reflect.Type) (names, unclassified []string) {
 	facade := map[string]bool{
 		reflect.TypeOf((*issueops.Reader)(nil)).Elem().PkgPath():    true,
 		reflect.TypeOf((*memoryops.Memories)(nil)).Elem().PkgPath(): true,
+		reflect.TypeOf((*codemapops.Indexer)(nil)).Elem().PkgPath(): true,
 	}
 	errorType := reflect.TypeOf((*error)(nil)).Elem()
 
@@ -93,7 +95,7 @@ func TestInstrumentedStorageDeclaresEveryRoleAccessor(t *testing.T) {
 }
 
 // roleAccessorStore is a DoltStorage whose only real methods are the
-// twenty-eight role accessors, each answering with a distinguishable sentinel
+// thirty-one role accessors, each answering with a distinguishable sentinel
 // so a test can tell an instrumented surface from a passed-through one.
 //
 // TWO sentinels rather than one: memoryops.Memories.List and issueops.Reader.List
@@ -171,8 +173,17 @@ func (s *roleAccessorStore) BatchApplier() (issueops.BatchApplier, error) {
 func (s *roleAccessorStore) Releaser() (issueops.Releaser, error) {
 	return s.surface, s.err
 }
+func (s *roleAccessorStore) CodeMapIndexer() (codemapops.Indexer, error) {
+	return s.surface, s.err
+}
+func (s *roleAccessorStore) CodeMapReader() (codemapops.Reader, error) {
+	return s.surface, s.err
+}
+func (s *roleAccessorStore) IssueFiles() (codemapops.IssueFiles, error) {
+	return s.surface, s.err
+}
 
-// roleAccessorSentinel implements twenty-seven of the twenty-eight roles at
+// roleAccessorSentinel implements thirty of the thirty-one roles at
 // once — every one but memoryops.Memories, whose List collides with
 // issueops.Reader.List and needs the second sentinel below.
 // Nothing calls its methods; identity is the whole point.
@@ -300,6 +311,37 @@ func (*roleAccessorSentinel) Release(context.Context, issueops.ReleaseRequest) (
 	return issueops.ReleaseResult{}, nil
 }
 
+func (*roleAccessorSentinel) Apply(context.Context, codemapops.ApplyRequest) (codemapops.ApplyResult, error) {
+	return codemapops.ApplyResult{}, nil
+}
+func (*roleAccessorSentinel) SetSummaries(context.Context, string, []codemapops.Summary) (codemapops.SetSummariesResult, error) {
+	return codemapops.SetSummariesResult{}, nil
+}
+func (*roleAccessorSentinel) FileContext(context.Context, string, string) (codemapops.FileContext, error) {
+	return codemapops.FileContext{}, nil
+}
+func (*roleAccessorSentinel) PackageContext(context.Context, string, string) (codemapops.PackageContext, error) {
+	return codemapops.PackageContext{}, nil
+}
+func (*roleAccessorSentinel) Stale(context.Context, string, int) ([]codemapops.NodeRef, error) {
+	return nil, nil
+}
+func (*roleAccessorSentinel) Shape(context.Context, string, codemapops.ShapeOptions) (codemapops.Shape, error) {
+	return codemapops.Shape{}, nil
+}
+func (*roleAccessorSentinel) Record(context.Context, codemapops.RecordRequest) (codemapops.RecordResult, error) {
+	return codemapops.RecordResult{}, nil
+}
+func (*roleAccessorSentinel) ByIssue(context.Context, string) ([]codemapops.IssueFile, error) {
+	return nil, nil
+}
+func (*roleAccessorSentinel) ByPath(context.Context, string, string, bool) ([]codemapops.IssueRef, error) {
+	return nil, nil
+}
+func (*roleAccessorSentinel) IssueCodeContext(context.Context, string, string) (codemapops.IssueCodeContext, error) {
+	return codemapops.IssueCodeContext{}, nil
+}
+
 // memoryRoleSentinel is the memory role's sentinel — see
 // memoryRoleSentinel is the remaining role's sentinel — see
 // roleAccessorStore for why it cannot be a method set on the struct above.
@@ -374,6 +416,9 @@ func TestInstrumentedStorageInstrumentsEveryRoleAccessor(t *testing.T) {
 		{"MetadataCAS", func() (any, error) { return wrapped.MetadataCAS() }, sentinel},
 		{"BatchApplier", func() (any, error) { return wrapped.BatchApplier() }, sentinel},
 		{"Releaser", func() (any, error) { return wrapped.Releaser() }, sentinel},
+		{"CodeMapIndexer", func() (any, error) { return wrapped.CodeMapIndexer() }, sentinel},
+		{"CodeMapReader", func() (any, error) { return wrapped.CodeMapReader() }, sentinel},
+		{"IssueFiles", func() (any, error) { return wrapped.IssueFiles() }, sentinel},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			surface, err := test.got()
@@ -429,6 +474,9 @@ func TestInstrumentedStorageRoleAccessorsPropagateInnerErrors(t *testing.T) {
 		{"MetadataCAS", func() (any, error) { return wrapped.MetadataCAS() }},
 		{"BatchApplier", func() (any, error) { return wrapped.BatchApplier() }},
 		{"Releaser", func() (any, error) { return wrapped.Releaser() }},
+		{"CodeMapIndexer", func() (any, error) { return wrapped.CodeMapIndexer() }},
+		{"CodeMapReader", func() (any, error) { return wrapped.CodeMapReader() }},
+		{"IssueFiles", func() (any, error) { return wrapped.IssueFiles() }},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			surface, err := test.got()

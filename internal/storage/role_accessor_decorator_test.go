@@ -10,6 +10,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/steveyegge/beads/codemapops"
 	"github.com/steveyegge/beads/issueops"
 	"github.com/steveyegge/beads/memoryops"
 )
@@ -43,6 +44,7 @@ func roleAccessorNamesOf(surface reflect.Type) (names, unclassified []string) {
 	facade := map[string]bool{
 		reflect.TypeOf((*issueops.Reader)(nil)).Elem().PkgPath():    true,
 		reflect.TypeOf((*memoryops.Memories)(nil)).Elem().PkgPath(): true,
+		reflect.TypeOf((*codemapops.Indexer)(nil)).Elem().PkgPath(): true,
 	}
 	errorType := reflect.TypeOf((*error)(nil)).Elem()
 
@@ -68,7 +70,7 @@ func roleAccessorNamesOf(surface reflect.Type) (names, unclassified []string) {
 }
 
 // TestEveryStoreRoleAccessorIsClassified fails when DoltStorage hands out an
-// interface the census cannot place. Every one of the twenty-eight today is a
+// interface the census cannot place. Every one of the thirty-one today is a
 // facade role, so this costs nothing and closes the path where a role surface
 // grows a package and the census quietly stops covering it. (roleAccessorNames
 // is derived, so the count is prose and only this sentence goes stale — but it
@@ -151,69 +153,75 @@ func assertRoleAccessorsAreDeclared(t *testing.T, decorator reflect.Type) {
 }
 
 // roleAccessorStore is a DoltStorage whose only real methods are the
-// twenty-eight role accessors, each answering with a distinguishable sentinel
+// thirty-one role accessors, each answering with a distinguishable sentinel
 // so a test can tell a decorated surface from a passed-through one.
 type roleAccessorStore struct {
 	DoltStorage
-	lifecycle    issueops.Lifecycle
-	reader       issueops.Reader
-	relations    issueops.Relations
-	edges        issueops.EdgeReader
-	blocking     issueops.BlockingAnnotator
-	tree         issueops.TreeWalker
-	graphCounter issueops.GraphCounter
-	counter      issueops.Counter
-	settings     issueops.WorkspaceConfig
-	memories     memoryops.Memories
-	versions     issueops.VersionReconciler
-	stats        issueops.StatsReporter
-	cycles       issueops.CycleDetector
-	commenter    issueops.Commenter
-	claimer      issueops.ReadyClaimer
-	closer       issueops.BatchCloser
-	creator      issueops.BatchCreator
-	editor       issueops.DependencyEditor
-	applier      issueops.BatchApplier
-	readyCounter issueops.ReadyCounter
-	querier      issueops.Querier
-	sweeper      issueops.Sweeper
-	deleter      issueops.Deleter
-	bootstrapper issueops.Bootstrapper
-	verifier     issueops.InitVerifier
-	metadataCAS  issueops.MetadataCAS
-	releaser     issueops.Releaser
-	err          error
+	lifecycle      issueops.Lifecycle
+	reader         issueops.Reader
+	relations      issueops.Relations
+	edges          issueops.EdgeReader
+	blocking       issueops.BlockingAnnotator
+	tree           issueops.TreeWalker
+	graphCounter   issueops.GraphCounter
+	counter        issueops.Counter
+	settings       issueops.WorkspaceConfig
+	memories       memoryops.Memories
+	versions       issueops.VersionReconciler
+	stats          issueops.StatsReporter
+	cycles         issueops.CycleDetector
+	commenter      issueops.Commenter
+	claimer        issueops.ReadyClaimer
+	closer         issueops.BatchCloser
+	creator        issueops.BatchCreator
+	editor         issueops.DependencyEditor
+	applier        issueops.BatchApplier
+	readyCounter   issueops.ReadyCounter
+	querier        issueops.Querier
+	sweeper        issueops.Sweeper
+	deleter        issueops.Deleter
+	bootstrapper   issueops.Bootstrapper
+	verifier       issueops.InitVerifier
+	metadataCAS    issueops.MetadataCAS
+	releaser       issueops.Releaser
+	codeMapIndexer codemapops.Indexer
+	codeMapReader  codemapops.Reader
+	issueFiles     codemapops.IssueFiles
+	err            error
 }
 
 func newRoleAccessorStore() *roleAccessorStore {
 	sentinel := &roleAccessorSentinel{}
 	return &roleAccessorStore{
-		memories:     &memoryRoleSentinel{},
-		lifecycle:    sentinel,
-		reader:       sentinel,
-		relations:    sentinel,
-		edges:        sentinel,
-		blocking:     sentinel,
-		graphCounter: sentinel,
-		counter:      sentinel,
-		settings:     sentinel,
-		versions:     sentinel,
-		stats:        sentinel,
-		cycles:       sentinel,
-		commenter:    sentinel,
-		claimer:      sentinel,
-		closer:       sentinel,
-		creator:      sentinel,
-		editor:       sentinel,
-		applier:      sentinel,
-		readyCounter: sentinel,
-		querier:      sentinel,
-		sweeper:      sentinel,
-		deleter:      sentinel,
-		bootstrapper: sentinel,
-		verifier:     sentinel,
-		metadataCAS:  sentinel,
-		releaser:     sentinel,
+		memories:       &memoryRoleSentinel{},
+		lifecycle:      sentinel,
+		reader:         sentinel,
+		relations:      sentinel,
+		edges:          sentinel,
+		blocking:       sentinel,
+		graphCounter:   sentinel,
+		counter:        sentinel,
+		settings:       sentinel,
+		versions:       sentinel,
+		stats:          sentinel,
+		cycles:         sentinel,
+		commenter:      sentinel,
+		claimer:        sentinel,
+		closer:         sentinel,
+		creator:        sentinel,
+		editor:         sentinel,
+		applier:        sentinel,
+		readyCounter:   sentinel,
+		querier:        sentinel,
+		sweeper:        sentinel,
+		deleter:        sentinel,
+		bootstrapper:   sentinel,
+		verifier:       sentinel,
+		metadataCAS:    sentinel,
+		releaser:       sentinel,
+		codeMapIndexer: sentinel,
+		codeMapReader:  sentinel,
+		issueFiles:     sentinel,
 	}
 }
 
@@ -281,8 +289,17 @@ func (s *roleAccessorStore) BatchApplier() (issueops.BatchApplier, error) {
 func (s *roleAccessorStore) Releaser() (issueops.Releaser, error) {
 	return s.releaser, s.err
 }
+func (s *roleAccessorStore) CodeMapIndexer() (codemapops.Indexer, error) {
+	return s.codeMapIndexer, s.err
+}
+func (s *roleAccessorStore) CodeMapReader() (codemapops.Reader, error) {
+	return s.codeMapReader, s.err
+}
+func (s *roleAccessorStore) IssueFiles() (codemapops.IssueFiles, error) {
+	return s.issueFiles, s.err
+}
 
-// roleAccessorSentinel implements twenty-seven of the twenty-eight roles at
+// roleAccessorSentinel implements thirty of the thirty-one roles at
 // once — every one but memoryops.Memories, whose List collides with
 // issueops.Reader.List and needs the second sentinel below.
 // Nothing calls its methods; identity is the whole point.
@@ -405,6 +422,37 @@ func (*roleAccessorSentinel) Release(context.Context, issueops.ReleaseRequest) (
 	return issueops.ReleaseResult{}, nil
 }
 
+func (*roleAccessorSentinel) Apply(context.Context, codemapops.ApplyRequest) (codemapops.ApplyResult, error) {
+	return codemapops.ApplyResult{}, nil
+}
+func (*roleAccessorSentinel) SetSummaries(context.Context, string, []codemapops.Summary) (codemapops.SetSummariesResult, error) {
+	return codemapops.SetSummariesResult{}, nil
+}
+func (*roleAccessorSentinel) FileContext(context.Context, string, string) (codemapops.FileContext, error) {
+	return codemapops.FileContext{}, nil
+}
+func (*roleAccessorSentinel) PackageContext(context.Context, string, string) (codemapops.PackageContext, error) {
+	return codemapops.PackageContext{}, nil
+}
+func (*roleAccessorSentinel) Stale(context.Context, string, int) ([]codemapops.NodeRef, error) {
+	return nil, nil
+}
+func (*roleAccessorSentinel) Shape(context.Context, string, codemapops.ShapeOptions) (codemapops.Shape, error) {
+	return codemapops.Shape{}, nil
+}
+func (*roleAccessorSentinel) Record(context.Context, codemapops.RecordRequest) (codemapops.RecordResult, error) {
+	return codemapops.RecordResult{}, nil
+}
+func (*roleAccessorSentinel) ByIssue(context.Context, string) ([]codemapops.IssueFile, error) {
+	return nil, nil
+}
+func (*roleAccessorSentinel) ByPath(context.Context, string, string, bool) ([]codemapops.IssueRef, error) {
+	return nil, nil
+}
+func (*roleAccessorSentinel) IssueCodeContext(context.Context, string, string) (codemapops.IssueCodeContext, error) {
+	return codemapops.IssueCodeContext{}, nil
+}
+
 // memoryRoleSentinel is the memory role's sentinel, and the one role
 // memoryRoleSentinel is the remaining role's sentinel, and the one role
 // that cannot share the struct above: memoryops.Memories.List and
@@ -444,7 +492,12 @@ func (*memoryRoleSentinel) List(context.Context, memoryops.ListRequest) (memoryo
 // remembered insight names no bead and there is no on_remember to fire, a
 // version marker names no bead at all, a bootstrap lands on a workspace whose
 // hooks are not installed yet, a swept row is gone, and the hook vocabulary has
-// no name for a deletion — so this decorator's issue-shaped hook vocabulary has
+// no name for a deletion. CodeMapIndexer and IssueFiles write too, and are here
+// for that same reason read one more time: an apply replaces nodes and edges, a
+// summary pass writes prose onto a node, and a Record binds an issue that
+// already existed to a path — there is no on_index and no on_link, and none of
+// the three produces an issue to hand one. CodeMapReader is a plain read. So
+// this decorator's issue-shaped hook vocabulary has
 // nothing to hand a hook script. This test pins every one of them as a decision
 // rather than leaving it indistinguishable from the regression above.
 func TestHookFiringStoreWrapsTheWriteRolesAndPassesTheReadsThrough(t *testing.T) {
@@ -484,6 +537,9 @@ func TestHookFiringStoreWrapsTheWriteRolesAndPassesTheReadsThrough(t *testing.T)
 		{"Deleter", func() (any, error) { return store.Deleter() }, inner.deleter, false},
 		{"Bootstrapper", func() (any, error) { return store.Bootstrapper() }, inner.bootstrapper, false},
 		{"InitVerifier", func() (any, error) { return store.InitVerifier() }, inner.verifier, false},
+		{"CodeMapIndexer", func() (any, error) { return store.CodeMapIndexer() }, inner.codeMapIndexer, false},
+		{"CodeMapReader", func() (any, error) { return store.CodeMapReader() }, inner.codeMapReader, false},
+		{"IssueFiles", func() (any, error) { return store.IssueFiles() }, inner.issueFiles, false},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			surface, err := test.got()
@@ -541,6 +597,9 @@ func TestHookFiringStoreRoleAccessorsPropagateInnerErrors(t *testing.T) {
 		{"Deleter", func() (any, error) { return store.Deleter() }},
 		{"Bootstrapper", func() (any, error) { return store.Bootstrapper() }},
 		{"InitVerifier", func() (any, error) { return store.InitVerifier() }},
+		{"CodeMapIndexer", func() (any, error) { return store.CodeMapIndexer() }},
+		{"CodeMapReader", func() (any, error) { return store.CodeMapReader() }},
+		{"IssueFiles", func() (any, error) { return store.IssueFiles() }},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			if _, err := test.got(); !errors.Is(err, want) {

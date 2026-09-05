@@ -13,6 +13,7 @@ import (
 	"unicode"
 	"unicode/utf8"
 
+	"github.com/steveyegge/beads/codemapops"
 	"github.com/steveyegge/beads/internal/httpapi/apigen"
 	"github.com/steveyegge/beads/internal/storage"
 	"github.com/steveyegge/beads/internal/storage/uow"
@@ -353,6 +354,9 @@ var (
 	_ uow.BatchApplierSource        = timedProvider{}
 	_ uow.MemoriesSource            = timedProvider{}
 	_ uow.EventsJournalCursorSource = timedProvider{}
+	_ uow.CodeMapIndexerSource      = timedProvider{}
+	_ uow.CodeMapReaderSource       = timedProvider{}
+	_ uow.IssueFilesSource          = timedProvider{}
 )
 
 // IssueReader builds the reader OVER THIS WRAPPER rather than delegating to the
@@ -548,6 +552,24 @@ func (p timedProvider) Memories() (memoryops.Memories, error) {
 
 func (p timedProvider) EventsJournalCursor() (storage.EventsJournalCursor, error) {
 	return uow.NewEventsJournalCursor(p)
+}
+
+// CodeMapIndexer, CodeMapReader and IssueFiles build the three code-map roles
+// OVER THIS WRAPPER, for the same reason and with the same hazard as
+// IssueReader. An Apply is one of the longest write units of work this server
+// opens — a whole repository's nodes and edges in one transaction — so a
+// recursion here would report uow_ms=0.000 for exactly the requests whose
+// timing matters most.
+func (p timedProvider) CodeMapIndexer() (codemapops.Indexer, error) {
+	return uow.NewCodeMapIndexer(p)
+}
+
+func (p timedProvider) CodeMapReader() (codemapops.Reader, error) {
+	return uow.NewCodeMapReader(p)
+}
+
+func (p timedProvider) IssueFiles() (codemapops.IssueFiles, error) {
+	return uow.NewIssueFiles(p)
 }
 
 func (p timedProvider) NewUOW(ctx context.Context) (uow.UnitOfWork, error) {
