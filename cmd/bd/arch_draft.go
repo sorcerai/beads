@@ -10,6 +10,7 @@ import (
 	"strings"
 
 	"github.com/spf13/cobra"
+	"github.com/steveyegge/beads/internal/codemap/scout"
 	"github.com/steveyegge/beads/internal/ui"
 )
 
@@ -178,17 +179,7 @@ func scoutGo(repoRoot string) (string, string, error) {
 
 // readGoModulePath returns the `module` line path from go.mod.
 func readGoModulePath(repoRoot string) (string, error) {
-	data, err := os.ReadFile(filepath.Join(repoRoot, "go.mod"))
-	if err != nil {
-		return "", err
-	}
-	for _, line := range strings.Split(string(data), "\n") {
-		line = strings.TrimSpace(line)
-		if strings.HasPrefix(line, "module ") {
-			return strings.TrimSpace(strings.TrimPrefix(line, "module ")), nil
-		}
-	}
-	return "", nil
+	return scout.ModulePath(repoRoot)
 }
 
 // filterGoGraphToModule keeps only own-package lines (ImportPath under modPath)
