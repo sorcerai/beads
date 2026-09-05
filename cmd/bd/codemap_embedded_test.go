@@ -72,3 +72,47 @@ func TestCodemapBuildStatusRefresh(t *testing.T) {
 		t.Fatalf("status after refresh: %s", status)
 	}
 }
+
+// TestCodemapQueriesAndLink covers the Task 16 read verbs plus the manual
+// issue-to-file link they surface.
+func TestCodemapQueriesAndLink(t *testing.T) {
+	if os.Getenv("BEADS_TEST_EMBEDDED_DOLT") != "1" {
+		t.Skip("set BEADS_TEST_EMBEDDED_DOLT=1 to run embedded dolt integration tests")
+	}
+	t.Parallel()
+
+	bd := buildEmbeddedBD(t)
+	dir, _, _ := bdInit(t, bd, "--prefix", "cq")
+	writeGoMini(t, dir)
+	runCodemap(t, bd, dir, "build")
+
+	id := createIssue(t, bd, dir, "Touch b")
+
+	if out := runCodemap(t, bd, dir, "link", id, "b/b.go", "a/a.go"); !strings.Contains(out, "2 files") {
+		t.Fatalf("link: %s", out)
+	}
+	if out := runCodemap(t, bd, dir, "files", id); !strings.Contains(out, "a/a.go") || !strings.Contains(out, "manual") {
+		t.Fatalf("files: %s", out)
+	}
+	if out := runCodemap(t, bd, dir, "who", "b/b.go"); !strings.Contains(out, id) {
+		t.Fatalf("who: %s", out)
+	}
+
+	show := runCodemap(t, bd, dir, "show", "b/b.go")
+	if !strings.Contains(show, "imports") || !strings.Contains(show, "example.com/mini/a") || !strings.Contains(show, id) {
+		t.Fatalf("show: %s", show)
+	}
+
+	deps := runCodemap(t, bd, dir, "deps", "a/a.go", "--reverse")
+	if !strings.Contains(deps, "b/b.go") {
+		t.Fatalf("reverse deps: %s", deps)
+	}
+
+	if out := runCodemap(t, bd, dir, "stale"); !strings.Contains(out, "0 stale") {
+		t.Fatalf("stale: %s", out)
+	}
+
+	if out, err := runCodemapErr(t, bd, dir, "link", id, "../etc/passwd"); err == nil {
+		t.Fatalf("escaping path accepted: %s", out)
+	}
+}

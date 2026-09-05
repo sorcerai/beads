@@ -182,6 +182,10 @@ func renderIssueFiles(w io.Writer, id string, files []codemapops.IssueFile) {
 	}
 }
 
+func renderLinked(w io.Writer, id string, paths []string) {
+	fmt.Fprintf(w, "%s Linked %d files to %s\n", ui.RenderPass("✓"), len(paths), ui.RenderID(id))
+}
+
 func renderIssueRefs(w io.Writer, path string, refs []codemapops.IssueRef) {
 	if len(refs) == 0 {
 		fmt.Fprintf(w, "%s\n", ui.RenderMuted("No issues touch "+path))
