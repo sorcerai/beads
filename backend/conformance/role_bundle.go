@@ -84,6 +84,8 @@ type RoleContractBundle struct {
 	BlockingAnnotator    func(t *testing.T) *BlockingAnnotatorFixture
 	Bootstrapper         func(t *testing.T) *BootstrapperFixture
 	Claimer              func(t *testing.T) *ClaimerFixture
+	CodeMapIndexer       func(t *testing.T) *CodeMapIndexerFixture
+	CodeMapReader        func(t *testing.T) *CodeMapReaderFixture
 	Commenter            func(t *testing.T) *CommenterFixture
 	Counter              func(t *testing.T) *CounterFixture
 	CycleDetector        func(t *testing.T) *CycleDetectorFixture
@@ -92,6 +94,7 @@ type RoleContractBundle struct {
 	EdgeReader           func(t *testing.T) *EdgeReaderFixture
 	GraphCounter         func(t *testing.T) *GraphCounterFixture
 	Importer             func(t *testing.T) *ImporterFixture
+	IssueFiles           func(t *testing.T) *IssueFilesFixture
 	Journal              func(t *testing.T) *JournalFixture
 	LifecycleCloseReopen func(t *testing.T) *LifecycleCloseReopenFixture
 	LifecycleCreate      func(t *testing.T) *LifecycleCreateFixture

@@ -15,6 +15,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/steveyegge/beads/codemapops"
 	"github.com/steveyegge/beads/internal/storage"
 	"github.com/steveyegge/beads/issueops"
 	"github.com/steveyegge/beads/journalops"
@@ -49,6 +50,7 @@ const modulePath = "github.com/steveyegge/beads"
 // its declarations, which is what puts a role with no accessor under the
 // exhaustiveness gate rather than outside it.
 var facadePackages = map[string]string{
+	reflect.TypeOf((*codemapops.Indexer)(nil)).Elem().PkgPath(): "codemapops",
 	reflect.TypeOf((*issueops.Reader)(nil)).Elem().PkgPath():    "issueops",
 	reflect.TypeOf((*journalops.Journal)(nil)).Elem().PkgPath(): "journalops",
 	reflect.TypeOf((*memoryops.Memories)(nil)).Elem().PkgPath(): "memoryops",

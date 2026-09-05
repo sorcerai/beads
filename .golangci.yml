@@ -236,6 +236,8 @@ linters:
               desc: "a command reaches the ready-count role through store.ReadyCounter(), never through the constructor: the accessor is where each storage decorator adds its layer - see internal/workapi/storereadycounter/counter.go"
             - pkg: github.com/steveyegge/beads/internal/workapi/storequerier
               desc: "a command reaches the boolean-query role through store.Querier(), never through the constructor: the accessor is where each storage decorator adds its layer - see internal/workapi/storequerier/querier.go"
+            - pkg: github.com/steveyegge/beads/internal/storage/codemapops
+              desc: "front doors reach the code map through store.CodeMapIndexer()/CodeMapReader()/IssueFiles(), never the InTx bodies"
         # beadserrors sits BENEATH every role leaf, so whatever it imports is
         # imported by all of them - which is the reason it exists. The second
         # leaf reached into issueops for one sentinel and pulled internal/types
