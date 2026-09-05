@@ -12,6 +12,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/steveyegge/beads/codemapops"
 	"github.com/steveyegge/beads/internal/config"
 	"github.com/steveyegge/beads/internal/storage"
 	"github.com/steveyegge/beads/internal/tracker"
@@ -666,6 +667,18 @@ func (s *configStore) WorkspaceConfig() (issueops.WorkspaceConfig, error) {
 }
 func (s *configStore) Memories() (memoryops.Memories, error) {
 	return nil, &storage.ErrUnsupported{Op: "Memories", Backend: "jira-config-stub"}
+}
+
+func (s *configStore) CodeMapIndexer() (codemapops.Indexer, error) {
+	return nil, &storage.ErrUnsupported{Op: "CodeMapIndexer", Backend: "jira-config-stub"}
+}
+
+func (s *configStore) CodeMapReader() (codemapops.Reader, error) {
+	return nil, &storage.ErrUnsupported{Op: "CodeMapReader", Backend: "jira-config-stub"}
+}
+
+func (s *configStore) IssueFiles() (codemapops.IssueFiles, error) {
+	return nil, &storage.ErrUnsupported{Op: "IssueFiles", Backend: "jira-config-stub"}
 }
 func (s *configStore) StatsReporter() (issueops.StatsReporter, error) {
 	return nil, &storage.ErrUnsupported{Op: "StatsReporter", Backend: "jira-config-stub"}

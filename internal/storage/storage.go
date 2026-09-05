@@ -12,6 +12,7 @@ import (
 	"errors"
 	"time"
 
+	"github.com/steveyegge/beads/codemapops"
 	"github.com/steveyegge/beads/internal/types"
 	"github.com/steveyegge/beads/issueops"
 	"github.com/steveyegge/beads/journalops"
@@ -214,6 +215,18 @@ type Storage interface {
 	// on_update and on_close and each hands a script an ISSUE. See
 	// hook_memories.go.
 	Memories() (memoryops.Memories, error)
+
+	// CodeMapIndexer, CodeMapReader and IssueFiles are the code-map plane
+	// (spec docs/superpowers/specs/2026-09-05-codemap-design.md). Three roles
+	// because one caller is entitled to one and not the others: an agent hook
+	// reads context and must not write the map, the scout writes the map and
+	// must not bind issues to paths, and issue↔path binding outlives a map
+	// rebuild and cascades with the issue. All three hook decorators recurse
+	// UNWRAPPED for the reason Memories' does: the hook vocabulary is
+	// on_create/on_update/on_close and none of these produces an issue.
+	CodeMapIndexer() (codemapops.Indexer, error)
+	CodeMapReader() (codemapops.Reader, error)
+	IssueFiles() (codemapops.IssueFiles, error)
 
 	// VersionReconciler returns the clone-local version markers for this store:
 	// the dolt-ignored pair recording which bd binary last opened this

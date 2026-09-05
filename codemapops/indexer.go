@@ -12,6 +12,9 @@ type ApplyRequest struct {
 }
 
 // ApplyResult reports what an Apply call actually changed.
+//
+// EdgesPruned counts EVERY edge the apply removed: the edges replaced because
+// their source was rescanned, plus the orphans left by a node deletion.
 type ApplyResult struct {
 	NodesUpserted, NodesDeleted, EdgesWritten, EdgesPruned int
 }
