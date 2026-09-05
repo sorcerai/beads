@@ -666,7 +666,7 @@ func (s *DoltStore) deleteIssue(ctx context.Context, id string) error {
 
 		commitMsg := fmt.Sprintf("bd: delete %s", id)
 		return s.doltAddAndCommitInTx(ctx, tx,
-			[]string{"issues", "dependencies", "labels", "comments", "events", "provenance_events", "child_counters", "issue_snapshots", "compaction_snapshots"},
+			[]string{"issues", "dependencies", "labels", "comments", "events", "provenance_events", "child_counters", "issue_snapshots", "compaction_snapshots", "issue_files"},
 			commitMsg)
 	}); err != nil {
 		return s.recordDoltPublicationFailure(ctx, err)
@@ -748,7 +748,7 @@ func (s *DoltStore) deleteIssues(ctx context.Context, ids []string, cascade bool
 
 		commitMsg := fmt.Sprintf("bd: delete %d issue(s)", result.DeletedCount)
 		return s.doltAddAndCommitInTx(ctx, tx,
-			[]string{"issues", "dependencies", "labels", "comments", "events", "provenance_events", "child_counters", "issue_snapshots", "compaction_snapshots"},
+			[]string{"issues", "dependencies", "labels", "comments", "events", "provenance_events", "child_counters", "issue_snapshots", "compaction_snapshots", "issue_files"},
 			commitMsg)
 	}); err != nil {
 		// Preserve partial result (e.g., OrphanedIssues) on error.

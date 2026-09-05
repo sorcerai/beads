@@ -12,7 +12,7 @@ import (
 	"github.com/steveyegge/beads/internal/types"
 )
 
-var permanentIssueAuxTables = []string{"issues", "labels", "dependencies", "events", "comments", "provenance_events"}
+var permanentIssueAuxTables = []string{"issues", "labels", "dependencies", "events", "comments", "provenance_events", "issue_files"}
 
 // IsEphemeralID returns true if the ID belongs to an ephemeral issue.
 func IsEphemeralID(id string) bool {
