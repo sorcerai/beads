@@ -197,16 +197,21 @@ func execScoped(ctx context.Context, tx issueops.DBTX, repoID string, pkgIDs, ke
 		return 0, nil
 	}
 	ph := strings.TrimSuffix(strings.Repeat("?,", len(pkgIDs)), ",")
-	kp := strings.TrimSuffix(strings.Repeat("?,", len(keep)), ",")
-	q := fmt.Sprintf("DELETE FROM code_nodes WHERE repo_id = ? AND (id IN (%s) OR package_id IN (%s)) AND id NOT IN (%s)", ph, ph, kp)
+	q := fmt.Sprintf("DELETE FROM code_nodes WHERE repo_id = ? AND (id IN (%s) OR package_id IN (%s))", ph, ph)
 	args := []any{repoID}
 	for i := 0; i < 2; i++ {
 		for _, id := range pkgIDs {
 			args = append(args, id)
 		}
 	}
-	for _, id := range keep {
-		args = append(args, id)
+	// No keep list means the rescan found the packages gone: everything in
+	// them goes. An empty NOT IN () is a parse error, so the clause is only
+	// added when it has operands.
+	if len(keep) > 0 {
+		q += " AND id NOT IN (" + strings.TrimSuffix(strings.Repeat("?,", len(keep)), ",") + ")"
+		for _, id := range keep {
+			args = append(args, id)
+		}
 	}
 	r, err := tx.ExecContext(ctx, q, args...)
 	if err != nil {

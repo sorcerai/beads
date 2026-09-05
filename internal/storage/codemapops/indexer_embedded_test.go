@@ -42,6 +42,31 @@ func TestApplyIsIdempotentAndIncrementalDeletes(t *testing.T) {
 	}
 }
 
+// A rescan of a package that has been deleted outright arrives as Only with
+// an empty node set: everything in that package goes, and nothing else does.
+func TestApplyIncrementalWithEmptyGraphDeletesThePackage(t *testing.T) {
+	tx, cleanup := newTestTx(t)
+	defer cleanup()
+	ctx := context.Background()
+	now := time.Now().UTC().Truncate(time.Second)
+	if _, err := cmops.ApplyInTx(ctx, tx, codemapops.ApplyRequest{RepoID: "r1", HeadSHA: "abc", Graph: twoPkgGraph()}, now); err != nil {
+		t.Fatal(err)
+	}
+	res, err := cmops.ApplyInTx(ctx, tx, codemapops.ApplyRequest{RepoID: "r1", HeadSHA: "abc",
+		Only: []string{"m/b"}, Graph: codemapops.Graph{Lang: "go"}}, now)
+	if err != nil || res.NodesDeleted != 2 || res.EdgesWritten != 0 || res.EdgesPruned != 3 {
+		t.Fatalf("deleting package m/b wholesale: %+v %v", res, err)
+	}
+	left, err := cmops.PackageContextInTx(ctx, tx, "r1", "m/a")
+	if err != nil || len(left.Files) != 1 || len(left.Importers) != 0 {
+		t.Fatalf("m/a survives with its file and no importers: %+v %v", left, err)
+	}
+	var n int
+	if err := tx.QueryRowContext(ctx, "SELECT COUNT(*) FROM code_nodes WHERE repo_id='r1'").Scan(&n); err != nil || n != 2 {
+		t.Fatalf("want 2 nodes left, got %d (%v)", n, err)
+	}
+}
+
 func TestSetSummariesRefusesMovedOnBlob(t *testing.T) {
 	tx, cleanup := newTestTx(t)
 	defer cleanup()
