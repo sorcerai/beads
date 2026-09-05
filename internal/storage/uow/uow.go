@@ -22,6 +22,7 @@ type UnitOfWork interface {
 	CommentUseCase() domain.CommentUseCase
 	RawSQLUseCase() domain.RawSQLUseCase
 	EventsJournalUseCase() domain.EventsJournalUseCase
+	CodeMapUseCase() domain.CodeMapUseCase
 }
 
 type UnitOfWorkProvider interface {
@@ -49,6 +50,7 @@ type baseUOW struct {
 	commentUseCase       domain.CommentUseCase
 	rawSQLUseCase        domain.RawSQLUseCase
 	eventsJournalUseCase domain.EventsJournalUseCase
+	codeMapUseCase       domain.CodeMapUseCase
 }
 
 func (u *baseUOW) Commit(ctx context.Context, message string) error {
@@ -131,4 +133,16 @@ func (u *baseUOW) EventsJournalUseCase() domain.EventsJournalUseCase {
 		u.eventsJournalUseCase = domain.NewEventsJournalUseCase(db.NewEventsJournalSQLRepository(u.tx.Runner()))
 	}
 	return u.eventsJournalUseCase
+}
+
+// CodeMapUseCase serves the three code-map roles from ONE use case: the
+// indexer, the reader and the issue-to-path binding share the code_nodes,
+// code_edges and issue_files tables, so a caller that reads context for an
+// issue and the map beneath it does both in this unit of work's single
+// transaction.
+func (u *baseUOW) CodeMapUseCase() domain.CodeMapUseCase {
+	if u.codeMapUseCase == nil {
+		u.codeMapUseCase = domain.NewCodeMapUseCase(db.NewCodeMapSQLRepository(u.tx.Runner()))
+	}
+	return u.codeMapUseCase
 }

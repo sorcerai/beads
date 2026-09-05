@@ -82,6 +82,7 @@ import (
 	"fmt"
 	"reflect"
 
+	"github.com/steveyegge/beads/codemapops"
 	"github.com/steveyegge/beads/internal/hooks"
 	"github.com/steveyegge/beads/internal/storage"
 	"github.com/steveyegge/beads/internal/storage/domain"
@@ -307,6 +308,23 @@ func (p *notifyingProvider) Releaser() (publicops.Releaser, error) { return NewR
 
 func (p *notifyingProvider) Memories() (memoryops.Memories, error) { return NewMemories(p) }
 
+// CodeMapIndexer, CodeMapReader and IssueFiles build on THIS provider, like
+// every role above them, so a code-map read taken through a notifying provider
+// still runs in a unit of work this layer opened. Nothing here records: the
+// hook vocabulary has no name for an index or a link, which is the argument
+// hook_codemap.go makes for the DoltStorage chain.
+func (p *notifyingProvider) CodeMapIndexer() (codemapops.Indexer, error) {
+	return NewCodeMapIndexer(p)
+}
+
+func (p *notifyingProvider) CodeMapReader() (codemapops.Reader, error) {
+	return NewCodeMapReader(p)
+}
+
+func (p *notifyingProvider) IssueFiles() (codemapops.IssueFiles, error) {
+	return NewIssueFiles(p)
+}
+
 // EventsJournalCursor builds on THIS provider, like every role above it, so a
 // journal read taken through a notifying provider still runs in a unit of work
 // this layer opened. Nothing here records, and nothing needs to: this accessor
@@ -432,6 +450,15 @@ func (u *notifyingUOW) IssueUseCase() domain.IssueUseCase {
 		u.issueUC = &recordingIssueUC{IssueUseCase: u.UnitOfWork.IssueUseCase(), rec: u.rec, snap: u.snapshotter()}
 	}
 	return u.issueUC
+}
+
+// CodeMapUseCase passes through and records nothing, which the parity guard in
+// notifying_parity_test.go requires this file to say out loud rather than
+// inherit from the embedded UnitOfWork. Applying a code map, summarizing a node
+// and binding an issue to a path all change no bead and name no hook event, so
+// there is nothing to buffer for the drain after commit.
+func (u *notifyingUOW) CodeMapUseCase() domain.CodeMapUseCase {
+	return u.UnitOfWork.CodeMapUseCase()
 }
 
 func (u *notifyingUOW) DependencyUseCase() domain.DependencyUseCase {
