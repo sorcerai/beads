@@ -37,9 +37,10 @@ type cargoPkg struct {
 
 // crate is one workspace member with the repo-relative location of its source.
 type crate struct {
-	name   string
-	srcDir string // repo-relative, forward slashes
-	deps   []string
+	name    string
+	srcDir  string // repo-relative, forward slashes
+	deps    []string
+	scanned bool // false when an incremental scan left this crate out of scope
 }
 
 var (
@@ -87,6 +88,7 @@ func (RustScout) Scan(root string, only []string) (codemapops.Graph, error) {
 		}
 		byModule[strings.ReplaceAll(p.Name, "-", "_")] = c
 		if only == nil || wanted[p.Name] || wantedDir(wanted, path.Dir(c.srcDir)) {
+			c.scanned = true
 			crates = append(crates, c)
 		}
 	}
@@ -263,8 +265,8 @@ func resolveModule(indexed map[string]bool, dir, name string) string {
 }
 
 // resolveUse maps a `use` path to an indexed file. ours reports whether the
-// path points inside this workspace at all; an external or std path is neither
-// an edge nor a drop.
+// path points at a crate this scan actually read; a std, third-party, or
+// out-of-scope crate is neither an edge nor a drop.
 func resolveUse(indexed map[string]bool, byModule map[string]*crate, c *crate, rel, usePath string) (target string, ours bool) {
 	segs := strings.Split(usePath, "::")
 	if len(segs) == 0 {
@@ -285,6 +287,11 @@ func resolveUse(indexed map[string]bool, byModule map[string]*crate, c *crate, r
 		other, ok := byModule[segs[0]]
 		if !ok {
 			return "", false // std or a third-party crate
+		}
+		if !other.scanned {
+			// Out of this scan's scope, not unresolvable: the crate's files
+			// were never indexed, so there is nothing here to fail to find.
+			return "", false
 		}
 		dir = other.srcDir
 	}
