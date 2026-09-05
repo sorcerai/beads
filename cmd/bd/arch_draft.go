@@ -148,8 +148,8 @@ func scoutRust(repoRoot string) (string, string, error) {
 	}
 	// Also list workspace members + each crate's internal deps from Cargo.toml,
 	// since cargo tree can be verbose. Keep it focused on internal edges.
-	members := listRustWorkspaceMembers(repoRoot)
-	internalDeps := listRustInternalDeps(repoRoot)
+	members := scout.WorkspaceMembers(repoRoot)
+	internalDeps := scout.InternalDeps(repoRoot)
 	g := fmt.Sprintf("## Rust workspace members\n%s\n## Internal crate dependencies (from Cargo.toml)\n%s\n## cargo tree (depth 3, normal edges)\n%s",
 		members, internalDeps, truncateForPrompt(string(out), 8000))
 	return g, "Rust", nil
@@ -234,62 +234,6 @@ func scoutPython(repoRoot string) (string, string, error) {
 		}
 	}
 	return b.String(), "Python", nil
-}
-
-// listRustWorkspaceMembers reads the [workspace] members from the root Cargo.toml.
-func listRustWorkspaceMembers(repoRoot string) string {
-	data, err := os.ReadFile(filepath.Join(repoRoot, "Cargo.toml"))
-	if err != nil {
-		return "(could not read root Cargo.toml)"
-	}
-	content := string(data)
-	start := strings.Index(content, "[workspace]")
-	if start < 0 {
-		return "(no [workspace] table — single crate)"
-	}
-	rest := content[start:]
-	end := strings.Index(rest, "\n[")
-	if end < 0 {
-		end = len(rest)
-	}
-	return rest[:end]
-}
-
-// listRustInternalDeps scans each crate's Cargo.toml for reverie-*/cortex deps.
-func listRustInternalDeps(repoRoot string) string {
-	cratesDir := filepath.Join(repoRoot, "crates")
-	entries, err := os.ReadDir(cratesDir)
-	if err != nil {
-		return "(no crates/ dir)"
-	}
-	var b strings.Builder
-	re := regexp.MustCompile(`(?m)^(reverie-[a-z0-9-]+|cortex[a-z0-9-]*)\b`)
-	for _, e := range entries {
-		if !e.IsDir() {
-			continue
-		}
-		ct := filepath.Join(cratesDir, e.Name(), "Cargo.toml")
-		data, err := os.ReadFile(ct)
-		if err != nil {
-			continue
-		}
-		matches := re.FindAllString(string(data), -1)
-		// dedup
-		seen := map[string]bool{}
-		var deps []string
-		for _, m := range matches {
-			if m == e.Name() || seen[m] {
-				continue
-			}
-			seen[m] = true
-			deps = append(deps, m)
-		}
-		if len(deps) > 0 {
-			sort.Strings(deps)
-			b.WriteString(fmt.Sprintf("%s -> %s\n", e.Name(), strings.Join(deps, ", ")))
-		}
-	}
-	return b.String()
 }
 
 func hasPython(repoRoot string) bool {

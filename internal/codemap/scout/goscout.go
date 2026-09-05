@@ -98,11 +98,10 @@ func (GoScout) Scan(root string, only []string) (codemapops.Graph, error) {
 		if p.Dir == "" || p.ImportPath == "" {
 			continue // -e placeholder for a pattern that resolved to nothing
 		}
-		rel, err := filepath.Rel(root, p.Dir)
+		rel, err := relTo(root, p.Dir)
 		if err != nil {
 			continue
 		}
-		rel = filepath.ToSlash(rel)
 		if ig.Skip(rel + "/") {
 			continue
 		}
