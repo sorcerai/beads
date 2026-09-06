@@ -244,19 +244,20 @@ func refreshCodemap(ctx context.Context, root, repoID string) (refreshResult, er
 	if err != nil {
 		return out, err
 	}
-	if len(changed) == 0 {
-		return out, nil
-	}
-	graphs, missing, err := scout.ScanAll(root, scout.PackageDirsFor(changed))
-	if err != nil {
-		return out, fmt.Errorf("scout: %w", err)
-	}
-	for _, m := range missing {
-		fmt.Fprintf(os.Stderr, "Warning: %v (that language was skipped)\n", m)
-	}
 	indexer, err := openCodeMapIndexer()
 	if err != nil {
 		return out, err
+	}
+	var graphs []codemapops.Graph
+	if len(changed) > 0 {
+		var missing []error
+		graphs, missing, err = scout.ScanAll(root, scout.PackageDirsFor(changed))
+		if err != nil {
+			return out, fmt.Errorf("scout: %w", err)
+		}
+		for _, m := range missing {
+			fmt.Fprintf(os.Stderr, "Warning: %v (that language was skipped)\n", m)
+		}
 	}
 	// One apply per language, each scoped by Only to the packages that
 	// language actually rescanned, so no language deletes another's nodes and
@@ -281,6 +282,18 @@ func refreshCodemap(ctx context.Context, root, repoID string) (refreshResult, er
 	}
 	sort.Strings(out.Only)
 	commandDidWrite.Store(true)
+
+	// Nothing was in scope — an empty commit, or one whose files no scan owns.
+	// The head still has to be recorded, or last_sha stays where it is and
+	// `status` reports "behind HEAD" forever while every later refresh re-runs
+	// the same diff from the same stale base. An empty Only records exactly
+	// that and touches no row; there is also nothing for the cache to reproject.
+	if len(out.Only) == 0 {
+		if _, err := indexer.Apply(ctx, codemapops.ApplyRequest{RepoID: repoID, HeadSHA: head, Only: []string{}}); err != nil {
+			return out, fmt.Errorf("recording head: %w", err)
+		}
+		return out, nil
+	}
 
 	deleted, err := gitDeletedFiles(root, last, head)
 	if err != nil {

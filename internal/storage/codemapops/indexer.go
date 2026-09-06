@@ -33,6 +33,19 @@ func ApplyInTx(ctx context.Context, tx issueops.DBTX, req codemapops.ApplyReques
 			return res, &codemapops.ErrNotIndexed{RepoID: req.RepoID}
 		}
 	}
+	// An EMPTY (non-nil) Only rescanned no packages at all: the head moved over
+	// a commit this repository's scans own nothing in. Recording the head is
+	// the whole of the work — without it the head marker never advances and
+	// every later refresh diffs from the same stale base — and no row may
+	// change, because a scan that never ran cannot justify a delete. A graph
+	// here would have no scope to land in, so carrying one is a request error
+	// rather than something to drop quietly.
+	if req.Only != nil && len(req.Only) == 0 {
+		if len(req.Graph.Nodes) > 0 || len(req.Graph.Edges) > 0 {
+			return res, fmt.Errorf("%w: an apply scoped to no packages carries no graph", codemapops.ErrValidation)
+		}
+		return res, recordHeadInTx(ctx, tx, req.RepoID, req.HeadSHA)
+	}
 	// 1. upsert nodes
 	idOf := func(kind codemapops.NodeKind, path string) string { return NodeID(req.RepoID, kind, path) }
 	keep := make([]string, 0, len(req.Graph.Nodes))
@@ -109,11 +122,20 @@ func ApplyInTx(ctx context.Context, tx issueops.DBTX, req codemapops.ApplyReques
 		res.EdgesPruned += int(n)
 	}
 	// 5. record head
-	key := fmt.Sprintf(lastSHAKey, req.RepoID)
-	if _, err := tx.ExecContext(ctx, "INSERT INTO config (`key`, value) VALUES (?, ?) ON DUPLICATE KEY UPDATE value = VALUES(value)", key, req.HeadSHA); err != nil {
-		return res, fmt.Errorf("recording last sha: %w", err)
+	if err := recordHeadInTx(ctx, tx, req.RepoID, req.HeadSHA); err != nil {
+		return res, err
 	}
 	return res, nil
+}
+
+// recordHeadInTx writes the commit a repository's map was built from. It is the
+// last step of a full apply and the ONLY step of an empty-scope one.
+func recordHeadInTx(ctx context.Context, tx issueops.DBTX, repoID, headSHA string) error {
+	key := fmt.Sprintf(lastSHAKey, repoID)
+	if _, err := tx.ExecContext(ctx, "INSERT INTO config (`key`, value) VALUES (?, ?) ON DUPLICATE KEY UPDATE value = VALUES(value)", key, headSHA); err != nil {
+		return fmt.Errorf("recording last sha: %w", err)
+	}
+	return nil
 }
 
 // graphNodeKinds maps every path this apply can resolve an edge endpoint to.

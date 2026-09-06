@@ -167,6 +167,17 @@ func gitCommit(t *testing.T, dir, msg string) string {
 	return strings.TrimSpace(string(out))
 }
 
+// gitCommitEmpty moves HEAD without changing the tree, which is the shape of
+// commit that leaves an incremental refresh with nothing at all to rescan.
+func gitCommitEmpty(t *testing.T, dir, msg string) {
+	t.Helper()
+	cmd := exec.Command("git", "commit", "-q", "--no-verify", "--allow-empty", "-m", msg)
+	cmd.Dir = dir
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("git commit --allow-empty: %v\n%s", err, out)
+	}
+}
+
 // gitCommitAll stages the named paths and commits them.
 func gitCommitAll(t *testing.T, dir, msg string, paths ...string) string {
 	t.Helper()

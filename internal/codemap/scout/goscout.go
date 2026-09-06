@@ -47,6 +47,19 @@ func ModulePath(root string) (string, error) {
 	return "", nil
 }
 
+// goListCmd builds the `go list` invocation a scan reads its package graph
+// from, with the environment pinned: GOPROXY=off because a code map is a read
+// of the tree in front of it and must never reach the network to resolve a
+// dependency, and GOTOOLCHAIN=local because a go.mod naming a newer toolchain
+// would otherwise make an indexing run download one. Both turn a slow surprise
+// into a plain `go list` error the caller already reports.
+func goListCmd(root string, patterns []string) *exec.Cmd {
+	cmd := exec.Command("go", append([]string{"list", "-json", "-e"}, patterns...)...) // #nosec G204 -- patterns are import paths from the caller's own repo
+	cmd.Dir = root
+	cmd.Env = append(os.Environ(), "GOPROXY=off", "GOTOOLCHAIN=local")
+	return cmd
+}
+
 type goListPkg struct {
 	ImportPath, Dir                    string
 	GoFiles, TestGoFiles, XTestGoFiles []string
@@ -84,9 +97,7 @@ func (GoScout) Scan(root string, only []string) (codemapops.Graph, error) {
 		}
 		sort.Strings(scoped)
 	}
-	cmd := exec.Command("go", append([]string{"list", "-json", "-e"}, patterns...)...) // #nosec G204 -- patterns are import paths from the caller's own repo
-	cmd.Dir = root
-	out, err := cmd.Output()
+	out, err := goListCmd(root, patterns).Output()
 	if err != nil {
 		return codemapops.Graph{}, fmt.Errorf("go list: %w", err)
 	}

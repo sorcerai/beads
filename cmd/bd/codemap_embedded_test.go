@@ -71,6 +71,33 @@ func TestCodemapBuildStatusRefresh(t *testing.T) {
 	if status = runCodemap(t, bd, dir, "status"); !strings.Contains(status, "up to date") {
 		t.Fatalf("status after refresh: %s", status)
 	}
+
+	// A docs-only commit still reaches an apply: the scan is asked about the
+	// directory the file lives in, so ScopedPackages names it, the apply runs
+	// with an empty node set and records the head. This half is here to keep
+	// that path pinned next to the one below, which is the one that broke.
+	writeRepoFile(t, dir, "README.md", "# mini\n")
+	gitCommitAll(t, dir, "docs only", "README.md")
+	if status = runCodemap(t, bd, dir, "status"); !strings.Contains(status, "behind HEAD") {
+		t.Fatalf("status after a docs-only commit: %s", status)
+	}
+	runCodemap(t, bd, dir, "refresh")
+	if status = runCodemap(t, bd, dir, "status"); !strings.Contains(status, "up to date") {
+		t.Fatalf("status after refreshing a docs-only commit: %s", status)
+	}
+
+	// A commit that changes NO file leaves refresh with nothing to scan at all,
+	// and returning there without recording the new head left `status` saying
+	// "behind HEAD" forever: last_sha never advanced past this commit, so every
+	// later one re-ran the same empty diff from the same stale base.
+	gitCommitEmpty(t, dir, "empty commit")
+	if status = runCodemap(t, bd, dir, "status"); !strings.Contains(status, "behind HEAD") {
+		t.Fatalf("status after an empty commit: %s", status)
+	}
+	runCodemap(t, bd, dir, "refresh")
+	if status = runCodemap(t, bd, dir, "status"); !strings.Contains(status, "up to date") {
+		t.Fatalf("status after refreshing an empty commit: %s", status)
+	}
 }
 
 // TestCodemapQueriesAndLink covers the Task 16 read verbs plus the manual

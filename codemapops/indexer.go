@@ -5,10 +5,18 @@ import "context"
 // ApplyRequest asks an Indexer to replace a repository's nodes and edges (or
 // a subset of packages, via Only) with a freshly scanned Graph.
 type ApplyRequest struct {
-	RepoID  string   `json:"repo_id"`
-	HeadSHA string   `json:"head_sha"`
-	Graph   Graph    `json:"graph"`
-	Only    []string `json:"only,omitempty"` // package Paths rescanned; nil = whole repo
+	RepoID  string `json:"repo_id"`
+	HeadSHA string `json:"head_sha"`
+	Graph   Graph  `json:"graph"`
+	// Only names the package Paths this apply rescanned. nil is the whole
+	// repository. NON-NIL AND EMPTY means no package was rescanned — the head
+	// moved over a commit the scan owns nothing in — and records HeadSHA while
+	// touching no node or edge row; it carries no Graph, and one is refused.
+	//
+	// NOT omitempty: nil and empty mean different things here, and omitempty
+	// cannot tell them apart — it would turn "no package rescanned" back into
+	// "the whole repository" on the far side of any marshaling.
+	Only []string `json:"only"`
 }
 
 // ApplyResult reports what an Apply call actually changed.

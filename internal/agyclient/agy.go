@@ -75,6 +75,13 @@ func Call(prompt, model, backup string) (string, error) {
 	return "", fmt.Errorf("agy synthesis failed and no %s set", BackupCmdEnv)
 }
 
+// callAgOnce passes the prompt as one argv, deliberately. `agy --help`
+// documents stdin for ONE input format — "--input-format … stream-json reads
+// one NDJSON message per line from stdin" — and describes --print/--prompt as
+// taking the prompt as their value. Nothing there says the default text format
+// reads stdin, so switching to it would be a guess about another tool's
+// contract. The ceiling is ARG_MAX; the fix, if a prompt ever reaches it, is
+// --input-format stream-json rather than bare stdin.
 func callAgOnce(prompt string) (string, error) {
 	return run(exec.Command("agy", "--print", prompt))
 }

@@ -109,3 +109,24 @@ func TestGoScoutModulePathAndDetect(t *testing.T) {
 		t.Error("Detect should reject a dir with no go.mod")
 	}
 }
+
+// A scan must not reach the network or download a toolchain: the map describes
+// the tree in front of it. Asserting on the constructed command keeps the check
+// off `go list` itself, which would need a module to run against.
+func TestGoListCmdPinsItsEnvironment(t *testing.T) {
+	cmd := goListCmd(t.TempDir(), []string{"./..."})
+	want := map[string]bool{"GOPROXY=off": false, "GOTOOLCHAIN=local": false}
+	for _, e := range cmd.Env {
+		if _, ok := want[e]; ok {
+			want[e] = true
+		}
+	}
+	for e, found := range want {
+		if !found {
+			t.Errorf("go list env is missing %s: %v", e, cmd.Env)
+		}
+	}
+	if cmd.Dir == "" {
+		t.Error("go list must run in the repository root")
+	}
+}
