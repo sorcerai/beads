@@ -216,6 +216,17 @@ context. Parent/orchestrator agents must read these fields before spawning
 subagents because a running subagent cannot change its model or reasoning effort
 after launch.
 
+**Read the code map before exploring.** When a repository has a code map built
+(`bd codemap build`), `bd show <id>` prints a CODE section naming the files the
+issue has touched, what they import, and which other open issues sit on the same
+paths; `bd codemap show <path>` answers the same question for one file. Read
+both before grepping — they are the two commands `bd prime` tells you to run,
+and they replace most first-pass exploration. After `bd setup claude` the same
+context arrives automatically on every `Read`, `Edit`, `Write` and `MultiEdit`,
+and edits are recorded back against the claimed issue without being asked. Set
+`BD_NO_CODEMAP=1` to opt out of the hooks entirely. See
+[docs/reference/codemap.md](docs/reference/codemap.md).
+
 **Use stdin for descriptions with special characters** (backticks, `!`, nested quotes):
 ```bash
 # Pipe via stdin to avoid shell escaping issues

@@ -332,6 +332,7 @@
           "reference/advanced",
           "reference/json-schema",
           "reference/events-journal",
+          "reference/codemap",
           "reference/observability",
           "reference/troubleshooting",
           "reference/antivirus",

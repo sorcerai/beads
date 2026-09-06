@@ -9,6 +9,45 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **`bd codemap`: a per-repository map of files, imports, importers and the
+  issues touching them.** `bd codemap build` scans the tree (Go and Rust) and
+  indexes files, packages and import edges; `bd codemap refresh` rescans only
+  the packages whose files changed, which is cheap enough to run from a commit
+  hook; `bd codemap status` says whether the map matches the tree. The read
+  verbs are `show`, `deps`, `who`, `files` and `stale`. Issue-to-file links come
+  from `bd codemap link` / `bd update <id> --files` (source `manual`) or from
+  `bd codemap record-commit` (source `commit`, read out of the commit message).
+  `bd codemap export` writes the map as an Understand-Anything knowledge graph
+  that `bd explain` already reads. The map surfaces as a CODE section on
+  `bd show` and `bd update --claim`, and as a `## Code map` section in
+  `bd prime`. File summaries are opt-in (`--summaries`), pinned to the file's
+  blob hash so `bd codemap stale` is a comparison rather than a guess. Every
+  code-map JSON payload — `bd codemap show --json` and the `code` block on
+  `bd show --json` / `bd update --claim --json` alike — uses **snake_case**
+  field names (`is_test`, `blob_hash`, `package_path`, `issue_id`), matching the
+  HTTP API rather than the Go field names an earlier prerelease emitted. See
+  [docs/reference/codemap.md](docs/reference/codemap.md) and
+  [ADR-0004](engdocs/adr/0004-code-map.md).
+
+- **`bd hooks install` writes a managed `post-commit` hook.** It runs
+  `bd codemap record-commit HEAD`, linking the issues a commit names to the
+  files it touched and then refreshing the map. The code-map half never fails a
+  commit — git has already written it by then — though a chained hook's exit
+  code is still propagated. A repository whose map was never built is skipped
+  entirely. **A released `bd` still on your PATH will print `unknown hook:
+  post-commit` until you upgrade**: the hook name is new and an older binary
+  does not recognise it. `BD_CODEMAP_HOOK_TIMEOUT` overrides the 10-second
+  subprocess budget.
+
+- **`bd setup claude` registers two code-map tool hooks.** A `PreToolUse` hook
+  on `Read|Edit|Write|MultiEdit` injects what the map knows about the file the
+  agent is about to open, reading the derived `.beads/codemap.cache.json` and
+  never opening the store — its own marginal cost is 17–18 ms above bd's 42–69
+  ms process floor. A `PostToolUse` hook on `Edit|Write|MultiEdit|NotebookEdit`
+  records the touch against the claimed issue, under a hard 2-second budget
+  (`BD_CODEMAP_TOOL_TIMEOUT`). Neither ever fails a tool call. `BD_NO_CODEMAP=1`
+  disables the code-map hooks, git and tool hooks alike.
+
 - **The events journal records WHO performed each mutation.** `bd_events_journal`
   gains an `actor` column (migration 0066 plus its ignored-series twin 0025, so
   upgraded workspaces and fresh clones converge on the same shape), stamped
