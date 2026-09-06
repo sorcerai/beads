@@ -68,7 +68,7 @@ func TestBuildFromGraph(t *testing.T) {
 	stale := []codemapops.NodeRef{{Path: "a/a.go"}}
 	links := map[string][]codemapops.IssueRef{"b/b.go": {{ID: "bd-1", Title: "fix b", Status: "open"}}}
 
-	f := BuildFromGraph(context.Background(), "r1", "sha1", g, prev, stale, links)
+	f := BuildFromGraph(context.Background(), "r1", "sha1", g, prev, stale, links, nil)
 	if f.RepoID != "r1" || f.HeadSHA != "sha1" || f.GeneratedAt.IsZero() {
 		t.Fatalf("header wrong: %+v", f)
 	}
@@ -111,8 +111,65 @@ func TestBuildFromGraphCapsNames(t *testing.T) {
 	for i := 0; i < 20; i++ {
 		g.Edges = append(g.Edges, codemapops.Edge{Src: "a.go", Dst: fmt.Sprintf("pkg/x%02d", i), Kind: codemapops.EdgeImports, Weight: 1})
 	}
-	f := BuildFromGraph(context.Background(), "r1", "sha1", g, File{}, nil, nil)
+	f := BuildFromGraph(context.Background(), "r1", "sha1", g, File{}, nil, nil, nil)
 	if got := f.Files["a.go"].Imports; len(got) != maxNames || got[0] != "pkg/x00" {
 		t.Errorf("imports not capped at %d: %v", maxNames, got)
+	}
+}
+
+// bOnlyGraph is what an incremental refresh of package b alone produces: no
+// node for package a or its files, because the scan never looked there.
+func bOnlyGraph() codemapops.Graph {
+	return codemapops.Graph{Lang: "go",
+		Nodes: []codemapops.Node{
+			{Kind: codemapops.NodePackage, Path: "example.com/mini/b", Name: "b", Lang: "go"},
+			{Kind: codemapops.NodeFile, Path: "b/b.go", Name: "b.go", PackagePath: "example.com/mini/b", Lang: "go"},
+		},
+		Edges:            []codemapops.Edge{{Src: "example.com/mini/b", Dst: "b/b.go", Kind: codemapops.EdgeContains, Weight: 1}},
+		ExternalPackages: []string{"example.com/mini/a"},
+		ScopedPackages:   []string{"example.com/mini/b"}}
+}
+
+// TestBuildFromGraphKeepsUnscannedImporters is the regression guard: a package
+// this scan never looked at still imports the rescanned one, and its edge is
+// absent from the incremental graph. Deriving importers from g alone silently
+// dropped it and overwrote a correct entry.
+func TestBuildFromGraphKeepsUnscannedImporters(t *testing.T) {
+	prev := File{Files: map[string]Entry{
+		"b/b.go": {Path: "b/b.go", Importers: []string{"a/x.go", "example.com/mini/a"}},
+	}}
+
+	f := BuildFromGraph(context.Background(), "r1", "sha2", bOnlyGraph(), prev, nil, nil, nil)
+	got := f.Files["b/b.go"].Importers
+	if len(got) != 2 || got[0] != "a/x.go" || got[1] != "example.com/mini/a" {
+		t.Errorf("an importer outside the scan must survive it: %v", got)
+	}
+
+	// Deleted names are the exception: there the commit, not the scan, is
+	// authoritative, and carrying one would resurrect a file that is gone.
+	f = BuildFromGraph(context.Background(), "r1", "sha2", bOnlyGraph(), prev, nil, nil, []string{"a/x.go"})
+	got = f.Files["b/b.go"].Importers
+	if len(got) != 1 || got[0] != "example.com/mini/a" {
+		t.Errorf("a deleted importer must not be carried forward: %v", got)
+	}
+}
+
+// TestBuildFromGraphDropsRescannedImporter is the other half of the rule: when
+// the scan DID look at the importer, the scan wins. A file that stopped
+// importing the package must not come back from the old cache.
+func TestBuildFromGraphDropsRescannedImporter(t *testing.T) {
+	g := bOnlyGraph()
+	// This scan covered a/a.go too, and its edges no longer import b.
+	g.Nodes = append(g.Nodes,
+		codemapops.Node{Kind: codemapops.NodePackage, Path: "example.com/mini/a", Name: "a", Lang: "go"},
+		codemapops.Node{Kind: codemapops.NodeFile, Path: "a/a.go", Name: "a.go", PackagePath: "example.com/mini/a", Lang: "go"})
+	g.ExternalPackages = nil
+
+	prev := File{Files: map[string]Entry{
+		"b/b.go": {Path: "b/b.go", Importers: []string{"a/a.go"}},
+	}}
+	f := BuildFromGraph(context.Background(), "r1", "sha2", g, prev, nil, nil, nil)
+	if got := f.Files["b/b.go"].Importers; len(got) != 0 {
+		t.Errorf("a rescanned importer that dropped the import must not persist: %v", got)
 	}
 }

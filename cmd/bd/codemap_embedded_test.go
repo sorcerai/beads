@@ -156,3 +156,36 @@ func TestCodemapRefreshDeletedPackage(t *testing.T) {
 		t.Errorf("deleted package still in the map: %s", outStr)
 	}
 }
+
+// TestCodemapRefreshKeepsCrossPackageImporters is the end-to-end half of the
+// same regression. Refreshing package a rescans only a; the edges saying
+// package b imports it live in b's graph, which this scan never produced. The
+// cache entry for a/a.go must keep them anyway.
+//
+// It asserts against .beads/codemap.cache.json directly: `bd codemap show`
+// answers from the store, so it cannot see a cache that has gone wrong.
+func TestCodemapRefreshKeepsCrossPackageImporters(t *testing.T) {
+	if os.Getenv("BEADS_TEST_EMBEDDED_DOLT") != "1" {
+		t.Skip("set BEADS_TEST_EMBEDDED_DOLT=1 to run embedded dolt integration tests")
+	}
+	t.Parallel()
+
+	bd := buildEmbeddedBD(t)
+	dir, beadsDir, _ := bdInit(t, bd, "--prefix", "ci")
+	writeGoMini(t, dir)
+	runCodemap(t, bd, dir, "build")
+
+	before := readCodemapCache(t, beadsDir).Files["a/a.go"].Importers
+	if !containsString(before, "b/b.go") {
+		t.Fatalf("full build should record b/b.go as an importer of a/a.go: %v", before)
+	}
+
+	appendFile(t, dir, "a/a.go", "\nfunc C() {}\n")
+	gitCommitAll(t, dir, "change a", "a/a.go")
+	runCodemap(t, bd, dir, "refresh")
+
+	after := readCodemapCache(t, beadsDir).Files["a/a.go"].Importers
+	if !containsString(after, "b/b.go") {
+		t.Errorf("refresh of package a dropped the importer living in package b: %v", after)
+	}
+}

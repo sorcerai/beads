@@ -312,7 +312,7 @@ func rebuildCache(ctx context.Context, repoID, head string, g codemapops.Graph, 
 	if err != nil {
 		return err
 	}
-	return cache.Write(beadsDir, cache.BuildFromGraph(ctx, repoID, head, g, prev, stale, links))
+	return cache.Write(beadsDir, cache.BuildFromGraph(ctx, repoID, head, g, prev, stale, links, deleted))
 }
 
 // staleScanLimit is the "no limit" the Reader has no spelling for.

@@ -9,6 +9,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/steveyegge/beads/internal/codemap/cache"
 )
 
 // runCodemap runs "bd codemap ..." in dir and returns stdout, failing the test
@@ -169,4 +171,23 @@ func gitRm(t *testing.T, dir, path string) {
 	if out, err := cmd.CombinedOutput(); err != nil {
 		t.Fatalf("git rm %s: %v\n%s", path, err, out)
 	}
+}
+
+// readCodemapCache decodes the derived cache the codemap verbs write.
+func readCodemapCache(t *testing.T, beadsDir string) cache.File {
+	t.Helper()
+	f, err := cache.Read(beadsDir)
+	if err != nil {
+		t.Fatalf("reading code map cache: %v", err)
+	}
+	return f
+}
+
+func containsString(list []string, want string) bool {
+	for _, s := range list {
+		if s == want {
+			return true
+		}
+	}
+	return false
 }

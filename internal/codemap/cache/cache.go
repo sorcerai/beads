@@ -85,7 +85,17 @@ func Read(beadsDir string) (File, error) {
 // because an incremental refresh only rescans some packages. A whole-repository
 // build passes a prev already reduced to the graph's own paths, so a file that
 // left the tree leaves the cache with it.
-func BuildFromGraph(_ context.Context, repoID, headSHA string, g codemapops.Graph, prev File, stale []codemapops.NodeRef, links map[string][]codemapops.IssueRef) File {
+//
+// IMPORTERS are the one field an incremental graph cannot answer on its own. A
+// rescanned package P is imported by whoever imports it, and most of those live
+// in packages this scan never looked at, so their edges are absent from g. Such
+// a name is carried over from prev: the scan had no say about it. A name that
+// IS a node in g, or that deleted names, is not carried — there the scan (or
+// the commit) is authoritative, and carrying it would resurrect an importer
+// that has gone away.
+//
+// deleted lists paths the commit range removed.
+func BuildFromGraph(_ context.Context, repoID, headSHA string, g codemapops.Graph, prev File, stale []codemapops.NodeRef, links map[string][]codemapops.IssueRef, deleted []string) File {
 	staleSet := make(map[string]struct{}, len(stale))
 	for _, s := range stale {
 		staleSet[s.Path] = struct{}{}
@@ -108,10 +118,18 @@ func BuildFromGraph(_ context.Context, repoID, headSHA string, g codemapops.Grap
 		Files:       make(map[string]Entry, len(prev.Files)+len(g.Nodes)),
 	}
 	scanned := make(map[string]struct{}, len(g.Nodes))
+	// inGraph holds PACKAGE paths too: an importer name is a file path or a
+	// package path, and both spellings have to be recognized as rescanned.
+	inGraph := make(map[string]struct{}, len(g.Nodes))
 	for _, n := range g.Nodes {
+		inGraph[n.Path] = struct{}{}
 		if n.Kind == codemapops.NodeFile {
 			scanned[n.Path] = struct{}{}
 		}
+	}
+	gone := make(map[string]struct{}, len(deleted))
+	for _, d := range deleted {
+		gone[d] = struct{}{}
 	}
 	for p, e := range prev.Files {
 		if _, rescanned := scanned[p]; !rescanned {
@@ -123,16 +141,45 @@ func BuildFromGraph(_ context.Context, repoID, headSHA string, g codemapops.Grap
 			continue
 		}
 		entry := Entry{Path: n.Path}
+		old := prev.Files[n.Path]
 		// A scan carries no summary; only a summarizer pass writes one, so the
 		// previous entry is the only place it can come from.
-		if old, ok := prev.Files[n.Path]; ok {
-			entry.Summary, entry.Layer = old.Summary, old.Layer
-		}
+		entry.Summary, entry.Layer = old.Summary, old.Layer
 		_, entry.Stale = staleSet[n.Path]
+		// Imports come from the file's own source, which this scan just read,
+		// so g is the whole answer. Importers live in other packages, so the
+		// ones this scan never looked at have to survive it.
 		entry.Imports = capNames(imports[n.Path])
-		entry.Importers = capNames(importersOf[n.PackagePath])
+		entry.Importers = capNames(carryUnscanned(importersOf[n.PackagePath], old.Importers, inGraph, gone))
 		entry.OpenIssues = links[n.Path]
 		out.Files[n.Path] = entry
+	}
+	return out
+}
+
+// carryUnscanned adds to fresh the names from old that this scan had no say
+// about: not a node in the scanned graph, and not deleted by the commit range.
+func carryUnscanned(fresh, old []string, inGraph, deleted map[string]struct{}) []string {
+	if len(old) == 0 {
+		return fresh
+	}
+	out := append([]string(nil), fresh...)
+	seen := make(map[string]struct{}, len(fresh)+len(old))
+	for _, f := range fresh {
+		seen[f] = struct{}{}
+	}
+	for _, o := range old {
+		if _, dup := seen[o]; dup {
+			continue
+		}
+		if _, rescanned := inGraph[o]; rescanned {
+			continue
+		}
+		if _, dead := deleted[o]; dead {
+			continue
+		}
+		seen[o] = struct{}{}
+		out = append(out, o)
 	}
 	return out
 }
