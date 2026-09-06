@@ -93,5 +93,5 @@ func (s *sweeper) Sweep(ctx context.Context, req issueops.SweepRequest) (issueop
 // delete of a selected set.
 var sweptTables = []string{
 	"issues", "dependencies", "labels", "comments", "events", "provenance_events",
-	"child_counters", "issue_snapshots", "compaction_snapshots",
+	"issue_files", "child_counters", "issue_snapshots", "compaction_snapshots",
 }
