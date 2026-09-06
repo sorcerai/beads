@@ -46,6 +46,55 @@ func TestProxiedServerShow(t *testing.T) {
 		}
 	})
 
+	// The CODE surface is route-agnostic by construction — both helpers read
+	// the code map through its own accessor — but the proxied default renderer
+	// had to call them, and did not. `bd update --claim` already had the
+	// parity, so a claimed issue showed its code and then `bd show` on the same
+	// issue showed none of it.
+	t.Run("show_prints_code_section_and_json", func(t *testing.T) {
+		t.Parallel()
+		p := newSharedProxiedProject(t, bd, "scd")
+		issue := bdProxiedCreate(t, bd, p.dir, "code on the proxied route", "--type", "task")
+		if out, err := bdProxiedRun(t, bd, p.dir, "codemap", "link", issue.ID, "b/b.go"); err != nil {
+			t.Fatalf("bd codemap link: %v\n%s", err, out)
+		}
+
+		out := bdProxiedShowRaw(t, bd, p.dir, issue.ID)
+		for _, want := range []string{"CODE", "b/b.go"} {
+			if !strings.Contains(out, want) {
+				t.Errorf("proxied show is missing %q:\n%s", want, out)
+			}
+		}
+
+		var linked []struct {
+			Code *struct {
+				Files []struct {
+					Path string `json:"path"`
+				} `json:"files"`
+			} `json:"code"`
+		}
+		js := bdProxiedShowRaw(t, bd, p.dir, "--json", issue.ID)
+		mustJSONArray(t, js, &linked)
+		if len(linked) != 1 || linked[0].Code == nil || len(linked[0].Code.Files) != 1 || linked[0].Code.Files[0].Path != "b/b.go" {
+			t.Fatalf("proxied show --json carries no code for a linked issue: %s", js)
+		}
+
+		// An issue with no linked files gets neither surface, on this route as
+		// on the direct one.
+		bare := bdProxiedCreate(t, bd, p.dir, "no files", "--type", "task")
+		if plain := bdProxiedShowRaw(t, bd, p.dir, bare.ID); strings.Contains(plain, "CODE") {
+			t.Errorf("an issue with no linked files must not print a CODE section:\n%s", plain)
+		}
+		var unlinked []map[string]any
+		mustJSONArray(t, bdProxiedShowRaw(t, bd, p.dir, "--json", bare.ID), &unlinked)
+		if len(unlinked) != 1 {
+			t.Fatalf("want one issue back, got %d", len(unlinked))
+		}
+		if _, present := unlinked[0]["code"]; present {
+			t.Errorf("the code key must be omitted for an issue with no linked files: %+v", unlinked[0])
+		}
+	})
+
 	// bd-hc1: proxied `bd show <missing>` answered with the domain seam's raw
 	// "Error fetching x: get x: sql: no rows in result set" - the only visible
 	// difference between a typo and a broken database was the wording of a

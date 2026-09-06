@@ -446,7 +446,7 @@ func runShowProxiedDefault(ctx context.Context, uw uow.UnitOfWork, in *showProxi
 				return HandleErrorRespectJSON("%v", derr)
 			}
 			foundCount++
-			allDetails = append(allDetails, details)
+			allDetails = append(allDetails, withIssueCodeJSON(ctx, details))
 			continue
 		}
 
@@ -540,6 +540,12 @@ func proxiedRenderIssue(ctx context.Context, uw uow.UnitOfWork, issue *types.Iss
 	}
 
 	printRelatedSection(relatedSeen)
+
+	// Same placement as the direct route (show.go): after the related section
+	// and before comments. Both helpers are route-agnostic — they read the
+	// code map through its own accessor — so parity here is a call, not a
+	// second implementation.
+	printIssueCodeSection(ctx, issue.ID, quietFlag)
 
 	comments, _ := proxiedGetComments(ctx, uw, issue.ID, isWisp)
 	if len(comments) > 0 {
