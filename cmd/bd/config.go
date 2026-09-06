@@ -1082,6 +1082,9 @@ var recognizedConfigKeys = map[string]bool{
 	"auto_compact_enabled": true, "schema_version": true,
 	"output.title-length": true,
 	"prime.max-memories":  true, "prime.max-memory-chars": true,
+	// Same class as the prime memory caps: read at session start, before the
+	// database is necessarily reachable, so it lives in config.yaml.
+	"codemap.prime.max_lines": true,
 	// The events-journal family. All four are startup settings that land in
 	// config.yaml (config.YamlOnlyKeys), and every one of them is documented as
 	// a `bd config set` invocation — including the auto-prune opt-out, where an

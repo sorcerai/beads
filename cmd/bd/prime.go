@@ -14,7 +14,9 @@ import (
 
 	"github.com/spf13/cobra"
 	"github.com/steveyegge/beads"
+	"github.com/steveyegge/beads/codemapops"
 	internalbeads "github.com/steveyegge/beads/internal/beads"
+	"github.com/steveyegge/beads/internal/codemap/cache"
 	"github.com/steveyegge/beads/internal/config"
 	"github.com/steveyegge/beads/internal/metrics"
 	"github.com/steveyegge/beads/memoryops"
@@ -668,6 +670,9 @@ func outputMCPContext(w io.Writer, stealthMode bool) error {
 	if memories != "" {
 		context += memories + "\n"
 	}
+	if codeMap := formatCodeMapForPrime(); codeMap != "" {
+		context += codeMap + "\n"
+	}
 
 	context += `# 🚨 SESSION CLOSE PROTOCOL 🚨
 
@@ -856,6 +861,9 @@ git status                  # Check changed files
 	if memories != "" {
 		context += memories + "\n"
 	}
+	if codeMap := formatCodeMapForPrime(); codeMap != "" {
+		context += codeMap + "\n"
+	}
 
 	context += `# 🚨 SESSION CLOSE PROTOCOL 🚨
 
@@ -955,4 +963,142 @@ bd dep add beads-yyy beads-xxx  # Tests depend on Feature (Feature blocks tests)
 	_, _ = fmt.Fprint(w, context)
 
 	return nil
+}
+
+// primeCodeMapMaxLines caps the code-map section, read the way
+// primeMemoryCaps reads its caps. 20 lines is a paragraph an agent will
+// actually read; a repo shape long enough to scroll is one nobody uses.
+func primeCodeMapMaxLines() int {
+	if n := primeConfigInt("codemap.prime.max_lines"); n > 0 {
+		return n
+	}
+	return 20
+}
+
+// formatCodeMapForPrime reads the repository's shape through the code-map
+// reader and formats it for injection. Like formatMemoriesForPrime it degrades
+// silently: prime runs from a session-start hook, and a workspace with no
+// repository, no store or no map must not fail it. The one thing worth saying
+// out loud is that the map was never BUILT, because that has a one-command fix.
+func formatCodeMapForPrime() string {
+	_, repoID, err := codemapRepoRoot()
+	if err != nil {
+		return ""
+	}
+	// prime is in noDbCommands, so the store is not open yet on the direct
+	// route. Same scoped open, timeout and silent-skip as the memory read.
+	ctx := context.Background()
+	if timeout := primeStoreTimeout(); timeout > 0 {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, timeout)
+		defer cancel()
+	}
+	if !usesProxiedServer() && store == nil {
+		if err := ensureStoreActiveForPrime(ctx); err != nil {
+			return ""
+		}
+		// The second check is not redundant: ensureStoreActiveForPrime can
+		// return nil and still leave store nil, and openCodeMapReader's direct
+		// branch dereferences it. formatMemoriesForPrime carries the same pair.
+		if store == nil {
+			return ""
+		}
+	}
+	reader, err := openCodeMapReader()
+	if err != nil {
+		return ""
+	}
+	shape, err := reader.Shape(ctx, repoID, codemapops.ShapeOptions{TopFiles: 10})
+	if err != nil {
+		var notIndexed *codemapops.ErrNotIndexed
+		if errors.As(err, &notIndexed) {
+			return "\nCode map: not built (run `bd codemap build` to stop exploring by hand)\n"
+		}
+		return ""
+	}
+	var cacheAge time.Duration
+	if dir := internalbeads.FindBeadsDir(); dir != "" {
+		if f, cerr := cache.Read(dir); cerr == nil && !f.GeneratedAt.IsZero() {
+			cacheAge = time.Since(f.GeneratedAt)
+		}
+	}
+	return "\n" + renderPrimeCodeMap(shape, cacheAge, primeCodeMapMaxLines())
+}
+
+// renderPrimeCodeMap formats a repository's shape for prime.
+//
+// The header, the freshness line and the two instructions ALWAYS survive
+// maxLines; only the middle is dropped, layers before hot files. A cap that
+// could cut the instructions would turn a budget into a silent loss of the
+// only lines that tell the agent what to do with any of this.
+func renderPrimeCodeMap(shape codemapops.Shape, cacheAge time.Duration, maxLines int) string {
+	head := []string{
+		"## Code map",
+		primeCodeMapFreshness(shape, cacheAge),
+	}
+	tail := []string{
+		"Run `bd show <id>` before exploring; it lists the files that issue already touches.",
+		"Run `bd codemap show <path>` before opening a file you do not know.",
+	}
+
+	var layers []string
+	for _, l := range shape.Layers {
+		layers = append(layers, fmt.Sprintf("- %s: %d packages, %d files", l.Layer, l.Packages, l.Files))
+	}
+	var hot []string
+	for _, n := range shape.TopFanIn {
+		if n.Summary == "" {
+			hot = append(hot, "- "+n.Path)
+			continue
+		}
+		hot = append(hot, fmt.Sprintf("- %s — %s", n.Path, n.Summary))
+	}
+
+	// Hot files outrank layers, so they are budgeted first. The "Hot files:"
+	// header only earns its line while at least one entry is under it.
+	budget := maxLines - len(head) - len(tail)
+	if budget < 0 {
+		budget = 0
+	}
+	hotLines := 0
+	if len(hot) > 0 {
+		switch {
+		case budget < 2:
+			hot = nil
+		case len(hot)+1 > budget:
+			hot = hot[:budget-1]
+			hotLines = budget
+		default:
+			hotLines = len(hot) + 1
+		}
+	}
+	if n := budget - hotLines; n < len(layers) {
+		if n < 0 {
+			n = 0
+		}
+		layers = layers[:n]
+	}
+
+	lines := append([]string{}, head...)
+	lines = append(lines, layers...)
+	if len(hot) > 0 {
+		lines = append(lines, "Hot files:")
+		lines = append(lines, hot...)
+	}
+	lines = append(lines, tail...)
+	return strings.Join(lines, "\n") + "\n"
+}
+
+// primeCodeMapFreshness is the one line that says whether this map can be
+// trusted, and what to run when it cannot.
+func primeCodeMapFreshness(shape codemapops.Shape, cacheAge time.Duration) string {
+	parts := []string{"map at " + shortSHA(shape.HeadSHA)}
+	if cacheAge > 0 {
+		parts = append(parts, "cache "+roundAge(cacheAge)+" old")
+	}
+	line := strings.Join(parts, " · ")
+	if shape.StaleSummaries > 0 {
+		line += fmt.Sprintf(" · %d summaries stale → bd codemap refresh --summaries", shape.StaleSummaries)
+	}
+	return line
 }

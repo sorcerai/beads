@@ -67,6 +67,8 @@ var YamlOnlyKeys = map[string]bool{
 	// the database is reachable, so they must live in yaml)
 	"prime.max-memories":     true,
 	"prime.max-memory-chars": true,
+	// Same reason for the code-map section's line cap.
+	"codemap.prime.max_lines": true,
 
 	// Validation settings (bd-t7jq)
 	// Values: "warn" | "error" | "none"
