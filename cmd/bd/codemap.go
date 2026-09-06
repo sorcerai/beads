@@ -14,6 +14,7 @@ import (
 	"github.com/steveyegge/beads/internal/beads"
 	"github.com/steveyegge/beads/internal/debug"
 	"github.com/steveyegge/beads/internal/git"
+	"github.com/steveyegge/beads/internal/storage"
 	"github.com/steveyegge/beads/internal/storage/uow"
 	"github.com/steveyegge/beads/internal/types"
 )
@@ -158,7 +159,7 @@ func notIndexedHint(err error) error {
 // result: surfacing code context must never turn a successful `bd show` or
 // `bd update --claim` into an error.
 func issueCodeContextFor(ctx context.Context, issueID string) *codemapops.IssueCodeContext {
-	_, repoID, err := codemapRepoRoot()
+	root, repoID, err := codemapRepoRoot()
 	if err != nil {
 		debug.Logf("codemap: no repo for %s: %v\n", issueID, err)
 		return nil
@@ -173,10 +174,80 @@ func issueCodeContextFor(ctx context.Context, issueID string) *codemapops.IssueC
 		debug.Logf("codemap: context for %s: %v\n", issueID, err)
 		return nil
 	}
+	appendBranchInferredFiles(ctx, root, repoID, issueID, &cc)
 	if len(cc.Files) == 0 {
 		return nil
 	}
 	return &cc
+}
+
+// appendBranchInferredFiles is spec §9.4's branch source. When the checked-out
+// branch NAMES the issue, the files that branch changed are part of the answer
+// to "what code does this issue touch" even though nothing has recorded them.
+//
+// It is computed here and never persisted: a branch is a guess that expires the
+// moment the branch is deleted or rebased, and a Record call would leave that
+// guess in the store as an observation. Recorded links always win — a path
+// already in cc.Files keeps the source it earned.
+//
+// The branch test and the base resolution are `bd explain`'s (serve_board.go),
+// so the two surfaces infer the same set from the same repository.
+func appendBranchInferredFiles(ctx context.Context, root, repoID, issueID string, cc *codemapops.IssueCodeContext) {
+	branch, err := runGitAt(root, "rev-parse", "--abbrev-ref", "HEAD")
+	if err != nil || !strings.Contains(strings.ToLower(branch), strings.ToLower(issueID)) {
+		return
+	}
+	base := ""
+	for _, candidate := range []string{"origin/main", "main", "origin/master", "master", "HEAD~1"} {
+		if _, err := runGitAt(root, "diff", "--name-only", candidate+"...HEAD"); err == nil {
+			base = candidate
+			break
+		}
+	}
+	if base == "" {
+		return
+	}
+	out, err := runGitAt(root, "diff", "--name-only", base+"...HEAD")
+	if err != nil {
+		return
+	}
+	seen := make(map[string]struct{}, len(cc.Files))
+	for _, f := range cc.Files {
+		seen[f.Path] = struct{}{}
+	}
+	var reader codemapops.Reader
+	for _, path := range strings.Split(out, "\n") {
+		path = strings.TrimSpace(path)
+		if path == "" {
+			continue
+		}
+		if _, dup := seen[path]; dup {
+			continue
+		}
+		seen[path] = struct{}{}
+		f := codemapops.IssueCodeFile{IssueFile: codemapops.IssueFile{Path: path, Source: codemapops.SourceBranch}}
+		if reader == nil {
+			// Opened lazily and once: a branch with no new paths must not pay
+			// for a reader, and an unbuildable one is a nil Context, not a
+			// dropped file.
+			if r, rerr := openCodeMapReader(); rerr == nil {
+				reader = r
+			} else {
+				debug.Logf("codemap: no reader for branch files: %v\n", rerr)
+			}
+		}
+		if reader != nil {
+			// An unindexed repository and a path the map has never seen are
+			// both ordinary here: the file is still part of the answer, it just
+			// has no context to show.
+			if fc, ferr := reader.FileContext(ctx, repoID, path); ferr == nil {
+				f.Context = &fc
+			} else if !errors.Is(ferr, storage.ErrNotFound) {
+				debug.Logf("codemap: file context for %s: %v\n", path, ferr)
+			}
+		}
+		cc.Files = append(cc.Files, f)
+	}
 }
 
 // printIssueCodeSection appends the CODE block to a text-mode issue rendering.

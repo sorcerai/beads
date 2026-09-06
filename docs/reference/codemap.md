@@ -169,7 +169,9 @@ map prints `0 stale summaries`.
 
 ## Linking issues to files
 
-Two things write issue-to-file links, and both record which one did it.
+Links are **written** by hand, by a commit, or by the Claude Code tool hooks,
+and each records which one did it. One further source, the branch name, is
+**inferred** at read time and never stored.
 
 ### By hand
 
@@ -204,6 +206,20 @@ which is correct: its files are already attributed to the commits it merges.
 
 This verb has no `--json`; it prints the linked ids and the paths.
 
+### From the branch name
+
+When the checked-out branch name contains an issue id, the files that branch has
+changed count as that issue's files for as long as you are on it. The set is the
+branch's diff against its base — `origin/main`, `main`, `origin/master`,
+`master`, or `HEAD~1`, whichever resolves first — which is the same base
+`bd explain` uses.
+
+These links have source `branch` and are **never written to the store**. A
+branch is a guess that expires when the branch is deleted or rebased, and
+recording it would leave that guess behind as an observation. They are computed
+on each read, they never overwrite a recorded link on the same path, and they do
+not appear in `bd codemap files`, which lists stored links only.
+
 ## Where the map shows up
 
 ### On `bd show`
@@ -212,6 +228,11 @@ An issue with linked files gets a **CODE** section: the files, what they import,
 and an **ALSO TOUCHING** list naming the other open issues sitting on the same
 paths. An issue with no linked files gets no section at all rather than an empty
 one.
+
+The leading glyph is one axis only — `●` for a link something OBSERVED (a hook,
+a commit, or `bd codemap link`) and `◑` for one INFERRED from the branch name.
+The section renders the same on a direct and a proxied workspace, and `--json`
+carries the same answer under a `code` key.
 
 `bd show --json` emits an **array** of issues, and the code context is a `code`
 key on each element, in snake_case:
