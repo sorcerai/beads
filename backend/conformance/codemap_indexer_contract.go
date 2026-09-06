@@ -147,6 +147,22 @@ func codeMapCountEdges(t *testing.T, ctx context.Context, query func(context.Con
 	return n
 }
 
+// codeMapCountImportsInto reads, as a RAW ROW, how many imports edges LAND on a
+// package node. The join is the assertion: node ids are a body's business, so
+// the case names the package by PATH and lets the join fail to match an edge
+// whose destination is not a node at all — which is exactly the shape a
+// mis-resolved external target has.
+func codeMapCountImportsInto(t *testing.T, ctx context.Context, query func(context.Context, string, []any, ...any) error, repoID, pkg string) int {
+	t.Helper()
+	var n int
+	if err := query(ctx, `SELECT COUNT(*) FROM code_edges e JOIN code_nodes n ON n.id = e.dst_id
+        WHERE e.repo_id = ? AND e.kind = ? AND n.path = ? AND n.kind = ?`,
+		[]any{repoID, string(codemapops.EdgeImports), pkg, string(codemapops.NodePackage)}, &n); err != nil {
+		t.Fatalf("counting imports into %s: %v", pkg, err)
+	}
+	return n
+}
+
 // codeMapCountHeadMarkers reads how many head markers a repository has, which
 // is how a refused apply is shown to have recorded nothing. The marker is a
 // config row, so this also proves the refusal did not touch the config plane.
@@ -274,6 +290,54 @@ func RunCodeMapIndexerApplyIncrementalScopesDeletion(t *testing.T, ctx context.C
 	}
 	if len(pc.Files) != 1 || pc.Files[0].Path != p.fileA {
 		t.Errorf("package a's files = %+v, want just %s: a scoped rescan does not reach outside Only", pc.Files, p.fileA)
+	}
+}
+
+// RunCodeMapIndexerApplyIncrementalKeepsCrossScopeEdges pins Graph's clause in
+// codemapops/graph.go: an ExternalPackages entry names "a package an
+// incremental scan imports but did not rescan … the package lives outside the
+// scan's scope, not missing from it". Outside the scope is where the package
+// NODE already is, so the edge has to land on it. Resolved to anything else the
+// edge dangles and the orphan prune takes it, which would strip the importers
+// of every package a refresh did not happen to cover — commit by commit, with
+// no error anywhere.
+func RunCodeMapIndexerApplyIncrementalKeepsCrossScopeEdges(t *testing.T, ctx context.Context, fixture CodeMapIndexerFixture) {
+	p := codeMapPathsFor(fixture.IssuePrefix, "crossscope")
+	codeMapApply(t, ctx, fixture.Indexer, codemapops.ApplyRequest{RepoID: p.repoID, HeadSHA: "abc", Graph: codeMapTwoPkgGraph(p)})
+	before := codeMapCountImportsInto(t, ctx, fixture.QueryScalar, p.repoID, p.pkgA)
+
+	// What an incremental scan of package b alone produces: b's own nodes, the
+	// edges it declares into package a, and package a declared external.
+	codeMapApply(t, ctx, fixture.Indexer, codemapops.ApplyRequest{
+		RepoID: p.repoID, HeadSHA: "def", Only: []string{p.pkgB},
+		Graph: codemapops.Graph{Lang: "go",
+			Nodes: []codemapops.Node{
+				{Kind: codemapops.NodePackage, Path: p.pkgB, Name: p.pkgB, Lang: "go"},
+				{Kind: codemapops.NodeFile, Path: p.fileB, Name: "b.go", PackagePath: p.pkgB, Lang: "go", BlobHash: codeMapBlobB, LOC: 20},
+			},
+			Edges: []codemapops.Edge{
+				{Src: p.pkgB, Dst: p.fileB, Kind: codemapops.EdgeContains, Weight: 1},
+				{Src: p.fileB, Dst: p.pkgA, Kind: codemapops.EdgeImports, Weight: 1},
+				{Src: p.pkgB, Dst: p.pkgA, Kind: codemapops.EdgeImports, Weight: 1},
+			},
+			ExternalPackages: []string{p.pkgA}}})
+
+	if after := codeMapCountImportsInto(t, ctx, fixture.QueryScalar, p.repoID, p.pkgA); after != before {
+		t.Errorf("code_edges importing package a = %d after a rescan of package b alone, want the %d it started with", after, before)
+	}
+	pc, err := fixture.Reader.PackageContext(ctx, p.repoID, p.pkgA)
+	if err != nil {
+		t.Fatalf("PackageContext(%s): %v", p.pkgA, err)
+	}
+	// Importers is every node with an imports edge into package a — the
+	// package and the file inside it — and the package is the one a dangling
+	// resolution would have dropped.
+	var named bool
+	for _, imp := range pc.Importers {
+		named = named || imp.Path == p.pkgB
+	}
+	if !named {
+		t.Errorf("package a's importers = %+v, want package b among them", pc.Importers)
 	}
 }
 

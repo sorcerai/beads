@@ -94,12 +94,16 @@ whole repository.
 
 ### Run a full build periodically
 
-Incremental refresh is correct about the packages it visits, but one thing can
-lag: when a package is **deleted** in a commit range that no refresh revisits,
-the importer names carried forward from the previous map can linger. A periodic
-`bd codemap build` resets that. Weekly, or whenever the map looks wrong, is
-enough — there is no correctness cliff, only names that are staler than the
-tree.
+An incremental refresh keeps the edges that leave its scope. A package the
+rescan imports but does not revisit is declared external, and the import edge
+lands on that package's existing node, so a refresh of one package does not
+strip the importers of its neighbours. Importers survive a refresh the same way
+they survive a full build.
+
+What can still lag is names: when a package is **deleted** in a commit range no
+refresh revisits, the entries carried forward from the previous map linger until
+something rescans them. A periodic `bd codemap build` resets that. Weekly, or
+whenever the map looks wrong, is enough.
 
 ## Reading the map
 

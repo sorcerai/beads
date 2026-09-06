@@ -168,6 +168,7 @@ var roleContractCases = []roleContract{
 		RunCodeMapIndexerApplyWholeRepoDeletesAbsent,
 		RunCodeMapIndexerApplyIncrementalRefusesUnbuiltRepo,
 		RunCodeMapIndexerApplyIncrementalScopesDeletion,
+		RunCodeMapIndexerApplyIncrementalKeepsCrossScopeEdges,
 		RunCodeMapIndexerApplyPrunesOrphanEdges,
 		RunCodeMapIndexerSetSummariesRefusesMovedBlob,
 		RunCodeMapIndexerSetSummariesRefusesOverlongSummary,

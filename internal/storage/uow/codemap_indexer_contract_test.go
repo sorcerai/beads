@@ -38,6 +38,9 @@ func TestCodeMapIndexerContract(t *testing.T) {
 	t.Run("ApplyIncrementalScopesDeletion", func(t *testing.T) {
 		conformance.RunCodeMapIndexerApplyIncrementalScopesDeletion(t, ctx, fixture)
 	})
+	t.Run("ApplyIncrementalKeepsCrossScopeEdges", func(t *testing.T) {
+		conformance.RunCodeMapIndexerApplyIncrementalKeepsCrossScopeEdges(t, ctx, fixture)
+	})
 	t.Run("ApplyPrunesOrphanEdges", func(t *testing.T) {
 		conformance.RunCodeMapIndexerApplyPrunesOrphanEdges(t, ctx, fixture)
 	})

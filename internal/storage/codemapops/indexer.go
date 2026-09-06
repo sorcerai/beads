@@ -85,9 +85,10 @@ func ApplyInTx(ctx context.Context, tx issueops.DBTX, req codemapops.ApplyReques
 	}
 	res.EdgesPruned = int(replaced)
 	if len(req.Graph.Edges) > 0 {
+		kinds := graphNodeKinds(req.Graph)
 		edges := make([]edgeRow, 0, len(req.Graph.Edges))
 		for _, e := range req.Graph.Edges {
-			edges = append(edges, edgeRow{RepoID: req.RepoID, SrcID: idOfPath(req, e.Src), DstID: idOfPath(req, e.Dst), Kind: e.Kind, Weight: max(e.Weight, 1)})
+			edges = append(edges, edgeRow{RepoID: req.RepoID, SrcID: idOfPath(req.RepoID, kinds, e.Src), DstID: idOfPath(req.RepoID, kinds, e.Dst), Kind: e.Kind, Weight: max(e.Weight, 1)})
 		}
 		for i := 0; i < len(edges); i += upsertChunk {
 			end := min(i+upsertChunk, len(edges))
@@ -115,17 +116,38 @@ func ApplyInTx(ctx context.Context, tx issueops.DBTX, req codemapops.ApplyReques
 	return res, nil
 }
 
-// idOfPath resolves an edge endpoint: a path that names a package node is a
-// package id, else a file id. The fallback also catches an edge into a
-// declared ExternalPackages target, which has no node in this graph; the
-// orphan prune in step 4 sweeps the resulting dangling edge.
-func idOfPath(req codemapops.ApplyRequest, path string) string {
-	for _, n := range req.Graph.Nodes {
-		if n.Path == path {
-			return NodeID(req.RepoID, n.Kind, path)
+// graphNodeKinds maps every path this apply can resolve an edge endpoint to.
+// The graph's own nodes come first, then each declared ExternalPackages entry
+// as a package: an external target has no node here because it lives OUTSIDE
+// the rescan, not because it is missing, and the package node it names is
+// already in the store. Resolving it to a file id instead leaves the edge
+// dangling, and step 4's orphan prune then deletes every import into every
+// package the rescan did not cover.
+//
+// First write wins, matching the linear scan this replaced: Graph.Validate
+// permits one path under two kinds, and the old loop returned the first match.
+func graphNodeKinds(g codemapops.Graph) map[string]codemapops.NodeKind {
+	kinds := make(map[string]codemapops.NodeKind, len(g.Nodes)+len(g.ExternalPackages))
+	for _, n := range g.Nodes {
+		if _, seen := kinds[n.Path]; !seen {
+			kinds[n.Path] = n.Kind
 		}
 	}
-	return NodeID(req.RepoID, codemapops.NodeFile, path)
+	for _, p := range g.ExternalPackages {
+		if _, seen := kinds[p]; !seen {
+			kinds[p] = codemapops.NodePackage
+		}
+	}
+	return kinds
+}
+
+// idOfPath resolves an edge endpoint through the kind map: a known path keeps
+// its kind, and anything else falls back to a file id.
+func idOfPath(repoID string, kinds map[string]codemapops.NodeKind, path string) string {
+	if kind, ok := kinds[path]; ok {
+		return NodeID(repoID, kind, path)
+	}
+	return NodeID(repoID, codemapops.NodeFile, path)
 }
 
 func upsertNodes(ctx context.Context, tx issueops.DBTX, rows []nodeRow) error {
