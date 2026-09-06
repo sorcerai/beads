@@ -139,7 +139,7 @@ func installGemini(env geminiEnv, project bool, stealth bool) error {
 	removeHookCommand(hooks, "PreCompress", "bd prime --hook-json")
 	removeHookCommand(hooks, "PreCompress", "bd prime --stealth --hook-json")
 
-	if addHookCommand(hooks, "SessionStart", command) {
+	if addHookCommand(hooks, "SessionStart", command, "") {
 		_, _ = fmt.Fprintln(env.stdout, "✓ Registered SessionStart hook")
 	}
 

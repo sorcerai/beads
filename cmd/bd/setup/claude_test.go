@@ -148,7 +148,7 @@ func TestAddHookCommand(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got := addHookCommand(tt.existingHooks, tt.event, tt.command)
+			got := addHookCommand(tt.existingHooks, tt.event, tt.command, "")
 			if got != tt.wantAdded {
 				t.Errorf("addHookCommand() = %v, want %v", got, tt.wantAdded)
 			}
@@ -627,13 +627,13 @@ func TestIdempotency(t *testing.T) {
 	hooks := make(map[string]interface{})
 
 	// First add
-	added1 := addHookCommand(hooks, "SessionStart", "bd prime")
+	added1 := addHookCommand(hooks, "SessionStart", "bd prime", "")
 	if !added1 {
 		t.Error("First call should have added the hook")
 	}
 
 	// Second add (should detect existing)
-	added2 := addHookCommand(hooks, "SessionStart", "bd prime")
+	added2 := addHookCommand(hooks, "SessionStart", "bd prime", "")
 	if added2 {
 		t.Error("Second call should have detected existing hook")
 	}
@@ -649,12 +649,12 @@ func TestIdempotency(t *testing.T) {
 func TestIdempotencyWithStealth(t *testing.T) {
 	hooks := make(map[string]any)
 
-	if !addHookCommand(hooks, "SessionStart", "bd prime --stealth") {
+	if !addHookCommand(hooks, "SessionStart", "bd prime --stealth", "") {
 		t.Error("First call should have added the stealth hook")
 	}
 
 	// Second add (should detect existing)
-	if addHookCommand(hooks, "SessionStart", "bd prime --stealth") {
+	if addHookCommand(hooks, "SessionStart", "bd prime --stealth", "") {
 		t.Error("Second call should have detected existing stealth hook")
 	}
 
@@ -1653,5 +1653,79 @@ func TestRemoveClaudeRedirectCleansStaleClaudeBlock(t *testing.T) {
 	}
 	if !strings.Contains(string(agentsData), "BEGIN BEADS INTEGRATION") {
 		t.Fatalf("AGENTS.md should still contain its beads block after remove:\n%s", agentsData)
+	}
+}
+
+// TestInstallClaudeRegistersCodemapToolHooks pins the two code-map tool hooks
+// and, crucially, their MATCHERS: without one, Claude Code fires a hook on
+// every tool call, and the pre-tool hook would run on Bash and Task too.
+func TestInstallClaudeRegistersCodemapToolHooks(t *testing.T) {
+	env, stdout, _ := newClaudeTestEnv(t)
+
+	if err := installClaude(env, false, false); err != nil {
+		t.Fatalf("install failed: %v", err)
+	}
+	data, err := env.readFile(projectSettingsPath(env.projectDir))
+	if err != nil {
+		t.Fatalf("read settings: %v", err)
+	}
+	settingsJSON := string(data)
+
+	for _, want := range []string{
+		`"PreToolUse"`,
+		`"command": "bd codemap-hook pre-tool"`,
+		`"matcher": "Read|Edit|Write|MultiEdit"`,
+		`"PostToolUse"`,
+		`"command": "bd codemap-hook post-tool"`,
+		`"matcher": "Edit|Write|MultiEdit|NotebookEdit"`,
+	} {
+		if !strings.Contains(settingsJSON, want) {
+			t.Fatalf("settings missing %q:\n%s", want, settingsJSON)
+		}
+	}
+	if out := stdout.String(); !strings.Contains(out, "Registered PreToolUse code map hook") ||
+		!strings.Contains(out, "Registered PostToolUse code map hook") {
+		t.Errorf("install must report both registrations: %s", out)
+	}
+
+	// The SessionStart hook keeps its empty matcher: adding a parameter must
+	// not silently narrow an existing registration.
+	if !strings.Contains(settingsJSON, `"matcher": ""`) {
+		t.Errorf("SessionStart matcher must stay empty:\n%s", settingsJSON)
+	}
+
+	// Installing twice registers nothing new.
+	if err := installClaude(env, false, false); err != nil {
+		t.Fatalf("second install failed: %v", err)
+	}
+	data, err = env.readFile(projectSettingsPath(env.projectDir))
+	if err != nil {
+		t.Fatalf("read settings: %v", err)
+	}
+	if n := strings.Count(string(data), "bd codemap-hook pre-tool"); n != 1 {
+		t.Fatalf("pre-tool hook registered %d times, want 1:\n%s", n, data)
+	}
+}
+
+// TestRemoveClaudeRemovesCodemapToolHooks is the other half: a hook install
+// registers must be a hook remove takes away, or `bd setup claude --remove`
+// leaves a command behind that fires forever.
+func TestRemoveClaudeRemovesCodemapToolHooks(t *testing.T) {
+	env, _, _ := newClaudeTestEnv(t)
+
+	if err := installClaude(env, false, false); err != nil {
+		t.Fatalf("install failed: %v", err)
+	}
+	if err := removeClaude(env, false); err != nil {
+		t.Fatalf("remove failed: %v", err)
+	}
+	data, err := env.readFile(projectSettingsPath(env.projectDir))
+	if err != nil {
+		t.Fatalf("read settings: %v", err)
+	}
+	for _, gone := range []string{"bd codemap-hook pre-tool", "bd codemap-hook post-tool"} {
+		if strings.Contains(string(data), gone) {
+			t.Fatalf("%q survived removal:\n%s", gone, data)
+		}
 	}
 }

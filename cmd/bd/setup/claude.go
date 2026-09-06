@@ -272,8 +272,18 @@ func installClaude(env claudeEnv, global bool, stealth bool) error {
 	if pluginManaged {
 		_, _ = fmt.Fprintln(env.stdout, "✓ Beads plugin detected — hooks are plugin-managed, skipping")
 	} else {
-		if addHookCommand(hooks, "SessionStart", command) {
+		if addHookCommand(hooks, "SessionStart", command, "") {
 			_, _ = fmt.Fprintln(env.stdout, "✓ Registered SessionStart hook")
+		}
+		// The code-map tool hooks. PreToolUse matches the tools that OPEN a
+		// file, so the agent is told what the map knows before it reads;
+		// PostToolUse matches only the tools that CHANGE one, because a read
+		// says nothing about what the issue being worked touched.
+		if addHookCommand(hooks, "PreToolUse", codemapPreToolCommand, codemapPreToolMatcher) {
+			_, _ = fmt.Fprintln(env.stdout, "✓ Registered PreToolUse code map hook")
+		}
+		if addHookCommand(hooks, "PostToolUse", codemapPostToolCommand, codemapPostToolMatcher) {
+			_, _ = fmt.Fprintln(env.stdout, "✓ Registered PostToolUse code map hook")
 		}
 	}
 
@@ -300,6 +310,7 @@ func installClaude(env claudeEnv, global bool, stealth bool) error {
 							removeHookCommand(legacyHooks, "SessionStart", v)
 							removeHookCommand(legacyHooks, "PreCompact", v)
 						}
+						removeCodemapHookCommands(legacyHooks)
 						if migrated, marshalErr := json.MarshalIndent(legacySettings, "", "  "); marshalErr == nil {
 							if writeErr := env.writeFile(legacyPath, migrated); writeErr == nil {
 								_, _ = fmt.Fprintf(env.stdout, "✓ Migrated hooks from %s\n", legacyPath)
@@ -472,6 +483,7 @@ func removeClaude(env claudeEnv, global bool) error {
 				removeHookCommand(hooks, "SessionStart", v)
 				removeHookCommand(hooks, "PreCompact", v)
 			}
+			removeCodemapHookCommands(hooks)
 
 			data, err = json.MarshalIndent(settings, "", "  ")
 			if err != nil {
@@ -526,9 +538,27 @@ func removeClaude(env claudeEnv, global bool) error {
 	return nil
 }
 
+// The code-map tool hooks bd setup claude registers, and the tool matchers
+// that decide when Claude Code fires them. They are named here rather than
+// spelled inline because install, the legacy sweep and remove must all agree
+// on the exact command string — a hook registered under one spelling and
+// removed under another survives `bd setup claude --remove` forever.
+const (
+	codemapPreToolCommand  = "bd codemap-hook pre-tool"
+	codemapPreToolMatcher  = "Read|Edit|Write|MultiEdit"
+	codemapPostToolCommand = "bd codemap-hook post-tool"
+	codemapPostToolMatcher = "Edit|Write|MultiEdit|NotebookEdit"
+)
+
+// removeCodemapHookCommands unregisters both code-map tool hooks.
+func removeCodemapHookCommands(hooks map[string]interface{}) {
+	removeHookCommand(hooks, "PreToolUse", codemapPreToolCommand)
+	removeHookCommand(hooks, "PostToolUse", codemapPostToolCommand)
+}
+
 // addHookCommand adds a hook command to an event if not already present
 // Returns true if hook was added, false if already exists
-func addHookCommand(hooks map[string]interface{}, event, command string) bool {
+func addHookCommand(hooks map[string]interface{}, event, command, matcher string) bool {
 	// Get or create event array
 	eventHooks, ok := hooks[event].([]interface{})
 	if !ok {
@@ -559,7 +589,7 @@ func addHookCommand(hooks map[string]interface{}, event, command string) bool {
 
 	// Add bd hook to array
 	newHook := map[string]interface{}{
-		"matcher": "",
+		"matcher": matcher,
 		"hooks": []interface{}{
 			map[string]interface{}{
 				"type":    "command",
