@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -16,6 +17,8 @@ import (
 	"github.com/steveyegge/beads/codemapops"
 	"github.com/steveyegge/beads/internal/beads"
 	"github.com/steveyegge/beads/internal/codemap/cache"
+	"github.com/steveyegge/beads/internal/configfile"
+	"github.com/steveyegge/beads/internal/debug"
 	"github.com/steveyegge/beads/internal/types"
 	"github.com/steveyegge/beads/issueops"
 )
@@ -268,10 +271,12 @@ func recordPostToolEdit(ctx context.Context, stdin io.Reader) error {
 	// harness that did not would simply record nothing.
 	id := GetLastTouchedID()
 	if id == "" {
+		debug.Logf("codemap post-tool: no last-touched issue\n")
 		return nil
 	}
 	rel := codemapRelPath(in.CWD, in.ToolInput.FilePath)
 	if rel == "" {
+		debug.Logf("codemap post-tool: %s is not inside the repo at %s\n", in.ToolInput.FilePath, in.CWD)
 		return nil
 	}
 	// Once per (session, issue, path): an agent editing one file twenty times
@@ -284,13 +289,8 @@ func recordPostToolEdit(ctx context.Context, stdin io.Reader) error {
 	ctx, cancel := context.WithTimeout(ctx, hookTimeoutFromEnv(codemapToolTimeoutEnv, postToolTimeout))
 	defer cancel()
 
-	// The open the root pre-run would have done, but on OUR context. This is
-	// the same lazy-open path `ensureDirectMode` uses, so it also no-ops if a
-	// store is somehow already active. A proxied-server workspace fails here
-	// with "proxy server store should be uow provider" and records nothing:
-	// rebuilding the unit-of-work provider needs config resolution that only
-	// the skipped pre-run does. One stderr line, never a silent miss.
-	if err := ensureStoreActiveWithContext(ctx); err != nil {
+	// The open the root pre-run would have done, but on OUR context.
+	if err := ensureRecorderStore(ctx); err != nil {
 		return err
 	}
 	reader, err := openIssueReader()
@@ -305,6 +305,7 @@ func recordPostToolEdit(ctx context.Context, stdin io.Reader) error {
 	// happens to be the last one touched is not what this edit is about, and
 	// attributing files to it would poison the link table quietly.
 	if details == nil || details.Status != types.StatusInProgress {
+		debug.Logf("codemap post-tool: %s is not in_progress, recording nothing\n", id)
 		return nil
 	}
 
@@ -336,6 +337,43 @@ func recordPostToolEdit(ctx context.Context, stdin io.Reader) error {
 // — the post-commit git hook and both Claude Code tool hooks. An env var named
 // BD_NO_CODEMAP that silenced only one of them would be a trap.
 func codemapHooksDisabled() bool { return os.Getenv("BD_NO_CODEMAP") == "1" }
+
+// ensureRecorderStore opens whatever this workspace's route needs, on ctx.
+//
+// Two routes, because skipping the root pre-run skipped the config resolution
+// that picks one: the direct route through the same lazy open ensureDirectMode
+// uses, the proxied route through the same provider constructor the pre-run
+// builds. Setting proxiedServerMode is not bookkeeping — usesProxiedServer
+// reads it, and openIssueFiles asks it which accessor to use, so without it a
+// proxied workspace would take the direct arm and fail. PersistentPostRunE
+// closes whichever one this opened.
+func ensureRecorderStore(ctx context.Context) error {
+	beadsDir := beads.FindBeadsDir()
+	if beadsDir == "" {
+		return errors.New("no beads workspace found")
+	}
+	cfg, err := configfile.Load(beadsDir)
+	if err != nil {
+		return fmt.Errorf("load %s: %w", configfile.ConfigPath(beadsDir), err)
+	}
+	if cfg == nil || !cfg.IsDoltProxiedServerMode() {
+		return ensureStoreActiveWithContext(ctx)
+	}
+	p, err := newProxiedServerUOWProvider(ctx, beadsDir, "")
+	if err != nil {
+		return err
+	}
+	// ponytail: no notifying wrapper. main.go wraps the provider to fire the
+	// workspace's script hooks, and with hooks off it documents the result as
+	// "the provider comes back unwrapped" — which is this. Recording a file
+	// link is not an issue lifecycle event, so there is nothing to notify.
+	uowProvider = p
+	proxiedServerMode = true
+	if cmdCtx != nil {
+		cmdCtx.ProxiedServerMode = true
+	}
+	return nil
+}
 
 // codemapHookMarkerBaseDir resolves under os.UserCacheDir, so the tests isolate
 // markers with XDG_CACHE_HOME/HOME rather than an override hook nothing else
