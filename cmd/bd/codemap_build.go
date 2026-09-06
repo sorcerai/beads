@@ -20,7 +20,7 @@ import (
 
 func init() {
 	for _, c := range []*cobra.Command{codemapBuildCmd, codemapRefreshCmd} {
-		c.Flags().Bool("summaries", false, "Also summarize files whose summary is missing or stale (calls agy)")
+		c.Flags().Bool("summaries", false, "Also summarize files whose summary is missing or stale (calls agy; BD_CODEMAP_FAKE_AGY=<file> substitutes that file's contents for the model)")
 		c.Flags().Int("max-files", 0, "With --summaries, summarize at most N files")
 	}
 	codemapCmd.AddCommand(codemapBuildCmd, codemapRefreshCmd, codemapStatusCmd)

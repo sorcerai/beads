@@ -56,7 +56,7 @@ func TestCodemapSummariesEndToEnd(t *testing.T) {
 	// --max-files bounds the pass to the first candidate, a/a.go.
 	out := runCodemapEnv(t, bd, dir, env, "build", "--summaries", "--max-files", "1")
 	// The model label in the progress line is the one recorded on the row.
-	if !strings.Contains(out, "Summarizing 1 files in 1 batches via agy (model gemini-3.1-pro)") || !strings.Contains(out, "1 written") {
+	if !strings.Contains(out, "Summarizing 1 files in 1 batches via fake agy (BD_CODEMAP_FAKE_AGY, model gemini-3.1-pro)") || !strings.Contains(out, "1 of 1 written") {
 		t.Fatalf("build --summaries --max-files 1: %s", out)
 	}
 
@@ -76,7 +76,7 @@ func TestCodemapSummariesEndToEnd(t *testing.T) {
 	// refresh --summaries picks up the two files the cap left behind, even
 	// though nothing has been committed since the build.
 	out = runCodemapEnv(t, bd, dir, env, "refresh", "--summaries")
-	if !strings.Contains(out, "Summarizing 2 files") || !strings.Contains(out, "2 written") {
+	if !strings.Contains(out, "Summarizing 2 files") || !strings.Contains(out, "2 of 2 written") {
 		t.Fatalf("refresh --summaries: %s", out)
 	}
 
@@ -90,7 +90,7 @@ func TestCodemapSummariesEndToEnd(t *testing.T) {
 
 	// ...and another pass clears it.
 	out = runCodemapEnv(t, bd, dir, env, "refresh", "--summaries")
-	if !strings.Contains(out, "Summarizing 1 files") || !strings.Contains(out, "1 written") {
+	if !strings.Contains(out, "Summarizing 1 files") || !strings.Contains(out, "1 of 1 written") {
 		t.Fatalf("second refresh --summaries: %s", out)
 	}
 	if stale := runCodemap(t, bd, dir, "stale"); !strings.Contains(stale, "0 stale summaries") {
@@ -122,5 +122,32 @@ func TestCodemapSummariesNothingToDo(t *testing.T) {
 	out := runCodemapEnv(t, bd, dir, env, "refresh", "--summaries")
 	if !strings.Contains(out, "Nothing to summarize") {
 		t.Fatalf("second pass: %s", out)
+	}
+}
+
+// TestReadCandidateSourceSkipsHugeAndBinary: the prompt only carries 60 lines,
+// so a huge or binary file is read, regex-scanned, and thrown away. Skip both.
+func TestReadCandidateSourceSkipsHugeAndBinary(t *testing.T) {
+	root := t.TempDir()
+	write := func(name string, body []byte) {
+		if err := os.WriteFile(filepath.Join(root, name), body, 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	write("big.go", make([]byte, maxCandidateBytes+1))
+	write("bin.go", append([]byte("package a\n"), 0x00, 'x'))
+	write("ok.go", []byte("package a\n"))
+
+	if src, skip := readCandidateSource(root, "big.go"); src != "" || !strings.Contains(skip, "over the") {
+		t.Fatalf("big: %q %q", src, skip)
+	}
+	if src, skip := readCandidateSource(root, "bin.go"); src != "" || !strings.Contains(skip, "binary") {
+		t.Fatalf("bin: %q %q", src, skip)
+	}
+	if src, skip := readCandidateSource(root, "ok.go"); src != "package a\n" || skip != "" {
+		t.Fatalf("ok: %q %q", src, skip)
+	}
+	if src, skip := readCandidateSource(root, "missing.go"); src != "" || !strings.Contains(skip, "reading missing.go") {
+		t.Fatalf("missing: %q %q", src, skip)
 	}
 }

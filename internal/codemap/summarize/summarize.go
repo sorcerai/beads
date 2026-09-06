@@ -41,7 +41,9 @@ type Options struct {
 	Model     string
 }
 
-// Report says what a run did. Dropped items are counted with their reasons and
+// Report says what a run did. Written counts the items that SURVIVED parsing,
+// which is not what the store then accepted: it refuses a summary whose file
+// moved under it, so the command reports its own written count. Dropped items are counted with their reasons and
 // never retried: a malformed answer is the model's opinion, not a transport
 // failure.
 type Report struct {
@@ -113,24 +115,31 @@ func ParseResponse(raw string, batch []Candidate, layers []string) ([]codemapops
 	for _, c := range batch {
 		byPath[c.Path] = c
 	}
-	allowed := make(map[string]struct{}, len(layers))
+	// Case-folded lookup to the CANONICAL spelling: a model that answers
+	// "CLI" meant the layer, and dropping the item over its shift key helps
+	// nobody. The stored value is always the vocabulary's own spelling.
+	allowed := make(map[string]string, len(layers))
 	for _, l := range layers {
-		allowed[l] = struct{}{}
+		allowed[strings.ToLower(l)] = l
 	}
 
 	var items []modelItem
 	body := jsonArray(raw)
 	if body == "" {
-		return nil, []string{"no JSON array in the response"}
+		return nil, lostBatch(batch, "no JSON array in the response")
 	}
 	if err := json.Unmarshal([]byte(body), &items); err != nil {
-		return nil, []string{fmt.Sprintf("unparseable response: %v", err)}
+		return nil, lostBatch(batch, fmt.Sprintf("unparseable response: %v", err))
 	}
 
 	var (
 		out     []codemapops.Summary
 		dropped []string
 	)
+	// handled is every batch path the response said ANYTHING about, kept or
+	// dropped. What is left over at the end is the silent case: files the model
+	// simply omitted, which are as unsummarized as the ones it got wrong.
+	handled := make(map[string]struct{}, len(items))
 	seen := make(map[string]struct{}, len(items))
 	for _, it := range items {
 		path := strings.TrimSpace(it.Path)
@@ -139,6 +148,7 @@ func ParseResponse(raw string, batch []Candidate, layers []string) ([]codemapops
 			dropped = append(dropped, fmt.Sprintf("%q: not in this batch", it.Path))
 			continue
 		}
+		handled[path] = struct{}{}
 		if _, dup := seen[path]; dup {
 			dropped = append(dropped, path+": duplicate entry")
 			continue
@@ -152,7 +162,8 @@ func ParseResponse(raw string, batch []Candidate, layers []string) ([]codemapops
 			dropped = append(dropped, fmt.Sprintf("%s: summary is %d bytes (max %d)", path, len(summary), maxSummaryBytes))
 			continue
 		}
-		if _, ok := allowed[it.Layer]; !ok {
+		layer, ok := allowed[strings.ToLower(strings.TrimSpace(it.Layer))]
+		if !ok {
 			dropped = append(dropped, fmt.Sprintf("%s: layer %q not in the vocabulary", path, it.Layer))
 			continue
 		}
@@ -166,11 +177,27 @@ func ParseResponse(raw string, batch []Candidate, layers []string) ([]codemapops
 		}
 		seen[path] = struct{}{}
 		out = append(out, codemapops.Summary{
-			Path: path, Summary: summary, Layer: it.Layer,
+			Path: path, Summary: summary, Layer: layer,
 			Tags: it.Tags, BlobHash: cand.BlobHash,
 		})
 	}
+	for _, c := range batch {
+		if _, ok := handled[c.Path]; !ok {
+			dropped = append(dropped, c.Path+": no entry in the response")
+		}
+	}
 	return out, dropped
+}
+
+// lostBatch reports one drop PER FILE when a whole batch is unusable. A single
+// reason would let "25 written, 1 dropped" hide 25 unsummarized files, which is
+// the one number the operator reads to decide whether to run it again.
+func lostBatch(batch []Candidate, reason string) []string {
+	out := make([]string, 0, len(batch))
+	for _, c := range batch {
+		out = append(out, c.Path+": "+reason)
+	}
+	return out
 }
 
 // jsonArray finds the JSON array in a response that may be fenced, prefaced, or

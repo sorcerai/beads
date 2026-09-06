@@ -1030,6 +1030,9 @@ var recognizedConfigPrefixes = []string{
 	"directory.", "repos.", "external_projects.", "validation.",
 	"lint.", "hierarchy.", "ai.", "backup.", "federation.", "metrics.",
 	"agent.", "claim.", "storage-class.",
+	// codemap.<repo id>.layers is written by `bd codemap --summaries` and is
+	// legitimately set by hand to pin a repository's layer vocabulary.
+	"codemap.",
 }
 
 // validateStorageClassConfig validates a storage-class.<type> per-type

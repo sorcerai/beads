@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -17,6 +18,17 @@ import (
 	"github.com/steveyegge/beads/internal/codemap/summarize"
 	"github.com/steveyegge/beads/internal/config"
 	"github.com/steveyegge/beads/internal/ui"
+	"github.com/steveyegge/beads/issueops"
+)
+
+// maxCandidateBytes bounds the file the prompt's head is cut from, and
+// binarySniffBytes how much of it decides whether the file is text at all. The
+// prompt only ever carries the first 60 lines, so a 3 MB generated table or a
+// checked-in binary is pure cost — read, scanned by the exported-names regex,
+// and then thrown away.
+const (
+	maxCandidateBytes = 512 << 10
+	binarySniffBytes  = 8 << 10
 )
 
 // fakeAgyEnv points at a file whose contents stand in for the model's answer,
@@ -71,13 +83,13 @@ func runSummaries(ctx context.Context, root, repoID string, maxFiles int) error 
 		return nil
 	}
 
-	call, model, err := summarizeCaller(ctx)
+	call, model, via, err := summarizeCaller(ctx)
 	if err != nil {
 		return err
 	}
 	layers := repoLayers(ctx, root, repoID)
 	batches := (len(cands) + summarize.DefaultBatchSize - 1) / summarize.DefaultBatchSize
-	fmt.Fprintf(w, "Summarizing %d files in %d batches via agy (model %s)...\n", len(cands), batches, model)
+	fmt.Fprintf(w, "Summarizing %d files in %d batches via %s...\n", len(cands), batches, via)
 
 	items, rep, runErr := summarize.Run(ctx, call, cands, summarize.Options{Layers: layers, Model: model})
 	if runErr != nil {
@@ -100,7 +112,7 @@ func runSummaries(ctx context.Context, root, repoID string, maxFiles int) error 
 			fmt.Fprintf(os.Stderr, "Warning: cache: %v\n", err)
 		}
 	}
-	renderSummariesReport(w, rep, res)
+	renderSummariesReport(w, len(cands), rep, res)
 	if res.Written == 0 {
 		if runErr != nil {
 			return runErr
@@ -181,15 +193,14 @@ func buildCandidates(root string, paths []string, cached cache.File, maxFiles in
 			fmt.Fprintf(os.Stderr, "Warning: %s has no staged blob (untracked?); skipping\n", p)
 			continue
 		}
-		// #nosec G304 -- a repo-relative path the code map already indexed
-		src, readErr := os.ReadFile(filepath.Join(root, filepath.FromSlash(p)))
-		if readErr != nil {
-			fmt.Fprintf(os.Stderr, "Warning: reading %s: %v; skipping\n", p, readErr)
+		src, skip := readCandidateSource(root, p)
+		if skip != "" {
+			fmt.Fprintf(os.Stderr, "Warning: %s; skipping\n", skip)
 			continue
 		}
 		out = append(out, summarize.Candidate{
 			Path: p, Package: pkgOf[p], BlobHash: blob,
-			Head: summarize.Head(string(src)), Exported: summarize.Exported(string(src)),
+			Head: summarize.Head(src), Exported: summarize.Exported(src),
 			Importers: len(cached.Files[p].Importers),
 		})
 		if maxFiles > 0 && len(out) >= maxFiles {
@@ -199,11 +210,38 @@ func buildCandidates(root string, paths []string, cached cache.File, maxFiles in
 	return out, nil
 }
 
+// readCandidateSource reads one candidate, or returns the reason it is not
+// summarizable source: too big to be worth reading for a 60-line excerpt, or
+// binary. The reason is a phrase the caller prefixes with "Warning: ".
+func readCandidateSource(root, rel string) (src, skip string) {
+	full := filepath.Join(root, filepath.FromSlash(rel))
+	info, err := os.Stat(full)
+	if err != nil {
+		return "", fmt.Sprintf("reading %s: %v", rel, err)
+	}
+	if info.Size() > maxCandidateBytes {
+		return "", fmt.Sprintf("%s is %d bytes, over the %d-byte summarizer limit", rel, info.Size(), maxCandidateBytes)
+	}
+	// #nosec G304 -- a repo-relative path the code map already indexed
+	data, err := os.ReadFile(full)
+	if err != nil {
+		return "", fmt.Sprintf("reading %s: %v", rel, err)
+	}
+	sniff := data
+	if len(sniff) > binarySniffBytes {
+		sniff = sniff[:binarySniffBytes]
+	}
+	if bytes.IndexByte(sniff, 0) >= 0 {
+		return "", rel + " looks binary (NUL byte)"
+	}
+	return string(data), ""
+}
+
 // summarizeCaller returns the model call and the label to record with it. The
 // fake is a file of canned JSON, read on every call, for tests and dry runs;
 // without it the caller is agy, which must be on PATH before we announce a run.
-func summarizeCaller(ctx context.Context) (summarize.Caller, string, error) {
-	model := summariesModel(ctx)
+func summarizeCaller(ctx context.Context) (call summarize.Caller, model, via string, err error) {
+	model = summariesModel(ctx)
 	if fake := os.Getenv(fakeAgyEnv); fake != "" {
 		return func(string) (string, error) {
 			// #nosec G304 -- an operator-supplied path, the point of the knob
@@ -212,12 +250,13 @@ func summarizeCaller(ctx context.Context) (summarize.Caller, string, error) {
 				return "", fmt.Errorf("%s: %w", fakeAgyEnv, err)
 			}
 			return string(data), nil
-		}, model, nil
+		}, model, fmt.Sprintf("fake agy (%s, model %s)", fakeAgyEnv, model), nil
 	}
 	if err := agyclient.Available(); err != nil {
-		return nil, "", fmt.Errorf("`agy` not found on PATH, so summaries cannot be generated: %w", err)
+		return nil, "", "", fmt.Errorf("`agy` not found on PATH, so summaries cannot be generated: %w", err)
 	}
-	return func(prompt string) (string, error) { return agyclient.Call(prompt, model, "") }, model, nil
+	return func(prompt string) (string, error) { return agyclient.Call(prompt, model, "") },
+		model, fmt.Sprintf("agy (model %s)", model), nil
 }
 
 // summariesModel resolves the label recorded on each row: config.yaml first,
@@ -225,10 +264,8 @@ func summarizeCaller(ctx context.Context) (summarize.Caller, string, error) {
 // other settings use.
 func summariesModel(ctx context.Context) string {
 	model := strings.TrimSpace(config.GetString(summariesModelKey))
-	if model == "" && store != nil {
-		if v, err := store.GetConfig(ctx, summariesModelKey); err == nil {
-			model = strings.TrimSpace(v)
-		}
+	if model == "" {
+		model = codemapSetting(ctx, summariesModelKey)
 	}
 	if model == "" {
 		model = agyclient.DefaultModel
@@ -243,24 +280,44 @@ func summariesModel(ctx context.Context) string {
 // from the tree's own shape on first use.
 func repoLayers(ctx context.Context, root, repoID string) []string {
 	key := layersKeyFor(repoID)
-	if store != nil {
-		if v, err := store.GetConfig(ctx, key); err == nil {
-			if layers := splitLayers(v); len(layers) > 0 {
-				return layers
-			}
-		}
+	if layers := splitLayers(codemapSetting(ctx, key)); len(layers) > 0 {
+		return layers
 	}
 	layers := summarize.DefaultLayers(root)
-	if store != nil {
-		if err := store.SetConfig(ctx, key, strings.Join(layers, ",")); err != nil {
-			// A vocabulary we could not persist still summarizes this run; it
-			// just gets recomputed next time.
-			fmt.Fprintf(os.Stderr, "Warning: recording %s: %v\n", key, err)
-		} else {
-			commandDidWrite.Store(true)
-		}
+	if err := setCodemapSetting(ctx, key, strings.Join(layers, ",")); err != nil {
+		// A vocabulary we could not persist still summarizes this run; it just
+		// gets recomputed next time.
+		fmt.Fprintf(os.Stderr, "Warning: recording %s: %v\n", key, err)
 	}
 	return layers
+}
+
+// codemapSetting and setCodemapSetting read and write a workspace setting
+// through whichever route this invocation is on — the store directly, or the
+// proxied provider's config surface. Reaching for the global `store` would make
+// both settings silently no-ops on the proxied route.
+func codemapSetting(ctx context.Context, key string) string {
+	wc, err := openWorkspaceConfig("codemap")
+	if err != nil {
+		return ""
+	}
+	res, err := wc.GetSetting(ctx, issueops.GetSettingRequest{Key: key})
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(res.Value)
+}
+
+func setCodemapSetting(ctx context.Context, key, value string) error {
+	wc, err := openWorkspaceConfig("codemap")
+	if err != nil {
+		return err
+	}
+	if _, err := wc.SetSetting(ctx, issueops.SetSettingRequest{Key: key, Value: value}); err != nil {
+		return err
+	}
+	commandDidWrite.Store(true)
+	return nil
 }
 
 func splitLayers(v string) []string {
@@ -307,8 +364,11 @@ func patchCache(beadsDir string, cached cache.File, cacheErr error, items []code
 // renderSummariesReport prints what the pass did, including WHY items were
 // dropped: a model that keeps misspelling a layer is a fixable problem, and a
 // bare count hides it.
-func renderSummariesReport(w io.Writer, rep summarize.Report, res codemapops.SetSummariesResult) {
-	fmt.Fprintf(w, "  %s %d written", ui.RenderPass("✓"), res.Written)
+// The denominator is the CANDIDATE count, the number the operator asked for.
+// Written, refused and dropped sum against it; anything else double-counts the
+// refusals, which get their own clause.
+func renderSummariesReport(w io.Writer, candidates int, rep summarize.Report, res codemapops.SetSummariesResult) {
+	fmt.Fprintf(w, "  %s %d of %d written", ui.RenderPass("✓"), res.Written, candidates)
 	if res.Refused > 0 {
 		fmt.Fprintf(w, ", %d refused (contents changed under the summary)", res.Refused)
 	}

@@ -3,6 +3,7 @@ package summarize
 import (
 	"context"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -129,10 +130,10 @@ func TestRunStopsOnCancelledContext(t *testing.T) {
 
 func TestRunStampsTheModelOnEveryItem(t *testing.T) {
 	call := func(string) (string, error) { return `[{"path":"a.go","summary":"A","layer":"cli"}]`, nil }
-	out, _, err := Run(context.Background(), call, []Candidate{{Path: "a.go", BlobHash: strings.Repeat("1", 40)}},
+	out, rep, err := Run(context.Background(), call, []Candidate{{Path: "a.go", BlobHash: strings.Repeat("1", 40)}},
 		Options{Layers: []string{"cli"}, Model: "some-model"})
-	if err != nil || len(out) != 1 || out[0].Model != "some-model" {
-		t.Fatalf("%v %+v", err, out)
+	if err != nil || len(out) != 1 || out[0].Model != "some-model" || rep.Written != 1 {
+		t.Fatalf("%v %+v %+v", err, out, rep)
 	}
 }
 
@@ -209,5 +210,36 @@ func mkdir(t *testing.T, root, name string) {
 	t.Helper()
 	if err := os.MkdirAll(filepath.Join(root, name), 0o755); err != nil {
 		t.Fatal(err)
+	}
+}
+
+// A batch the model answers with prose is 25 unsummarized files, not one drop.
+func TestRunCountsEveryFileInALostBatch(t *testing.T) {
+	calls := 0
+	call := func(string) (string, error) {
+		if calls++; calls == 1 {
+			return `[{"path":"f0.go","summary":"A","layer":"cli"}]`, nil
+		}
+		return "Sorry, I can't help with that.", nil
+	}
+	cands := make([]Candidate, 26)
+	for i := range cands {
+		cands[i] = Candidate{Path: fmt.Sprintf("f%d.go", i), BlobHash: strings.Repeat("1", 40)}
+	}
+	out, rep, err := Run(context.Background(), call, cands, Options{Layers: []string{"cli"}, BatchSize: 25})
+	if err != nil || len(out) != 1 || rep.Batches != 2 {
+		t.Fatalf("%v out=%d rep=%+v", err, len(out), rep)
+	}
+	// 24 the first batch did not answer for, plus the whole lost second batch.
+	if rep.Dropped != 25 {
+		t.Fatalf("dropped %d: %v", rep.Dropped, rep.DroppedReasons)
+	}
+}
+
+func TestParseResponseNormalizesLayerCase(t *testing.T) {
+	batch := []Candidate{{Path: "a.go", BlobHash: strings.Repeat("1", 40)}}
+	got, dropped := ParseResponse(`[{"path":"a.go","summary":"A","layer":" CLI "}]`, batch, []string{"cli"})
+	if len(got) != 1 || got[0].Layer != "cli" || len(dropped) != 0 {
+		t.Fatalf("got %+v dropped %v", got, dropped)
 	}
 }
