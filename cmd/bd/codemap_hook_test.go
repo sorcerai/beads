@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"strings"
 	"testing"
 
@@ -73,5 +74,25 @@ func TestPreToolSkipsStoreInitButPostToolDoesNot(t *testing.T) {
 	}
 	if !codemapHookCmd.Hidden || !codemapHookPreToolCmd.Hidden {
 		t.Error("codemap-hook is plumbing and must stay hidden")
+	}
+}
+
+// TestCodemapHooksHonorTheOptOut pins that BD_NO_CODEMAP means the same thing
+// for the tool hooks as it does for the post-commit git hook. An opt-out that
+// covers one of three hooks is worse than none.
+func TestCodemapHooksHonorTheOptOut(t *testing.T) {
+	t.Setenv("BD_NO_CODEMAP", "1")
+
+	var out strings.Builder
+	in := `{"session_id":"s","cwd":"/nope","tool_name":"Read","tool_input":{"file_path":"/nope/a.go"}}`
+	if err := runCodemapPreToolHook(strings.NewReader(in), &out); err != nil {
+		t.Fatalf("pre-tool: %v", err)
+	}
+	if got := strings.TrimSpace(out.String()); got != "{}" {
+		t.Errorf("pre-tool under BD_NO_CODEMAP = %q, want {}", got)
+	}
+	// The disabled post-tool must not even decode, let alone reach the store.
+	if err := recordPostToolEdit(context.Background(), strings.NewReader(in)); err != nil {
+		t.Errorf("post-tool under BD_NO_CODEMAP: %v", err)
 	}
 }

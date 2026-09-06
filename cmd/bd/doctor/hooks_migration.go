@@ -18,8 +18,12 @@ const (
 	hookMarkerEndTag   = "END BEADS INTEGRATION"
 )
 
+// This is doctor's own copy of the list in cmd/bd/hooks.go — a different
+// package cannot import that one. Adding a managed hook there means adding it
+// here too, or doctor plans a migration that silently omits it.
 var managedHookNames = []string{
 	"pre-commit",
+	"post-commit",
 	"post-merge",
 	"pre-push",
 	"post-checkout",

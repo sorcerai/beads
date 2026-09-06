@@ -110,6 +110,9 @@ func init() {
 // =============================================================================
 
 func runCodemapPreToolHook(stdin io.Reader, stdout io.Writer) error {
+	if codemapHooksDisabled() {
+		return emitHookOut(stdout, "")
+	}
 	in, ok := decodeToolHookInput(stdin)
 	if !ok {
 		return emitHookOut(stdout, "")
@@ -242,6 +245,9 @@ func runCodemapPostToolHook(ctx context.Context, stdin io.Reader, stdout io.Writ
 // recorded it" or "there was correctly nothing to record"; the distinction does
 // not reach the agent either way.
 func recordPostToolEdit(ctx context.Context, stdin io.Reader) error {
+	if codemapHooksDisabled() {
+		return nil
+	}
 	in, ok := decodeToolHookInput(stdin)
 	if !ok || !postToolTracksTool(in.ToolName) {
 		return nil
@@ -306,6 +312,11 @@ func recordPostToolEdit(ctx context.Context, stdin io.Reader) error {
 // =============================================================================
 // Shared
 // =============================================================================
+
+// codemapHooksDisabled is the one opt-out, honored by all three code map hooks
+// — the post-commit git hook and both Claude Code tool hooks. An env var named
+// BD_NO_CODEMAP that silenced only one of them would be a trap.
+func codemapHooksDisabled() bool { return os.Getenv("BD_NO_CODEMAP") == "1" }
 
 func codemapHookMarkerBaseDir() string {
 	return agentHookMarkerBaseDir(codemapHookMarkerSubdir, codemapHookMarkerDirOverride)
