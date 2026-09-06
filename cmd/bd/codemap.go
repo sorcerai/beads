@@ -1,8 +1,10 @@
 package main
 
 import (
+	"context"
 	"errors"
 	"fmt"
+	"os"
 	"os/exec"
 	"strings"
 
@@ -10,8 +12,10 @@ import (
 
 	"github.com/steveyegge/beads/codemapops"
 	"github.com/steveyegge/beads/internal/beads"
+	"github.com/steveyegge/beads/internal/debug"
 	"github.com/steveyegge/beads/internal/git"
 	"github.com/steveyegge/beads/internal/storage/uow"
+	"github.com/steveyegge/beads/internal/types"
 )
 
 var codemapCmd = &cobra.Command{
@@ -146,4 +150,115 @@ func notIndexedHint(err error) error {
 		return errors.New("code map not built for this repository — run: bd codemap build")
 	}
 	return err
+}
+
+// issueCodeContextFor is the best-effort read behind every CODE surface. A
+// workspace with no repository, no map and no linked files is the ordinary
+// case for most of bd's users, so every failure here is a debug line and a nil
+// result: surfacing code context must never turn a successful `bd show` or
+// `bd update --claim` into an error.
+func issueCodeContextFor(ctx context.Context, issueID string) *codemapops.IssueCodeContext {
+	_, repoID, err := codemapRepoRoot()
+	if err != nil {
+		debug.Logf("codemap: no repo for %s: %v\n", issueID, err)
+		return nil
+	}
+	files, err := openIssueFiles()
+	if err != nil {
+		debug.Logf("codemap: issue-files unavailable: %v\n", err)
+		return nil
+	}
+	cc, err := files.IssueCodeContext(ctx, issueID, repoID)
+	if err != nil {
+		debug.Logf("codemap: context for %s: %v\n", issueID, err)
+		return nil
+	}
+	if len(cc.Files) == 0 {
+		return nil
+	}
+	return &cc
+}
+
+// printIssueCodeSection appends the CODE block to a text-mode issue rendering.
+// quiet suppresses the block and nothing else.
+func printIssueCodeSection(ctx context.Context, issueID string, quiet bool) {
+	if quiet {
+		return
+	}
+	if cc := issueCodeContextFor(ctx, issueID); cc != nil {
+		renderIssueCodeContext(os.Stdout, *cc)
+	}
+}
+
+// recordIssueFilesManual is `bd update --files`: the same manual linkage
+// `bd codemap link` writes, on an issue the caller is already updating.
+func recordIssueFilesManual(ctx context.Context, issueID string, paths []string) error {
+	_, repoID, err := codemapRepoRoot()
+	if err != nil {
+		return err
+	}
+	files, err := openIssueFiles()
+	if err != nil {
+		return err
+	}
+	if _, err := files.Record(ctx, codemapops.RecordRequest{
+		IssueID: issueID, RepoID: repoID, Paths: paths, Source: codemapops.SourceManual,
+	}); err != nil {
+		return err
+	}
+	commandDidWrite.Store(true)
+	return nil
+}
+
+// showDetailsJSON is the `bd show --json` payload with the code context
+// attached. types.IssueDetails is embedded rather than copied so the shape the
+// reader role produces stays the contract; `code` is omitted entirely when the
+// issue has no linked files.
+type showDetailsJSON struct {
+	*types.IssueDetails
+	Code *codemapops.IssueCodeContext `json:"code,omitempty"`
+}
+
+// issueCodeJSON is the same attachment for `bd update --claim --json`, where
+// the payload element is the issue itself rather than its detail view.
+type issueCodeJSON struct {
+	*types.Issue
+	Code *codemapops.IssueCodeContext `json:"code,omitempty"`
+}
+
+func withIssueCodeJSON(ctx context.Context, details *types.IssueDetails) any {
+	if details == nil {
+		return details
+	}
+	return showDetailsJSON{IssueDetails: details, Code: issueCodeContextFor(ctx, details.ID)}
+}
+
+// withIssueCodeList attaches the code context to each issue in a
+// `bd update --json` payload. Without --claim the payload is unchanged: the
+// context answers "what code did I just take over", which is a question only
+// a claim asks.
+func withIssueCodeList(ctx context.Context, issues []*types.Issue, claim bool) any {
+	if !claim {
+		return issues
+	}
+	out := make([]issueCodeJSON, 0, len(issues))
+	for _, iss := range issues {
+		out = append(out, issueCodeJSON{Issue: iss, Code: issueCodeContextFor(ctx, iss.ID)})
+	}
+	return out
+}
+
+// recordUpdateFiles applies `bd update --files` to every id that updated. A
+// failure here is a warning, not a failed update: the issue write is already
+// committed, and losing the exit code would misreport what happened.
+func recordUpdateFiles(ctx context.Context, cmd *cobra.Command, ids []string) {
+	paths, _ := cmd.Flags().GetStringSlice("files")
+	if len(paths) == 0 {
+		return
+	}
+	for _, id := range ids {
+		if err := recordIssueFilesManual(ctx, id, paths); err != nil {
+			fmt.Fprintf(os.Stderr, "warning: recording --files on %s: %v\n", id, err)
+		}
+	}
 }

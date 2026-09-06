@@ -427,6 +427,7 @@ pointless).`,
 
 		updatedIssues := []*types.Issue{}
 		var firstUpdatedID string // Track first successful update for last-touched
+		var updatedIDs []string   // Every id that updated, for --files and the CODE section
 		var failures []updateIDFailure
 		recordFailure := func(id, reason string) {
 			failures = append(failures, updateIDFailure{ID: id, Error: reason})
@@ -607,6 +608,7 @@ pointless).`,
 			if firstUpdatedID == "" {
 				firstUpdatedID = result.ResolvedID
 			}
+			updatedIDs = append(updatedIDs, result.ResolvedID)
 			closeIfUnmutated(result)
 		}
 
@@ -641,9 +643,18 @@ pointless).`,
 			SetLastTouchedID(firstUpdatedID)
 		}
 
+		// Code-map linkage rides the update, after last-touched: --files
+		// records the manual links, then --claim shows the caller what code
+		// the issue they just took over already touches.
+		recordUpdateFiles(ctx, cmd, updatedIDs)
+
 		if jsonOutput && len(updatedIssues) > 0 {
-			if jerr := outputJSON(updatedIssues); jerr != nil {
+			if jerr := outputJSON(withIssueCodeList(ctx, updatedIssues, claimFlag)); jerr != nil {
 				return jerr
+			}
+		} else if claimFlag && !jsonOutput {
+			for _, id := range updatedIDs {
+				printIssueCodeSection(ctx, id, quietFlag)
 			}
 		}
 
@@ -1004,6 +1015,10 @@ func init() {
 	updateCmd.Flags().StringSlice("remove-label", nil, "Remove labels (repeatable)")
 	updateCmd.Flags().StringSlice("set-labels", nil, "Set labels, replacing all existing (repeatable)")
 	updateCmd.Flags().String("parent", "", "New parent issue ID (reparents the issue, use empty string to remove parent)")
+	// --files rides an update; it does not make one on its own (an invocation
+	// with no other change still reports "No updates specified"). For a
+	// standalone link, `bd codemap link <id> <path>...` is the verb.
+	updateCmd.Flags().StringSlice("files", nil, "Record that this issue touches these files (source: manual); rides an update, see `bd codemap link` for the standalone form")
 	updateCmd.Flags().Bool("claim", false, "Atomically claim the issue (sets assignee to you, status to in_progress; idempotent if already claimed by you; issues assigned to a pool alias listed in the claim.pools config are claimable too)")
 	// Overrides the live-claim reassign fence (bd-98s5c) and close policy.
 	updateCmd.Flags().Bool("force", false, "Override two refusals: let -a/--assignee overwrite another actor's live in_progress claim (use only for abandoned claims — crashed agent, expired lease; prefer bd reclaim), and let -s/--status move the issue into closed (or a configured done status) despite open children or a live blocker (same as bd close --force)")

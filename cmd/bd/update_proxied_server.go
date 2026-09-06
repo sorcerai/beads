@@ -45,6 +45,9 @@ func runUpdateProxiedServer(cmd *cobra.Command, ctx context.Context, args []stri
 	// set after the whole batch. .beads/last-touched is local per-clone state,
 	// so it is written the same way on both routes (update.go).
 	var firstUpdatedID string
+	// Every id that updated, for --files and the CODE section: both surfaces
+	// are shared with the direct route so the two cannot drift.
+	var updatedIDs []string
 
 	for _, id := range args {
 		issue, fail, err := applyUpdateProxiedOne(ctx, id, in)
@@ -58,6 +61,7 @@ func runUpdateProxiedServer(cmd *cobra.Command, ctx context.Context, args []stri
 		if firstUpdatedID == "" {
 			firstUpdatedID = issue.ID
 		}
+		updatedIDs = append(updatedIDs, issue.ID)
 		if jsonOut {
 			updated = append(updated, issue)
 		} else {
@@ -69,8 +73,14 @@ func runUpdateProxiedServer(cmd *cobra.Command, ctx context.Context, args []stri
 		SetLastTouchedID(firstUpdatedID)
 	}
 
+	recordUpdateFiles(ctx, cmd, updatedIDs)
+
 	if jsonOut && len(updated) > 0 {
-		_ = outputJSON(updated)
+		_ = outputJSON(withIssueCodeList(ctx, updated, in.claim))
+	} else if in.claim && !jsonOut {
+		for _, id := range updatedIDs {
+			printIssueCodeSection(ctx, id, quietFlag)
+		}
 	}
 	if len(failures) > 0 {
 		return reportUpdateFailures(failures, len(args))

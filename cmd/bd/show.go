@@ -184,7 +184,7 @@ var showCmd = &cobra.Command{
 					result.Close()
 					return HandleErrorRespectJSON("%v", derr)
 				}
-				allDetails = append(allDetails, details)
+				allDetails = append(allDetails, withIssueCodeJSON(ctx, details))
 				result.Close()
 				continue
 			}
@@ -246,6 +246,8 @@ var showCmd = &cobra.Command{
 			}
 
 			printRelatedSection(relatedSeen)
+
+			printIssueCodeSection(ctx, issue.ID, quietFlag)
 
 			// Show comments
 			comments, _ := issueStore.GetIssueComments(ctx, issue.ID) // Best effort: show issue even if comments unavailable
