@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"github.com/spf13/cobra"
+	"github.com/steveyegge/beads/codemapops"
 	"github.com/steveyegge/beads/internal/rollup"
 	"github.com/steveyegge/beads/internal/types"
 	"golang.org/x/sync/singleflight"
@@ -1654,6 +1655,20 @@ func explainIssueInWorkspace(ctx context.Context, dir string, issueID string) (E
 		}
 	}
 
+	// What the code map already knows this issue touches, before git is asked
+	// to guess from commit messages: a file linked by hand (or by the commit
+	// and branch observers) is associated whether or not any commit names the
+	// id. Only for the workspace this process's store is bound to — see
+	// codemapIsCurrentWorkspace.
+	inWorkspace := codemapIsCurrentWorkspace(dir)
+	if inWorkspace {
+		for path, status := range codemapLinkedFiles(ctx, issueID) {
+			if _, exists := associatedFiles[path]; !exists {
+				associatedFiles[path] = status
+			}
+		}
+	}
+
 	logOut, err := runGitCmd(ctx, dir, "log", "--grep="+issueID, "--name-status", "--pretty=format:", "--max-count=50")
 	if err == nil {
 		for k, v := range parseGitLogNameStatus(logOut) {
@@ -1705,6 +1720,23 @@ func explainIssueInWorkspace(ctx context.Context, dir string, issueID string) (E
 		}
 	}
 
+	// The exported document wins when it is there: it is what a caller chose to
+	// generate, it may carry more than the map does, and reading it is one file
+	// read. The map is the fallback for a repository that has never run
+	// `bd codemap export`, and it answers the same three questions.
+	hasJSONGraph := resp.HasGraph
+	var mapContexts map[string]codemapops.FileContext
+	if !hasJSONGraph && inWorkspace {
+		paths := make([]string, 0, len(associatedFiles))
+		for path := range associatedFiles {
+			paths = append(paths, path)
+		}
+		sort.Strings(paths)
+		if contexts, indexed := codemapExplainContexts(ctx, paths); indexed {
+			mapContexts, resp.HasGraph = contexts, true
+		}
+	}
+
 	var files []ExplainFile
 	for path, status := range associatedFiles {
 		exFile := ExplainFile{
@@ -1715,7 +1747,11 @@ func explainIssueInWorkspace(ctx context.Context, dir string, issueID string) (E
 		isUncommitted := uncommittedFiles[path]
 		exFile.DiffPreview = getGitDiffPreview(ctx, dir, path, isUncommitted, baseBranch)
 
-		if resp.HasGraph {
+		if fc, ok := mapContexts[path]; ok {
+			fillExplainFromCodeMap(&exFile, fc)
+		}
+
+		if hasJSONGraph {
 			var targetNode *uaNode
 			cleanedPath := filepath.Clean(path)
 			for i := range graph.Nodes {
