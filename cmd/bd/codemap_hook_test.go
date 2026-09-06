@@ -112,7 +112,7 @@ func TestCodemapHooksHonorTheOptOut(t *testing.T) {
 		t.Errorf("pre-tool under BD_NO_CODEMAP = %q, want {}", got)
 	}
 	// The disabled post-tool must not even decode, let alone reach the store.
-	if err := recordPostToolEdit(context.Background(), strings.NewReader(in)); err != nil {
+	if err := recordPostToolEdit(context.Background(), codemapHookPostToolCmd, strings.NewReader(in)); err != nil {
 		t.Errorf("post-tool under BD_NO_CODEMAP: %v", err)
 	}
 }

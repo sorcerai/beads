@@ -285,3 +285,35 @@ func TestChokepointSharedExcludesMigrateExclusive(t *testing.T) {
 	}
 	release()
 }
+
+// The code map post-tool hook skips the pre-run and opens its own store, so
+// it must take the same gates the pre-run would have: under a foreign
+// exclusive holder the open is refused before any storage is touched.
+func TestEnsureRecorderStoreBlockedByExclusiveHolder(t *testing.T) {
+	resetGateTestEnv(t)
+	t.Cleanup(releaseWorkspaceGates)
+	beadsDir := newGateTestWorkspace(t)
+	t.Setenv("BEADS_DIR", beadsDir)
+
+	gate, err := workspacegate.ForWorkspace(beadsDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	holder, err := gate.Acquire(context.Background(), workspacegate.Exclusive,
+		workspacegate.Options{Reason: "test maintenance"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = holder.Release() }()
+
+	err = ensureRecorderStore(context.Background(), &cobra.Command{Use: "post-tool"})
+	if err == nil {
+		t.Fatal("recorder store open under a foreign exclusive holder must abort, got nil error")
+	}
+	if workspaceGateHandle != nil {
+		t.Error("failed acquisition must leave no gate handle")
+	}
+	if store != nil || uowProvider != nil {
+		t.Error("no store may open when the gate is refused")
+	}
+}

@@ -109,7 +109,7 @@ var codemapHookPostToolCmd = &cobra.Command{
 	SilenceUsage:  true,
 	SilenceErrors: true,
 	RunE: func(cmd *cobra.Command, _ []string) error {
-		return runCodemapPostToolHook(cmd.Context(), os.Stdin, os.Stdout)
+		return runCodemapPostToolHook(cmd.Context(), cmd, os.Stdin, os.Stdout)
 	},
 }
 
@@ -245,8 +245,8 @@ var postToolTools = map[string]bool{"Edit": true, "Write": true, "MultiEdit": tr
 
 func postToolTracksTool(name string) bool { return postToolTools[name] }
 
-func runCodemapPostToolHook(ctx context.Context, stdin io.Reader, stdout io.Writer) error {
-	if err := recordPostToolEdit(ctx, stdin); err != nil {
+func runCodemapPostToolHook(ctx context.Context, cmd *cobra.Command, stdin io.Reader, stdout io.Writer) error {
+	if err := recordPostToolEdit(ctx, cmd, stdin); err != nil {
 		fmt.Fprintf(os.Stderr, "beads: codemap post-tool: %v\n", err)
 	}
 	// Always "{}": PostToolUse has nothing to say to the model, and a tool call
@@ -257,7 +257,7 @@ func runCodemapPostToolHook(ctx context.Context, stdin io.Reader, stdout io.Writ
 // recordPostToolEdit is the part that can fail. A nil error means either "we
 // recorded it" or "there was correctly nothing to record"; the distinction does
 // not reach the agent either way.
-func recordPostToolEdit(ctx context.Context, stdin io.Reader) error {
+func recordPostToolEdit(ctx context.Context, cmd *cobra.Command, stdin io.Reader) error {
 	if codemapHooksDisabled() {
 		return nil
 	}
@@ -290,7 +290,7 @@ func recordPostToolEdit(ctx context.Context, stdin io.Reader) error {
 	defer cancel()
 
 	// The open the root pre-run would have done, but on OUR context.
-	if err := ensureRecorderStore(ctx); err != nil {
+	if err := ensureRecorderStore(ctx, cmd); err != nil {
 		return err
 	}
 	reader, err := openIssueReader()
@@ -346,12 +346,35 @@ func codemapHooksDisabled() bool { return os.Getenv("BD_NO_CODEMAP") == "1" }
 // builds. Setting proxiedServerMode is not bookkeeping — usesProxiedServer
 // reads it, and openIssueFiles asks it which accessor to use, so without it a
 // proxied workspace would take the direct arm and fail. PersistentPostRunE
-// closes whichever one this opened.
-func ensureRecorderStore(ctx context.Context) error {
+// closes whichever one this opened, then releases the gates — the same
+// store-before-gates order the pre-run's error path uses.
+//
+// Skipping the pre-run also skipped its workspace gates and its redirect
+// preservation, so both are taken here, before the open, exactly as
+// PersistentPreRunE takes them: no store may open outside the gates, or a
+// maintenance operation could start against un-quiesced storage.
+func ensureRecorderStore(ctx context.Context, cmd *cobra.Command) error {
 	beadsDir := beads.FindBeadsDir()
 	if beadsDir == "" {
 		return errors.New("no beads workspace found")
 	}
+	if dbPath == "" {
+		preserveRedirectSourceDatabase(beads.GetRedirectInfo().LocalDir)
+	}
+	if err := acquireCommandWorkspaceGates(ctx, cmd, beadsDir); err != nil {
+		return err
+	}
+	if err := openRecorderStore(ctx, beadsDir); err != nil {
+		// RunE's error skips PersistentPostRunE, so this path must not
+		// leak the handle past the process's useful life either.
+		closeStoreBeforeGateRelease()
+		releaseWorkspaceGates()
+		return err
+	}
+	return nil
+}
+
+func openRecorderStore(ctx context.Context, beadsDir string) error {
 	cfg, err := configfile.Load(beadsDir)
 	if err != nil {
 		return fmt.Errorf("load %s: %w", configfile.ConfigPath(beadsDir), err)
