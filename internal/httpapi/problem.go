@@ -192,6 +192,14 @@ const (
 	// which this surface reserves for an operation this BUILD does not
 	// implement, whereas every build implements this one.
 	CodeEventsJournalDisabled Code = "events_journal_disabled"
+	// CodeCodeMapNotBuilt is a repository with no code map on a surface that
+	// was asked about one. It is a 409 on CodeEventsJournalDisabled's terms and
+	// for the same reason: the path is addressable and the resource may well
+	// exist, the DERIVED index over it does not — and the recovery is a command
+	// run in the repository (`bd codemap build`), not a different request. A
+	// 404 would say the file is not there, which is a different and usually
+	// false claim.
+	CodeCodeMapNotBuilt Code = "codemap_not_built"
 	// CodeEventsJournalTruncated is a journal read whose checkpoint has fallen
 	// below the retained window. The value is storage's own constant, so the
 	// code a `bd events tail --json` failure carries and the code this surface
@@ -256,6 +264,7 @@ var codeStatus = map[Code]int{
 	CodePreconditionFailed: http.StatusConflict,
 
 	CodeEventsJournalDisabled:  http.StatusConflict,
+	CodeCodeMapNotBuilt:        http.StatusConflict,
 	CodeEventsJournalTruncated: http.StatusGone,
 	CodeEventsWatchSaturated:   http.StatusServiceUnavailable,
 
@@ -574,6 +583,21 @@ const (
 	// races an open stream arrives as a named event rather than as the 410 the
 	// same condition earns at connect.
 	OpWatchEvents = "watchEvents"
+	// OpGetCodemapFile reads one file's code-map context. It is the first
+	// operation on this surface that addresses a resource by PATH rather than by
+	// id, which is why its path parameter carries the percent-encoding rule.
+	OpGetCodemapFile = "getCodemapFile"
+	// OpGetCodemapShape summarizes one repository's code map: what it describes,
+	// how big it is, and how stale it has become.
+	OpGetCodemapShape = "getCodemapShape"
+	// OpListIssueFiles lists the paths one issue has touched. It needs no code
+	// map: the rows are the issue's own history, which is why this collection
+	// lives under the issue and has no `codemap_not_built`.
+	OpListIssueFiles = "listIssueFiles"
+	// OpRecordIssueFiles records those paths by hand. It is the surface's only
+	// write that constrains a role's enum to ONE member: the other three sources
+	// are observations of a working tree this server cannot see.
+	OpRecordIssueFiles = "recordIssueFiles"
 	// OpCompareAndSetMetadata conditionally sets one metadata key on an issue.
 	// It is the only WRITE on this surface whose ordinary refusal is a 200: a
 	// lost race is the answer to the question the caller asked, and the value
@@ -988,6 +1012,33 @@ var operationCodes = map[string][]Code{
 		CodeInvalidArgument, CodeUnauthenticated, CodeEventsJournalDisabled, CodeEventsJournalTruncated,
 		CodeEventsWatchSaturated, CodeBusy, CodeDBUnavailable, CodeInternal,
 	},
+	// The 409 is this operation's own and the 404 sits beside it, which is the
+	// distinction the pair exists to publish: the conflict says the MAP is not
+	// built, the miss says it is and holds no node for that path.
+	OpGetCodemapFile: {
+		CodeInvalidArgument, CodeUnauthenticated, CodeNotFound, CodeCodeMapNotBuilt,
+		CodeBusy, CodeDBUnavailable, CodeInternal,
+	},
+	// No 404: a repository with no map is the 409, and a map with no nodes is a
+	// 200 reporting zero — a question about a repository has an answer even when
+	// the answer is nothing.
+	OpGetCodemapShape: {
+		CodeInvalidArgument, CodeUnauthenticated, CodeCodeMapNotBuilt,
+		CodeBusy, CodeDBUnavailable, CodeInternal,
+	},
+	// No 404 and no 409. The rows are the issue's own history rather than a
+	// projection of the map, so an unindexed repository answers normally; and
+	// this operation probes no id, so an issue this workspace does not hold is
+	// an empty page — listBlockingAnnotations' argument.
+	OpListIssueFiles: {CodeInvalidArgument, CodeUnauthenticated, CodeBusy, CodeDBUnavailable, CodeInternal},
+	// THE 404 IS THE DIVERGENCE FROM THE READ BESIDE IT, and the role draws it:
+	// Record probes the issue before it writes, because a link filed against an
+	// id nothing holds is a row no read can ever return. Still no 409 — writing
+	// a link needs no map.
+	OpRecordIssueFiles: {
+		CodeInvalidArgument, CodeUnauthenticated, CodeNotFound,
+		CodeBusy, CodeDBUnavailable, CodeInternal,
+	},
 	// NO 404, for a stronger version of the batch create's reason: an edge that
 	// is not there is `removed: false`, and an endpoint id that names nothing
 	// holds no edge either, so this operation probes no id's existence and has
@@ -1279,6 +1330,16 @@ func InvalidCursor() Result {
 // apart would be probing which ids are well-formed.
 func NotFound() Result {
 	return newResult(CodeNotFound, "no issue or wisp with that id")
+}
+
+// CodeMapNotBuilt builds the 409 for a repository that has never been indexed.
+//
+// The detail names the command, for EventsJournalDisabled's reason inverted:
+// there the recovery is the operator's, here it is the caller's, and either way
+// the human reading this response is the one who has to run something.
+func CodeMapNotBuilt() Result {
+	return newResult(CodeCodeMapNotBuilt,
+		"this repository has no code map; run `bd codemap build` in it")
 }
 
 // EventsJournalDisabled builds the 409 for a workspace whose journal is off.

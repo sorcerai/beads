@@ -7,6 +7,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/steveyegge/beads/codemapops"
 	"github.com/steveyegge/beads/internal/configfile"
 	"github.com/steveyegge/beads/internal/hooks"
 	"github.com/steveyegge/beads/internal/storage"
@@ -485,6 +486,8 @@ func (*serveRolesStore) Querier() (issueops.Querier, error)                     
 func (*serveRolesStore) Sweeper() (issueops.Sweeper, error)                     { return nil, nil }
 func (*serveRolesStore) Deleter() (issueops.Deleter, error)                     { return nil, nil }
 func (*serveRolesStore) Memories() (memoryops.Memories, error)                  { return nil, nil }
+func (*serveRolesStore) CodeMapReader() (codemapops.Reader, error)              { return nil, nil }
+func (*serveRolesStore) IssueFiles() (codemapops.IssueFiles, error)             { return nil, nil }
 
 // MetadataCAS carries an identifiable value for the same reason, and it is the
 // FIFTH the decorator wraps: a peel of the wrong depth would hand bd serve a

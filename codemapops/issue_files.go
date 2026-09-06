@@ -17,47 +17,52 @@ const (
 
 // RecordRequest asks IssueFiles to note that an issue touched some paths.
 type RecordRequest struct {
-	IssueID, RepoID string
-	Paths           []string
-	Source          Source
-	CommitSHA       string
+	IssueID   string   `json:"issue_id"`
+	RepoID    string   `json:"repo_id"`
+	Paths     []string `json:"paths,omitempty"`
+	Source    Source   `json:"source"`
+	CommitSHA string   `json:"commit_sha,omitempty"`
 }
 
 // RecordResult reports how many issue_files rows were inserted vs. updated.
 type RecordResult struct {
-	Inserted, Updated int
+	Inserted int `json:"inserted"`
+	Updated  int `json:"updated"`
 }
 
 // IssueFile is one path an issue has touched.
 type IssueFile struct {
-	Path                string
-	Source              Source
-	CommitSHA           string
-	FirstSeen, LastSeen time.Time
-	Touches             int
+	Path      string    `json:"path"`
+	Source    Source    `json:"source"`
+	CommitSHA string    `json:"commit_sha,omitempty"`
+	FirstSeen time.Time `json:"first_seen"`
+	LastSeen  time.Time `json:"last_seen"`
+	Touches   int       `json:"touches"`
 }
 
 // IssueRef is a lightweight reference to another issue, for cross-linking.
 type IssueRef struct {
-	ID, Title, Status string
+	ID     string `json:"id"`
+	Title  string `json:"title"`
+	Status string `json:"status"`
 }
 
 // IssueCodeFile is one of an issue's touched files, joined with the code map
 // context for that file when the repository is indexed.
 type IssueCodeFile struct {
 	IssueFile
-	Context  *FileContext // nil when the repo is not indexed or the path is unknown
-	Siblings []IssueRef   // other open issues on this path
+	Context  *FileContext `json:"context,omitempty"`  // nil when the repo is not indexed or the path is unknown
+	Siblings []IssueRef   `json:"siblings,omitempty"` // other open issues on this path
 }
 
 // IssueCodeContext is the full "what code does this issue touch" answer for
 // one issue.
 type IssueCodeContext struct {
-	IssueID string
-	RepoID  string
-	Indexed bool
-	Shape   *Shape // freshness header; nil when not indexed
-	Files   []IssueCodeFile
+	IssueID string          `json:"issue_id"`
+	RepoID  string          `json:"repo_id"`
+	Indexed bool            `json:"indexed"`
+	Shape   *Shape          `json:"shape,omitempty"` // freshness header; nil when not indexed
+	Files   []IssueCodeFile `json:"files,omitempty"`
 }
 
 // IssueFiles records and reads the association between issues and the paths

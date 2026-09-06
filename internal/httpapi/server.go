@@ -24,6 +24,7 @@ import (
 
 	"golang.org/x/net/netutil"
 
+	"github.com/steveyegge/beads/codemapops"
 	"github.com/steveyegge/beads/internal/httpapi/apigen"
 	"github.com/steveyegge/beads/internal/storage"
 	"github.com/steveyegge/beads/internal/storage/domain"
@@ -283,6 +284,15 @@ type Config struct {
 	// a partial set is refused, so the field and the operations that reach it
 	// land together.
 	Memories memoryops.Memories
+	// CodeMapReader and IssueFiles are the code map's read side and the
+	// issue-to-path association plane. Like Memories they are not issueops
+	// roles: the map is a derived index over a repository's source, declared in
+	// its own leaf package, and the issue-file rows are the one plane here whose
+	// key is a repository as well as an issue. Required on the same terms as
+	// every field above — a partial set is refused, so the fields and the four
+	// operations that reach them land together.
+	CodeMapReader codemapops.Reader
+	IssueFiles    codemapops.IssueFiles
 	// EventsJournal is the durable mutation journal's READ side, and the ONE
 	// role here that is required CONDITIONALLY — which is why it is absent from
 	// sourceRoles and checked on its own. Like Memories it is not an issueops
@@ -370,6 +380,8 @@ type Server struct {
 	issueMetadataCAS  issueops.MetadataCAS
 	issueBatchApplier issueops.BatchApplier
 	workspaceMemories memoryops.Memories
+	codeMapRead       codemapops.Reader
+	issueFilesPlane   codemapops.IssueFiles
 	eventsJournal     storage.EventsJournalCursor
 
 	listener net.Listener
@@ -522,6 +534,8 @@ func Listen(cfg Config) (*Server, error) {
 		issueMetadataCAS:  cfg.MetadataCAS,
 		issueBatchApplier: cfg.BatchApplier,
 		workspaceMemories: cfg.Memories,
+		codeMapRead:       cfg.CodeMapReader,
+		issueFilesPlane:   cfg.IssueFiles,
 		eventsJournal:     cfg.EventsJournal,
 
 		sem:        make(chan struct{}, maxInflight),
@@ -627,12 +641,12 @@ func Listen(cfg Config) (*Server, error) {
 // "all or nothing" would turn an honest condition into a special case inside
 // three functions. It is checked once, on its own, below.
 func sourceRoles(cfg Config) []any {
-	return []any{cfg.Reader, cfg.Claimer, cfg.ReadyClaimer, cfg.Releaser, cfg.Lifecycle, cfg.BatchCloser, cfg.Settings, cfg.Stats, cfg.CycleDetector, cfg.EdgeReader, cfg.GraphCounter, cfg.Relations, cfg.Commenter, cfg.BlockingAnnotator, cfg.TreeWalker, cfg.ReadyCounter, cfg.Counter, cfg.Querier, cfg.Sweeper, cfg.Deleter, cfg.BatchCreator, cfg.DependencyEditor, cfg.BatchApplier, cfg.Memories, cfg.MetadataCAS}
+	return []any{cfg.Reader, cfg.Claimer, cfg.ReadyClaimer, cfg.Releaser, cfg.Lifecycle, cfg.BatchCloser, cfg.Settings, cfg.Stats, cfg.CycleDetector, cfg.EdgeReader, cfg.GraphCounter, cfg.Relations, cfg.Commenter, cfg.BlockingAnnotator, cfg.TreeWalker, cfg.ReadyCounter, cfg.Counter, cfg.Querier, cfg.Sweeper, cfg.Deleter, cfg.BatchCreator, cfg.DependencyEditor, cfg.BatchApplier, cfg.Memories, cfg.CodeMapReader, cfg.IssueFiles, cfg.MetadataCAS}
 }
 
 // roleSourceNames spells sourceRoles for the refusal message, in the same
 // order, so a caller reading the error learns the whole set it must pass.
-const roleSourceNames = "Reader, Claimer, ReadyClaimer, Releaser, Lifecycle, BatchCloser, Settings, Stats, CycleDetector, EdgeReader, GraphCounter, Relations, Commenter, BlockingAnnotator, TreeWalker, ReadyCounter, Counter, Querier, Sweeper, Deleter, BatchCreator, DependencyEditor, BatchApplier, Memories and MetadataCAS"
+const roleSourceNames = "Reader, Claimer, ReadyClaimer, Releaser, Lifecycle, BatchCloser, Settings, Stats, CycleDetector, EdgeReader, GraphCounter, Relations, Commenter, BlockingAnnotator, TreeWalker, ReadyCounter, Counter, Querier, Sweeper, Deleter, BatchCreator, DependencyEditor, BatchApplier, Memories, CodeMapReader, IssueFiles and MetadataCAS"
 
 func anyRoleSet(cfg Config) bool {
 	return slices.ContainsFunc(sourceRoles(cfg), func(r any) bool { return r != nil })
@@ -1179,6 +1193,35 @@ func (s *Server) memories(r *http.Request) (memoryops.Memories, error) {
 	}
 	var src uow.MemoriesSource = timedProvider{inner: s.provider, rec: requestInfo(r.Context())}
 	return src.Memories()
+}
+
+// codeMapReader returns the code map's read surface for one request, on the
+// same terms as every role above and held by INTERFACE so
+// uow.CodeMapReaderSource is load-bearing rather than decorative.
+//
+// It goes out UNWRAPPED: every result this role answers is a VALUE, so no
+// handler dereferences a pointer it returned.
+func (s *Server) codeMapReader(r *http.Request) (codemapops.Reader, error) {
+	if s.provider == nil {
+		return s.codeMapRead, nil
+	}
+	var src uow.CodeMapReaderSource = timedProvider{inner: s.provider, rec: requestInfo(r.Context())}
+	return src.CodeMapReader()
+}
+
+// issueFiles returns the issue-to-path plane for one request, on the same terms
+// and held by INTERFACE so uow.IssueFilesSource is load-bearing rather than
+// decorative.
+//
+// It goes out UNWRAPPED for the reader's reason. The one pointer this role can
+// answer — IssueCodeFile.Context — belongs to a result no operation on this
+// surface serves.
+func (s *Server) issueFiles(r *http.Request) (codemapops.IssueFiles, error) {
+	if s.provider == nil {
+		return s.issueFilesPlane, nil
+	}
+	var src uow.IssueFilesSource = timedProvider{inner: s.provider, rec: requestInfo(r.Context())}
+	return src.IssueFiles()
 }
 
 // eventsJournalCursor returns the journal read surface for one request, on the

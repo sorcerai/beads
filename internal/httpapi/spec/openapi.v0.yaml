@@ -5486,6 +5486,255 @@ paths:
         '503':
           $ref: '#/components/responses/Unavailable'
 
+  /v0/beads/codemap/files/{path}:
+    get:
+      operationId: getCodemapFile
+      summary: Read one file's code-map context
+      description: >-
+        Everything the code map holds about one file: its own node, the package
+        that contains it, the packages it imports, what imports its package,
+        its tests, and the OPEN issues recorded against that path. It is the
+        read behind `bd codemap show <path>`.
+
+
+        THE PATH IS ONE PATH SEGMENT, so its separators are percent-encoded:
+        `cmd/bd/codemap.go` is addressed as `cmd%2Fbd%2Fcodemap.go`. A client
+        that sends the separators raw addresses a longer path this surface does
+        not route and receives the `404` any unrouted path gets. The value is
+        percent-decoded once and reaches the role verbatim: normalization —
+        backslashes, a leading `./`, an escape above the repository root — is
+        the role's, so this surface and `bd codemap` cannot come to disagree
+        about which file a spelling names.
+
+
+        `repo_id` IS REQUIRED and is not inferred. A server may hold the maps of
+        several repositories in one workspace database, and a request that named
+        none would be asking about whichever one the server guessed. It is the
+        id `bd codemap status --json` reports.
+
+
+        THE `409` IS THE COMMON FIRST ANSWER on a workspace that has never run
+        `bd codemap build`, and it is a conflict rather than a `404`: the file
+        may well exist, the map does not. The `404` means the map IS built and
+        holds no node for that path — a file that is generated, vendored,
+        ignored, or simply not code.
+      parameters:
+        - $ref: '#/components/parameters/CodemapPath'
+        - $ref: '#/components/parameters/CodemapRepoID'
+      security:
+        - bearerToken: []
+      responses:
+        '200':
+          description: The file's node, its neighbours, and the open issues on it.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CodemapFile'
+        '400':
+          description: >-
+            Invalid request: an unknown query parameter, a missing or repeated
+            `repo_id`, an empty `path`, or a path the role refuses as not
+            repo-relative.
+          x-bd-codes: [invalid_argument]
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+        '404':
+          description: The map is built and holds no file node for that path.
+          x-bd-codes: [not_found]
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+        '409':
+          $ref: '#/components/responses/CodemapNotBuilt'
+        '500':
+          $ref: '#/components/responses/InternalError'
+        '503':
+          $ref: '#/components/responses/Unavailable'
+
+  /v0/beads/codemap/shape:
+    get:
+      operationId: getCodemapShape
+      summary: Summarize a repository's code map
+      description: >-
+        The repository-wide header `bd codemap` prints first: which commit the
+        map describes, when it was indexed, how many nodes and edges it holds,
+        how many summaries have gone stale, the per-layer counts, and the files
+        with the most importers. It is a FRESHNESS AND SIZE report, not a walk
+        of the graph: a client that needs the graph itself reads it one file at
+        a time.
+
+
+        `repo_id` IS REQUIRED, for the reason it is required on the file read.
+
+
+        THERE IS NO `404`. A repository with no map is the `409` below, and a
+        repository whose map is empty is a `200` with zero nodes: the question
+        this operation asks about a repository has an answer even when the
+        answer is nothing.
+      parameters:
+        - $ref: '#/components/parameters/CodemapRepoID'
+        - name: top_files
+          in: query
+          description: >-
+            How many of the most-imported files to return in `top_fan_in`. The
+            role's own default applies when this is absent.
+          schema:
+            type: integer
+            minimum: 0
+      security:
+        - bearerToken: []
+      responses:
+        '200':
+          description: The map's shape, as of the commit it was indexed at.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Shape'
+        '400':
+          description: >-
+            Invalid request: an unknown query parameter, a missing or repeated
+            `repo_id`, or a `top_files` that is not a non-negative integer.
+          x-bd-codes: [invalid_argument]
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+        '409':
+          $ref: '#/components/responses/CodemapNotBuilt'
+        '500':
+          $ref: '#/components/responses/InternalError'
+        '503':
+          $ref: '#/components/responses/Unavailable'
+
+  /v0/beads/issues/{id}/files:
+    get:
+      operationId: listIssueFiles
+      summary: List the paths one issue has touched
+      description: >-
+        Every path recorded against one issue, ordered by path, with how each
+        association was observed and how many times it has been seen since. It
+        is the read behind `bd codemap files <id>`.
+
+
+        IT NEEDS NO MAP AND NO `repo_id`. These rows are an issue's own history
+        of the files it touched, written by `bd codemap link`, by the agent tool
+        hooks and by the commit and branch observers; they exist whether or not
+        the repository has ever been indexed, and an issue is only ever in one
+        workspace. That is why this collection lives under the ISSUE rather than
+        under `/codemap`, and why it has no `409`.
+
+
+        AN ISSUE WITH NO RECORDED PATHS IS AN EMPTY PAGE, and so is an id this
+        workspace does not hold: this operation probes no id's existence, so it
+        has no miss to report. `has_more` is ALWAYS false — an issue touches
+        tens of files, not a collection to scan — and the envelope is used
+        anyway because the order is stable, which is what would make a cursor
+        expressible later without a breaking change.
+      parameters:
+        - $ref: '#/components/parameters/IssueID'
+      security:
+        - bearerToken: []
+      responses:
+        '200':
+          description: The paths this issue has touched, ordered by path.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/IssueFilesPage'
+        '400':
+          $ref: '#/components/responses/InvalidArgument'
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+        '500':
+          $ref: '#/components/responses/InternalError'
+        '503':
+          $ref: '#/components/responses/Unavailable'
+    post:
+      operationId: recordIssueFiles
+      summary: Record by hand that an issue touched some paths
+      description: >-
+        Notes that an issue touched some paths — the write behind
+        `bd codemap link`. It is an UPSERT per path: a first sighting inserts a
+        row, a repeat sighting folds into the existing one by advancing its
+        `last_seen` and its `touches`, and the response reports how many of each
+        happened.
+
+
+        `source` MUST BE `manual`, and the restriction is the point of the
+        operation. The other three sources — `hook`, `commit` and `branch` — are
+        OBSERVATIONS a local process made about a working tree this server
+        cannot see, and a client that could assert one over the wire could
+        fabricate a commit's history. A caller asserting a link over HTTP is
+        asserting it by hand, which is what `manual` means; any other value is a
+        `400`.
+
+
+        `repo_id` IS REQUIRED, for the reason the code-map reads require it: the
+        row is keyed by repository, and a server holding several would otherwise
+        file the link under a guess.
+
+
+        PATHS ARE NOT VALIDATED HERE. The role normalizes each one and refuses
+        an escape above the repository root before it probes the issue or writes
+        a row, so the one rule lives with the storage that enforces it.
+
+
+        Hooks do not fire and the per-command auto-commit machinery does not
+        run, exactly as for every other write on this surface.
+      parameters:
+        - $ref: '#/components/parameters/IssueID'
+        - $ref: '#/components/parameters/CodemapRepoID'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RecordIssueFilesRequest'
+      security:
+        - bearerToken: []
+      responses:
+        '200':
+          description: >-
+            The links were recorded. `inserted` counts first sightings and
+            `updated` counts paths this issue had already touched.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RecordResult'
+        '400':
+          description: >-
+            Invalid request: an unknown query parameter or body member, a
+            missing or repeated `repo_id`, an empty `paths`, a `source` other
+            than `manual`, or a path the role refuses as not repo-relative.
+          x-bd-codes: [invalid_argument]
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+        '404':
+          description: >-
+            This workspace holds no issue with that id. Unlike the read beside
+            it, this operation probes the id: a link filed against an issue that
+            does not exist would be a row nothing can ever read back.
+          x-bd-codes: [not_found]
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+        '500':
+          $ref: '#/components/responses/InternalError'
+        '503':
+          $ref: '#/components/responses/Unavailable'
+
   /v0/beads/events:
     get:
       operationId: listEvents
@@ -5999,6 +6248,30 @@ components:
       schema:
         type: string
         minLength: 1
+    CodemapPath:
+      name: path
+      in: path
+      required: true
+      description: >-
+        Exact repo-relative file path, occupying ONE path segment and
+        percent-decoded once — so its separators arrive encoded
+        (`cmd%2Fbd%2Fcodemap.go`). It reaches the role verbatim; normalization
+        and the escaping-path refusal are the role's.
+      schema:
+        type: string
+        minLength: 1
+    CodemapRepoID:
+      name: repo_id
+      in: query
+      required: true
+      description: >-
+        Which repository's code map to address. It is REQUIRED rather than
+        inferred: one workspace database can hold the maps of several
+        repositories, and a server that guessed would answer confidently about
+        the wrong one. It is the id `bd codemap status --json` reports.
+      schema:
+        type: string
+        minLength: 1
     IssueID:
       name: id
       in: path
@@ -6042,6 +6315,17 @@ components:
         application/problem+json:
           schema:
             $ref: '#/components/schemas/Problem'
+    CodemapNotBuilt:
+      description: >-
+        This repository has no code map. The recovery is entirely local — run
+        `bd codemap build` in the repository — so it is a conflict with the
+        server's state rather than a missing resource: the path is addressable
+        and will answer as soon as the map exists.
+      x-bd-codes: [codemap_not_built]
+      content:
+        application/problem+json:
+          schema:
+            $ref: '#/components/schemas/Problem'
     InternalError:
       description: >-
         Unexpected server-side failure. `detail` is a fixed string per code:
@@ -6075,7 +6359,7 @@ components:
     # ---------------------------------------------------------------------
     # Pinned schemas.
     #
-    # Each of the thirteen below is `x-go-type`-pinned to the canonical Go struct,
+    # Each of the twenty below is `x-go-type`-pinned to the canonical Go struct,
     # so the generator emits a type ALIAS and no mirror struct exists anywhere.
     # `types.Issue`'s JSON encoding IS this contract; the CLI's `--json`, the
     # JSONL interchange and these bodies all marshal the same struct.
@@ -6087,11 +6371,13 @@ components:
     # added to the Go struct without an entry here fails CI, and an entry here
     # with no Go field fails CI.
     #
-    # Nine of the thirteen are pinned to `internal/types`. The other four are
+    # Nine of the twenty are pinned to `internal/types`. The other eleven are
     # pinned where their canonical struct actually lives: `CycleMember`,
     # `Cycle` and `IssueBlocking`, which appear after `Statistics`, to the role
-    # package `issueops`; `EventRecord`, last of the group, to
-    # `internal/eventsjournal`. TestWireTagBijection's `pinnedSchemas` table is
+    # package `issueops`; the seven code-map schemas after them — `NodeRef`,
+    # `FileContext`, `LayerSummary`, `Shape`, `IssueFile`, `IssueRef` and
+    # `RecordResult` — to the role package `codemapops`; `EventRecord`, last of
+    # the group, to `internal/eventsjournal`. TestWireTagBijection's `pinnedSchemas` table is
     # the enumeration that is machine-checked; the counts here are prose and go
     # stale in silence, so a schema added to that table updates them too.
     # ---------------------------------------------------------------------
@@ -7059,6 +7345,213 @@ components:
             specified. A client that needs every structural edge reads them from
             `GET /v0/beads/dependencies`.
 
+    # The seven code-map schemas, pinned to `codemapops` — the role package
+    # where the reader's and the issue-file surface's results are declared, for
+    # the reason the cycle pair is pinned to `issueops`: `bd codemap show
+    # --json` and `bd show --json` marshal these same structs, so a field that
+    # appeared on one surface and not the other would be two contracts.
+    NodeRef:
+      type: object
+      description: >-
+        One node of the code map as it is DISPLAYED: a file or a package,
+        carrying only what a caller needs to name and place it. The graph's own
+        node — blob hash, line count, exported count — is not this shape.
+      x-go-type: codemapops.NodeRef
+      x-go-type-import:
+        name: codemapops
+        path: github.com/steveyegge/beads/codemapops
+      required: [path, kind, stale, is_test]
+      properties:
+        path:
+          type: string
+          description: >-
+            Repo-relative path for a file; the import path (or crate::mod path)
+            for a package.
+        name:
+          type: string
+        lang:
+          type: string
+          description: The scout that produced it, `go` or `rust`.
+        layer:
+          type: string
+          description: >-
+            The architectural layer a summarizer assigned. Absent until the
+            repository has been summarized.
+        summary:
+          type: string
+          description: >-
+            The one-line summary a summarizer wrote. Absent until the repository
+            has been summarized; `stale` says whether it still describes the
+            file's current contents.
+        kind:
+          type: string
+          description: '`file` or `package`.'
+        stale:
+          type: boolean
+          description: >-
+            True when the summary was computed against a blob this file no
+            longer has. Always present: a client reads "this description is
+            current" from the answer, not from a missing key.
+        is_test:
+          type: boolean
+    FileContext:
+      type: object
+      description: >-
+        One file and what surrounds it. `importers` and `tests` are properties
+        of the file's PACKAGE — what imports the package, and the test files
+        that exercise it — because that is the granularity the map's edges hold;
+        `imports` is the file's own.
+      x-go-type: codemapops.FileContext
+      x-go-type-import:
+        name: codemapops
+        path: github.com/steveyegge/beads/codemapops
+      required: [node, package]
+      properties:
+        node:
+          $ref: '#/components/schemas/NodeRef'
+        package:
+          $ref: '#/components/schemas/NodeRef'
+        imports:
+          type: array
+          description: The packages this file imports. Absent when it imports none.
+          items:
+            $ref: '#/components/schemas/NodeRef'
+        importers:
+          type: array
+          description: >-
+            What imports this file's package, at file granularity where the map
+            knows it and package granularity otherwise.
+          items:
+            $ref: '#/components/schemas/NodeRef'
+        tests:
+          type: array
+          description: The test files that exercise this file's package.
+          items:
+            $ref: '#/components/schemas/NodeRef'
+    LayerSummary:
+      type: object
+      description: How many packages and files one architectural layer holds.
+      x-go-type: codemapops.LayerSummary
+      x-go-type-import:
+        name: codemapops
+        path: github.com/steveyegge/beads/codemapops
+      required: [layer, packages, files]
+      properties:
+        layer:
+          type: string
+        packages:
+          type: integer
+        files:
+          type: integer
+    Shape:
+      type: object
+      description: >-
+        A repository's code map in one header: what it describes, how big it is,
+        how stale its summaries are, and where its gravity is.
+      x-go-type: codemapops.Shape
+      x-go-type-import:
+        name: codemapops
+        path: github.com/steveyegge/beads/codemapops
+      required: [repo_id, head_sha, indexed_at, nodes, edges, stale_summaries]
+      properties:
+        repo_id:
+          type: string
+        head_sha:
+          type: string
+          description: >-
+            The commit the map was built from. A client compares it with the
+            repository's current HEAD to learn whether the map is behind.
+        indexed_at:
+          type: string
+          format: date-time
+        nodes:
+          type: integer
+        edges:
+          type: integer
+        stale_summaries:
+          type: integer
+          description: >-
+            How many summaries were computed against a blob their file no longer
+            has — what `bd codemap summarize` would refresh.
+        layers:
+          type: array
+          description: Per-layer counts. Absent on a repository with no summaries yet.
+          items:
+            $ref: '#/components/schemas/LayerSummary'
+        top_fan_in:
+          type: array
+          description: >-
+            The files with the most importers, most first, bounded by
+            `top_files`.
+          items:
+            $ref: '#/components/schemas/NodeRef'
+    IssueFile:
+      type: object
+      description: >-
+        One path an issue has touched, and how that association came to be
+        known.
+      x-go-type: codemapops.IssueFile
+      x-go-type-import:
+        name: codemapops
+        path: github.com/steveyegge/beads/codemapops
+      required: [path, source, first_seen, last_seen, touches]
+      properties:
+        path:
+          type: string
+        source:
+          type: string
+          description: >-
+            How the association was observed: `hook` (an agent tool edit),
+            `commit`, `branch`, or `manual` (`bd codemap link`, and the only
+            value this surface will WRITE). A repeat sighting overwrites this
+            with the source that saw it last.
+        commit_sha:
+          type: string
+          description: The commit a `commit` sighting came from. Absent otherwise.
+        first_seen:
+          type: string
+          format: date-time
+        last_seen:
+          type: string
+          format: date-time
+        touches:
+          type: integer
+          description: How many sightings have folded into this row.
+    IssueRef:
+      type: object
+      description: >-
+        A lightweight reference to another issue, for cross-linking: enough to
+        show it, not enough to act on it. A caller that needs the row reads
+        `GET /v0/beads/issues/{id}`.
+      x-go-type: codemapops.IssueRef
+      x-go-type-import:
+        name: codemapops
+        path: github.com/steveyegge/beads/codemapops
+      required: [id, title, status]
+      properties:
+        id:
+          type: string
+        title:
+          type: string
+        status:
+          type: string
+    RecordResult:
+      type: object
+      description: >-
+        What a record call changed: `inserted` counts paths this issue had never
+        touched, `updated` counts the sightings that folded into a row that was
+        already there. Both are always present.
+      x-go-type: codemapops.RecordResult
+      x-go-type-import:
+        name: codemapops
+        path: github.com/steveyegge/beads/codemapops
+      required: [inserted, updated]
+      properties:
+        inserted:
+          type: integer
+        updated:
+          type: integer
+
     # ---------------------------------------------------------------------
     # Envelope schemas. Almost all of these have no canonical Go type behind
     # them: they are new wire surface, generated normally, and the generated
@@ -7071,6 +7564,64 @@ components:
     # TestWireTagBijection's `pinnedSchemas` is the authority on which schemas
     # are pinned; do not read this region's position as the answer.
     # ---------------------------------------------------------------------
+
+    CodemapFile:
+      type: object
+      description: >-
+        One file's map context together with the OPEN issues recorded against
+        that path. The two arrive together because they answer one question —
+        what is this file, and who is already working on it — and separating
+        them would make the common read two round trips.
+      required: [file, issues]
+      properties:
+        file:
+          $ref: '#/components/schemas/FileContext'
+        issues:
+          type: array
+          description: >-
+            The OPEN issues that have touched this path, closed ones excluded.
+            Always present; empty when nobody is working on it.
+          items:
+            $ref: '#/components/schemas/IssueRef'
+
+    IssueFilesPage:
+      type: object
+      description: >-
+        The paths one issue has touched, ordered by path. `has_more` is always
+        false; see the operation description.
+      required: [items, has_more]
+      properties:
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/IssueFile'
+        has_more:
+          type: boolean
+
+    RecordIssueFilesRequest:
+      type: object
+      description: >-
+        The paths to record against the issue the path names, and the source to
+        record them under.
+      additionalProperties: false
+      required: [paths, source]
+      properties:
+        paths:
+          type: array
+          description: >-
+            The repo-relative paths this issue touched. At least one; each is
+            normalized by the role, which refuses an escape above the repository
+            root.
+          items:
+            type: string
+          minItems: 1
+        source:
+          type: string
+          description: >-
+            How the association was observed. `manual` is the ONLY accepted
+            value over this wire: the other three sources are observations a
+            local process made about a working tree this server cannot see.
+          enum: [manual]
 
     Health:
       type: object
@@ -7178,6 +7729,7 @@ components:
             `dependencies.add`, `dependencies.remove`,
             `memories.list`, `memories.get`, `memories.remember`,
             `memories.forget`, `events.list`, `events.watch`,
+            `codemap.file`, `codemap.shape`, `issues.listFiles`, `issues.recordFiles`,
             `issues.casMetadata`; the one behavior token is `project.enforce`,
             which announces that a `Bd-Project-Id` stamp for the wrong workspace
             is refused here rather than silently ignored. The list grows

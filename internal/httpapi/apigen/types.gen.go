@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"time"
 
+	codemapops "github.com/steveyegge/beads/codemapops"
 	eventsjournal "github.com/steveyegge/beads/internal/eventsjournal"
 	types "github.com/steveyegge/beads/internal/types"
 	issueops "github.com/steveyegge/beads/issueops"
@@ -73,6 +74,21 @@ const (
 func (e HealthStatus) Valid() bool {
 	switch e {
 	case Ok:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for RecordIssueFilesRequestSource.
+const (
+	Manual RecordIssueFilesRequestSource = "manual"
+)
+
+// Valid indicates whether the value is a known member of the RecordIssueFilesRequestSource enum.
+func (e RecordIssueFilesRequestSource) Valid() bool {
+	switch e {
+	case Manual:
 		return true
 	default:
 		return false
@@ -919,6 +935,15 @@ type CloseOutcome struct {
 	OpenChildren *int `json:"open_children,omitempty"`
 }
 
+// CodemapFile One file's map context together with the OPEN issues recorded against that path. The two arrive together because they answer one question — what is this file, and who is already working on it — and separating them would make the common read two round trips.
+type CodemapFile struct {
+	// File One file and what surrounds it. `importers` and `tests` are properties of the file's PACKAGE — what imports the package, and the test files that exercise it — because that is the granularity the map's edges hold; `imports` is the file's own.
+	File FileContext `json:"file"`
+
+	// Issues The OPEN issues that have touched this path, closed ones excluded. Always present; empty when nobody is working on it.
+	Issues []IssueRef `json:"issues"`
+}
+
 // Comment defines model for Comment.
 type Comment = types.Comment
 
@@ -974,7 +999,7 @@ type ContextResponse struct {
 	// OPTIONAL, and absent means only that this server does not disclose its filesystem layout — never that it has no workspace. A client MUST NOT require it, MUST NOT treat absence as an error, and has no use for the value beyond display: it is a path on the SERVER's filesystem, which the client cannot open. Identify the workspace by `project_id` and `database`, which are required.
 	BeadsDir *string `json:"beads_dir,omitempty"`
 
-	// Capabilities The tokens this server advertises: the OPERATIONS it implements, derived from its route table, and the server-wide BEHAVIORS it enforces. v0's operation vocabulary is `ready.list`, `ready.count`, `issues.list`, `issues.query`, `issues.count`, `issues.get`, `issues.related`, `issues.create`, `issues.addComment`, `issues.batchClose`, `issues.claim`, `issues.claimNext`, `issues.release`, `issues.close`, `issues.reopen`, `issues.update`, `issues.sweep`, `issues.delete`, `issues.batchCreate`, `issues.batchApply`, `stats.get`, `config.list`, `config.get`, `config.set`, `config.unset`, `dependencies.cycles`, `dependencies.list`, `dependencies.count`, `dependencies.blocking`, `dependencies.tree`, `dependencies.add`, `dependencies.remove`, `memories.list`, `memories.get`, `memories.remember`, `memories.forget`, `events.list`, `events.watch`, `issues.casMetadata`; the one behavior token is `project.enforce`, which announces that a `Bd-Project-Id` stamp for the wrong workspace is refused here rather than silently ignored. The list grows additively, and an operation never appears here unless it is fully implemented. This is how a client checks for an operation or a behavior — never the version string.
+	// Capabilities The tokens this server advertises: the OPERATIONS it implements, derived from its route table, and the server-wide BEHAVIORS it enforces. v0's operation vocabulary is `ready.list`, `ready.count`, `issues.list`, `issues.query`, `issues.count`, `issues.get`, `issues.related`, `issues.create`, `issues.addComment`, `issues.batchClose`, `issues.claim`, `issues.claimNext`, `issues.release`, `issues.close`, `issues.reopen`, `issues.update`, `issues.sweep`, `issues.delete`, `issues.batchCreate`, `issues.batchApply`, `stats.get`, `config.list`, `config.get`, `config.set`, `config.unset`, `dependencies.cycles`, `dependencies.list`, `dependencies.count`, `dependencies.blocking`, `dependencies.tree`, `dependencies.add`, `dependencies.remove`, `memories.list`, `memories.get`, `memories.remember`, `memories.forget`, `events.list`, `events.watch`, `codemap.file`, `codemap.shape`, `issues.listFiles`, `issues.recordFiles`, `issues.casMetadata`; the one behavior token is `project.enforce`, which announces that a `Bd-Project-Id` stamp for the wrong workspace is refused here rather than silently ignored. The list grows additively, and an operation never appears here unless it is fully implemented. This is how a client checks for an operation or a behavior — never the version string.
 	//
 	// THIS LIST IS BUILD-LEVEL, NOT WORKSPACE-LEVEL. It says which operations this binary serves, and for every entry but two that is the whole answer. `events.list` and `events.watch` are the exceptions: the durable events journal is a per-workspace setting that is OFF by default, so a server that advertises them may still refuse every request to both with 409 `events_journal_disabled` — correctly, because the operations exist and the workspace has no journal. A consumer of either MUST treat the capability as "this server speaks it" and the 409 as "not on this workspace", and must not read the capability as a promise that records will arrive.
 	Capabilities []string `json:"capabilities"`
@@ -1268,6 +1293,9 @@ type EventsPage struct {
 	Records []EventRecord `json:"records"`
 }
 
+// FileContext One file and what surrounds it. `importers` and `tests` are properties of the file's PACKAGE — what imports the package, and the test files that exercise it — because that is the granularity the map's edges hold; `imports` is the file's own.
+type FileContext = codemapops.FileContext
+
 // Health defines model for Health.
 type Health struct {
 	Status HealthStatus `json:"status"`
@@ -1303,6 +1331,15 @@ type IssueCount struct {
 
 // IssueDetails An `Issue` with its labels, dependency edges and cardinalities — the body of `GET /v0/beads/issues/{id}`. `dependencies` and `dependents` carry FULL issue objects plus the edge type, not bare edges. Property semantics are documented on `Issue`.
 type IssueDetails = types.IssueDetails
+
+// IssueFile One path an issue has touched, and how that association came to be known.
+type IssueFile = codemapops.IssueFile
+
+// IssueFilesPage The paths one issue has touched, ordered by path. `has_more` is always false; see the operation description.
+type IssueFilesPage struct {
+	HasMore bool        `json:"has_more"`
+	Items   []IssueFile `json:"items"`
+}
 
 // IssuePatchBody The fields to write. Every member is optional and PRESENCE is the signal: a member present is written, a member absent is untouched. An empty object is a `400` — a write that writes nothing is a client bug.
 //
@@ -1383,6 +1420,9 @@ type IssuePatchBody struct {
 	Title *string `json:"title,omitempty"`
 }
 
+// IssueRef A lightweight reference to another issue, for cross-linking: enough to show it, not enough to act on it. A caller that needs the row reads `GET /v0/beads/issues/{id}`.
+type IssueRef = codemapops.IssueRef
+
 // IssueWithCounts An `Issue` plus relationship cardinalities. This is the element type of both `/v0/beads/ready` and `/v0/beads/issues`, matching what `bd ready --json` and `bd list --json` emit. Property semantics are documented on `Issue`.
 type IssueWithCounts = types.IssueWithCounts
 
@@ -1399,6 +1439,9 @@ type IssuesPage struct {
 	// NextCursor Present if and only if `has_more` is true. Pass it back verbatim as `cursor` to fetch the next page. Opaque and server-private.
 	NextCursor *string `json:"next_cursor,omitempty"`
 }
+
+// LayerSummary How many packages and files one architectural layer holds.
+type LayerSummary = codemapops.LayerSummary
 
 // MemoriesPage defines model for MemoriesPage.
 type MemoriesPage struct {
@@ -1431,6 +1474,9 @@ type Memory struct {
 //
 // Where a member of this type is OMITTED, the key is absent; where it is present holding `null`, the key exists and holds null. Those are different states and this surface reports both.
 type MetadataValue = json.RawMessage
+
+// NodeRef One node of the code map as it is DISPLAYED: a file or a package, carrying only what a caller needs to name and place it. The graph's own node — blob hash, line count, exported count — is not this shape.
+type NodeRef = codemapops.NodeRef
 
 // Problem RFC 9457 problem detail. This is the only error shape on this surface. The core declares `type`; this server never emits it, so `about:blank` is implied throughout.
 type Problem struct {
@@ -1575,6 +1621,21 @@ type ReadyPage struct {
 	// Items Empty array (never null) when nothing is ready.
 	Items []IssueWithCounts `json:"items"`
 }
+
+// RecordIssueFilesRequest The paths to record against the issue the path names, and the source to record them under.
+type RecordIssueFilesRequest struct {
+	// Paths The repo-relative paths this issue touched. At least one; each is normalized by the role, which refuses an escape above the repository root.
+	Paths []string `json:"paths"`
+
+	// Source How the association was observed. `manual` is the ONLY accepted value over this wire: the other three sources are observations a local process made about a working tree this server cannot see.
+	Source RecordIssueFilesRequestSource `json:"source"`
+}
+
+// RecordIssueFilesRequestSource How the association was observed. `manual` is the ONLY accepted value over this wire: the other three sources are observations a local process made about a working tree this server cannot see.
+type RecordIssueFilesRequestSource string
+
+// RecordResult What a record call changed: `inserted` counts paths this issue had never touched, `updated` counts the sightings that folded into a row that was already there. Both are always present.
+type RecordResult = codemapops.RecordResult
 
 // Ref Names ONE issue, either by an id that already exists or by the `key` a create item earlier in the same request gave itself.
 //
@@ -1778,6 +1839,9 @@ type SettingsPage struct {
 	NextCursor *string `json:"next_cursor,omitempty"`
 }
 
+// Shape A repository's code map in one header: what it describes, how big it is, how stale its summaries are, and where its gravity is.
+type Shape = codemapops.Shape
+
 // Statistics Workspace summary counts. Two of them are DEPENDENCY-AWARE and two are structurally always zero; both facts are stated on the properties themselves, because every number here is the same JSON type and nothing else on the wire distinguishes them.
 //
 // This is the struct `bd status --json` marshals under `summary`, pinned so the two surfaces are one compatibility domain.
@@ -1926,6 +1990,12 @@ type UpdateIssueResponse struct {
 	Revision int64 `json:"revision"`
 }
 
+// CodemapPath defines model for CodemapPath.
+type CodemapPath = string
+
+// CodemapRepoID defines model for CodemapRepoID.
+type CodemapRepoID = string
+
 // IssueID defines model for IssueID.
 type IssueID = string
 
@@ -1934,6 +2004,9 @@ type MemoryKey = string
 
 // SettingKey defines model for SettingKey.
 type SettingKey = string
+
+// CodemapNotBuilt RFC 9457 problem detail. This is the only error shape on this surface. The core declares `type`; this server never emits it, so `about:blank` is implied throughout.
+type CodemapNotBuilt = Problem
 
 // InternalError RFC 9457 problem detail. This is the only error shape on this surface. The core declares `type`; this server never emits it, so `about:blank` is implied throughout.
 type InternalError = Problem
@@ -1949,6 +2022,21 @@ type Unauthenticated = Problem
 
 // Unavailable RFC 9457 problem detail. This is the only error shape on this surface. The core declares `type`; this server never emits it, so `about:blank` is implied throughout.
 type Unavailable = Problem
+
+// GetCodemapFileParams defines parameters for GetCodemapFile.
+type GetCodemapFileParams struct {
+	// RepoId Which repository's code map to address. It is REQUIRED rather than inferred: one workspace database can hold the maps of several repositories, and a server that guessed would answer confidently about the wrong one. It is the id `bd codemap status --json` reports.
+	RepoId CodemapRepoID `form:"repo_id" json:"repo_id"`
+}
+
+// GetCodemapShapeParams defines parameters for GetCodemapShape.
+type GetCodemapShapeParams struct {
+	// RepoId Which repository's code map to address. It is REQUIRED rather than inferred: one workspace database can hold the maps of several repositories, and a server that guessed would answer confidently about the wrong one. It is the id `bd codemap status --json` reports.
+	RepoId CodemapRepoID `form:"repo_id" json:"repo_id"`
+
+	// TopFiles How many of the most-imported files to return in `top_fan_in`. The role's own default applies when this is absent.
+	TopFiles *int `form:"top_files,omitempty" json:"top_files,omitempty"`
+}
 
 // ListDependenciesParams defines parameters for ListDependencies.
 type ListDependenciesParams struct {
@@ -2159,6 +2247,12 @@ type GetIssueParams struct {
 
 	// BriefDeps Reduce each row in `dependencies` to its identity-and-shape fields (`id`, `title`, `status`, `issue_type`, `priority`, `dependency_type`), dropping `description`, `design`, `notes` and `acceptance_criteria`. Default false, so the payload is unchanged for a client that does not ask.
 	BriefDeps *bool `form:"brief_deps,omitempty" json:"brief_deps,omitempty"`
+}
+
+// RecordIssueFilesParams defines parameters for RecordIssueFiles.
+type RecordIssueFilesParams struct {
+	// RepoId Which repository's code map to address. It is REQUIRED rather than inferred: one workspace database can hold the maps of several repositories, and a server that guessed would answer confidently about the wrong one. It is the id `bd codemap status --json` reports.
+	RepoId CodemapRepoID `form:"repo_id" json:"repo_id"`
 }
 
 // ListRelatedIssuesParams defines parameters for ListRelatedIssues.
@@ -2524,6 +2618,9 @@ type UpdateIssueJSONRequestBody = UpdateIssueRequest
 
 // AddCommentJSONRequestBody defines body for AddComment for application/json ContentType.
 type AddCommentJSONRequestBody = AddCommentRequest
+
+// RecordIssueFilesJSONRequestBody defines body for RecordIssueFiles for application/json ContentType.
+type RecordIssueFilesJSONRequestBody = RecordIssueFilesRequest
 
 // CompareAndSetMetadataJSONRequestBody defines body for CompareAndSetMetadata for application/json ContentType.
 type CompareAndSetMetadataJSONRequestBody = CompareAndSetMetadataRequest

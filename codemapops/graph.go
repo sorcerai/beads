@@ -22,36 +22,37 @@ const (
 // Node is one package or file in a repository's code map, as produced by a
 // scout and consumed by the indexer.
 type Node struct {
-	Kind        NodeKind
-	Path        string // repo-relative, forward slashes; package: import path or crate::mod path
-	Name        string
-	PackagePath string // files only: Path of the containing package node
-	Lang        string // "go" | "rust"
-	BlobHash    string // files only, 40 hex
-	LOC         int
-	Exported    int
-	IsTest      bool
+	Kind        NodeKind `json:"kind"`
+	Path        string   `json:"path"` // repo-relative, forward slashes; package: import path or crate::mod path
+	Name        string   `json:"name,omitempty"`
+	PackagePath string   `json:"package_path,omitempty"` // files only: Path of the containing package node
+	Lang        string   `json:"lang"`                   // "go" | "rust"
+	BlobHash    string   `json:"blob_hash,omitempty"`    // files only, 40 hex
+	LOC         int      `json:"loc"`
+	Exported    int      `json:"exported"`
+	IsTest      bool     `json:"is_test"`
 }
 
 // Edge is one directed relationship between two node Paths in a Graph.
 type Edge struct {
-	Src, Dst string // node Paths
-	Kind     EdgeKind
-	Weight   int
+	Src    string   `json:"src"` // node Paths
+	Dst    string   `json:"dst"`
+	Kind   EdgeKind `json:"kind"`
+	Weight int      `json:"weight"`
 }
 
 // Graph is the wire shape a scout fills in and the indexer applies.
 type Graph struct {
-	Lang    string
-	Nodes   []Node
-	Edges   []Edge
-	Dropped int // references the scout could not resolve and refused to guess
+	Lang    string `json:"lang"`
+	Nodes   []Node `json:"nodes,omitempty"`
+	Edges   []Edge `json:"edges,omitempty"`
+	Dropped int    `json:"dropped"` // references the scout could not resolve and refused to guess
 
 	// ExternalPackages lists package paths an incremental scan imports but
 	// did not rescan. An edge may name one of these as its Dst even though
 	// no Node in this Graph carries that Path — the package lives outside
 	// the scan's scope, not missing from it.
-	ExternalPackages []string
+	ExternalPackages []string `json:"external_packages,omitempty"`
 
 	// ScopedPackages lists the package paths the scan was asked about,
 	// including ones that no longer exist.
@@ -60,7 +61,7 @@ type Graph struct {
 	// the packages the scan RETURNED would never delete the vanished package's
 	// rows. This field is what the scan was ASKED for, which is the scope the
 	// delete has to cover.
-	ScopedPackages []string
+	ScopedPackages []string `json:"scoped_packages,omitempty"`
 }
 
 // Validate checks that every edge endpoint names a node (or a declared

@@ -14,6 +14,7 @@ import (
 	"sync/atomic"
 	"testing"
 
+	"github.com/steveyegge/beads/codemapops"
 	"github.com/steveyegge/beads/internal/beads"
 	"github.com/steveyegge/beads/internal/configfile"
 	"github.com/steveyegge/beads/internal/storage"
@@ -273,6 +274,12 @@ func (*serveIdentityStore) BatchApplier() (issueops.BatchApplier, error) {
 func (*serveIdentityStore) Memories() (memoryops.Memories, error) {
 	return serveIdentityRole{}, nil
 }
+func (*serveIdentityStore) CodeMapReader() (codemapops.Reader, error) {
+	return serveIdentityRole{}, nil
+}
+func (*serveIdentityStore) IssueFiles() (codemapops.IssueFiles, error) {
+	return serveIdentityRole{}, nil
+}
 func (*serveIdentityStore) MetadataCAS() (issueops.MetadataCAS, error) {
 	return serveIdentityRole{}, nil
 }
@@ -305,6 +312,8 @@ type serveIdentityRole struct {
 	issueops.DependencyEditor
 	issueops.BatchApplier
 	memoryops.Memories
+	codemapops.Reader
+	codemapops.IssueFiles
 }
 
 type serveIdentityReader struct{ id string }

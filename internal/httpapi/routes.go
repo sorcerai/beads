@@ -719,6 +719,51 @@ var routeTable = []route{
 		handler:         (*Server).handleWatchEvents,
 	},
 	{
+		op:     OpGetCodemapFile,
+		method: http.MethodGet,
+		// A single-segment wildcard whose value carries encoded separators, so
+		// pattern and specPath agree and no declaration is needed: ServeMux
+		// matches the segment BEFORE percent-decoding it, which is what makes a
+		// whole repo-relative path addressable in one segment.
+		pattern:     "/v0/beads/codemap/files/{path}",
+		capability:  "codemap.file",
+		implemented: true,
+		handler:     (*Server).handleGetCodemapFile,
+	},
+	{
+		op:     OpGetCodemapShape,
+		method: http.MethodGet,
+		// Two literal segments; it cannot collide with the read above, which is
+		// one segment longer under a different prefix.
+		pattern:     "/v0/beads/codemap/shape",
+		capability:  "codemap.shape",
+		implemented: true,
+		handler:     (*Server).handleGetCodemapShape,
+	},
+	{
+		op:     OpListIssueFiles,
+		method: http.MethodGet,
+		// A sub-resource collection of the issue, spelled the way
+		// /issues/{id}/comments and /issues/{id}/related are. The custom-method
+		// dispatcher's pattern is one segment shorter, so this literal final
+		// segment is matched whole and collides with nothing.
+		pattern:     "/v0/beads/issues/{id}/files",
+		capability:  "issues.listFiles",
+		implemented: true,
+		handler:     (*Server).handleListIssueFiles,
+	},
+	{
+		op:     OpRecordIssueFiles,
+		method: http.MethodPost,
+		// A plain collection POST for addComment's reason: it creates members of
+		// the collection the path names. It shares that path with the read above
+		// and differs only in method, which ServeMux registers together.
+		pattern:     "/v0/beads/issues/{id}/files",
+		capability:  "issues.recordFiles",
+		implemented: true,
+		handler:     (*Server).handleRecordIssueFiles,
+	},
+	{
 		op:     OpForgetMemory,
 		method: http.MethodDelete,
 		// The surface's first DELETE. It shares a pattern with the read above

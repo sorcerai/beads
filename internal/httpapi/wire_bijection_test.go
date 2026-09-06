@@ -6,6 +6,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/steveyegge/beads/codemapops"
 	"github.com/steveyegge/beads/internal/eventsjournal"
 	"github.com/steveyegge/beads/internal/types"
 	"github.com/steveyegge/beads/issueops"
@@ -49,6 +50,13 @@ var pinnedSchemas = []struct {
 	{"Cycle", "issueops.Cycle", canonicalRolesImport, issueops.Cycle{}},
 	{"CycleMember", "issueops.CycleMember", canonicalRolesImport, issueops.CycleMember{}},
 	{"IssueBlocking", "issueops.IssueBlocking", canonicalRolesImport, issueops.IssueBlocking{}},
+	{"NodeRef", "codemapops.NodeRef", canonicalCodeMapImport, codemapops.NodeRef{}},
+	{"FileContext", "codemapops.FileContext", canonicalCodeMapImport, codemapops.FileContext{}},
+	{"LayerSummary", "codemapops.LayerSummary", canonicalCodeMapImport, codemapops.LayerSummary{}},
+	{"Shape", "codemapops.Shape", canonicalCodeMapImport, codemapops.Shape{}},
+	{"IssueFile", "codemapops.IssueFile", canonicalCodeMapImport, codemapops.IssueFile{}},
+	{"IssueRef", "codemapops.IssueRef", canonicalCodeMapImport, codemapops.IssueRef{}},
+	{"RecordResult", "codemapops.RecordResult", canonicalCodeMapImport, codemapops.RecordResult{}},
 	{"EventRecord", "eventsjournal.Record", canonicalJournalImport, eventsjournal.Record{}},
 }
 
@@ -59,6 +67,10 @@ const (
 	// journal's cross-binary concerns, and its Record is what `bd events tail`
 	// marshals.
 	canonicalJournalImport = "github.com/steveyegge/beads/internal/eventsjournal"
+	// The code map's read side and its issue-to-path plane, whose results the
+	// CLI marshals under the same tags `bd codemap show --json` and
+	// `bd show --json` already publish.
+	canonicalCodeMapImport = "github.com/steveyegge/beads/codemapops"
 )
 
 // omittedProperties lists JSON field names a pinned schema deliberately does

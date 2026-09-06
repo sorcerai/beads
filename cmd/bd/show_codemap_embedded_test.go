@@ -63,10 +63,10 @@ func TestShowPrintsCodeSectionAndJSON(t *testing.T) {
 	js := mustRunBD(t, bd, dir, "show", id, "--json")
 	var arr []struct {
 		Code struct {
-			Indexed bool `json:"Indexed"`
+			Indexed bool `json:"indexed"`
 			Files   []struct {
-				Path string `json:"Path"`
-			} `json:"Files"`
+				Path string `json:"path"`
+			} `json:"files"`
 		} `json:"code"`
 	}
 	mustJSONArray(t, js, &arr)

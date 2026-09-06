@@ -965,6 +965,12 @@ func rolesConfig(cfg Config) Config {
 	if cfg.MetadataCAS == nil {
 		cfg.MetadataCAS = &roleMetadataCAS{}
 	}
+	if cfg.CodeMapReader == nil {
+		cfg.CodeMapReader = &roleCodeMapReader{}
+	}
+	if cfg.IssueFiles == nil {
+		cfg.IssueFiles = &roleIssueFiles{}
+	}
 	if cfg.BatchApplier == nil {
 		cfg.BatchApplier = &roleBatchApplier{}
 	}

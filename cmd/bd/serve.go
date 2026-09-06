@@ -10,6 +10,7 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/steveyegge/beads/codemapops"
 	"github.com/steveyegge/beads/internal/configfile"
 	"github.com/steveyegge/beads/internal/eventsjournal"
 	"github.com/steveyegge/beads/internal/httpapi"
@@ -322,6 +323,8 @@ func runServe() error {
 			MetadataCAS:       roles.metadataCAS,
 			BatchApplier:      roles.batchApplier,
 			Memories:          roles.memories,
+			CodeMapReader:     roles.codeMapReader,
+			IssueFiles:        roles.issueFiles,
 			// Nil when this backend has no journal seam and the workspace never
 			// asked for one; Listen requires it exactly when the flag below is
 			// set, and serveIssueRoles has already refused the enabled case.
@@ -664,6 +667,8 @@ type serveRoleSource interface {
 	MetadataCAS() (issueops.MetadataCAS, error)
 	BatchApplier() (issueops.BatchApplier, error)
 	Memories() (memoryops.Memories, error)
+	CodeMapReader() (codemapops.Reader, error)
+	IssueFiles() (codemapops.IssueFiles, error)
 }
 
 var _ serveRoleSource = storage.DoltStorage(nil)
@@ -730,6 +735,8 @@ func serveIssueRoles(src serveRoleSource, journalEnabled bool) (serveRoles, erro
 		{"metadata cas", func() (err error) { roles.metadataCAS, err = src.MetadataCAS(); return }},
 		{"batch applier", func() (err error) { roles.batchApplier, err = src.BatchApplier(); return }},
 		{"memories", func() (err error) { roles.memories, err = src.Memories(); return }},
+		{"code map reader", func() (err error) { roles.codeMapReader, err = src.CodeMapReader(); return }},
+		{"issue files", func() (err error) { roles.issueFiles, err = src.IssueFiles(); return }},
 		{"events journal", func() error {
 			// storage.UnwrapStore rather than the ONE peel above, and that is not
 			// an exception to this function's rule — it is the rule applied to a
@@ -856,6 +863,13 @@ type serveRoles struct {
 	// plane is user data riding in the config table under its own merge class,
 	// so it has its own leaf package.
 	memories memoryops.Memories
+	// codeMapReader and issueFiles are the code map's read side and the
+	// issue-to-path plane, and like memories neither is an issueops role: the
+	// map is a derived index over a repository's source with its own leaf
+	// package, and the issue-file rows are keyed by repository as well as by
+	// issue.
+	codeMapReader codemapops.Reader
+	issueFiles    codemapops.IssueFiles
 	// eventsJournal is the only role here that comes from a TYPE ASSERTION
 	// rather than an accessor, because the journal is not part of DoltStorage's
 	// published surface: it is a replay feed over engine state on a
