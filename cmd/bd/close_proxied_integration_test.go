@@ -327,6 +327,23 @@ func TestProxiedServerClose(t *testing.T) {
 		}
 	})
 
+	t.Run("close_already_closed_touches_last_touched", func(t *testing.T) {
+		t.Parallel()
+		p := newSharedProxiedProject(t, bd, "caclt")
+		issue := bdProxiedCreate(t, bd, p.dir, "Double close")
+		bdProxiedClose(t, bd, p.dir, issue.ID)
+		other := bdProxiedCreate(t, bd, p.dir, "Moves last-touched away")
+		if got := readProxiedLastTouched(t, p); got != other.ID {
+			t.Fatalf("last-touched after create: got %q, want %q", got, other.ID)
+		}
+		_, _, _ = bdProxiedRunBuffers(t, bd, p.dir, "close", issue.ID)
+		// Direct-route parity (close.go): an already-closed no-op still settles
+		// the id, so a retried close re-points last-touched at it.
+		if got := readProxiedLastTouched(t, p); got != issue.ID {
+			t.Errorf("last-touched after re-close: got %q, want %q", got, issue.ID)
+		}
+	})
+
 	t.Run("close_nonexistent_id", func(t *testing.T) {
 		t.Parallel()
 		p := newSharedProxiedProject(t, bd, "cni")
@@ -737,6 +754,11 @@ func TestProxiedServerClose2(t *testing.T) {
 		if readAssignee(t, db, step2.ID) == "" {
 			t.Error("step2 assignee should be set after --continue auto-claim")
 		}
+		// Direct-route parity (close.go, gastownhall/beads#3769): the
+		// auto-advanced step is the newer touch, not the just-closed one.
+		if got := readProxiedLastTouched(t, p); got != step2.ID {
+			t.Errorf("last-touched after --continue: got %q, want %q", got, step2.ID)
+		}
 	})
 
 	t.Run("continue_no_auto_does_not_claim", func(t *testing.T) {
@@ -884,4 +906,14 @@ func TestProxiedServerCloseConcurrent(t *testing.T) {
 	if openCount != 0 {
 		t.Errorf("open issues remain after concurrent close: %d", openCount)
 	}
+}
+
+// readProxiedLastTouched reads the project's .beads/last-touched marker.
+func readProxiedLastTouched(t *testing.T, p proxiedProject) string {
+	t.Helper()
+	data, err := os.ReadFile(filepath.Join(p.beadsDir, lastTouchedFile))
+	if err != nil {
+		t.Fatalf("read last-touched: %v", err)
+	}
+	return strings.TrimSpace(string(data))
 }
