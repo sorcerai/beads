@@ -21,7 +21,7 @@ import (
 
 // managedHookNames lists the git hooks managed by beads.
 // Hook content is generated dynamically by generateHookSection().
-var managedHookNames = []string{"pre-commit", "post-merge", "pre-push", "post-checkout", "prepare-commit-msg"}
+var managedHookNames = []string{"pre-commit", "post-commit", "post-merge", "pre-push", "post-checkout", "prepare-commit-msg"}
 
 const hookVersionPrefix = "# bd-hooks-version: "
 const shimVersionPrefix = "# bd-shim "
@@ -508,7 +508,9 @@ type HookStatus struct {
 
 // CheckGitHooks checks the status of bd git hooks in .git/hooks/
 func CheckGitHooks() []HookStatus {
-	hooks := []string{"pre-commit", "post-merge", "pre-push", "post-checkout", "prepare-commit-msg"}
+	// The one list, so a hook added to managedHookNames is also a hook this
+	// reports on rather than one it silently omits.
+	hooks := managedHookNames
 	statuses := make([]HookStatus, 0, len(hooks))
 
 	// Get hooks directory from common git dir (hooks are shared across worktrees)
@@ -651,6 +653,7 @@ var hooksCmd = &cobra.Command{
 
 The hooks provide:
 - pre-commit: Run chained hooks before commit
+- post-commit: Link the committed issues to the files they touched and refresh the code map
 - post-merge: Run chained hooks after pull/merge
 - pre-push: Run chained hooks before push
 - post-checkout: Run chained hooks after branch checkout
@@ -672,6 +675,7 @@ outside the markers is preserved across installs and upgrades.
 
 Installed hooks:
   - pre-commit: Run chained hooks before commit
+  - post-commit: Record commit->issue file links and refresh the code map
   - post-merge: Run chained hooks after pull/merge
   - pre-push: Run chained hooks before push
   - post-checkout: Run chained hooks after branch checkout
@@ -1324,7 +1328,9 @@ func uninstallHooks() error {
 	if err != nil {
 		return err
 	}
-	hookNames := []string{"pre-commit", "post-merge", "pre-push", "post-checkout", "prepare-commit-msg"}
+	// The same one list install writes, so uninstall can never leave a managed
+	// hook behind because a name was added in only one place.
+	hookNames := managedHookNames
 
 	for _, hookName := range hookNames {
 		hookPath := filepath.Join(hooksDir, hookName)
@@ -1845,6 +1851,7 @@ thin shim scripts installed in .git/hooks/.
 
 Supported hooks:
   - pre-commit: Run chained hooks before commit
+  - post-commit: Record commit->issue file links and refresh the code map
   - post-merge: Run chained hooks after pull/merge
   - pre-push: Run chained hooks before push
   - post-checkout: Run chained hooks after branch checkout
@@ -1874,6 +1881,8 @@ shim's generated shell policy, refresh it with 'bd hooks install'.`,
 		switch hookName {
 		case "pre-commit":
 			exitCode = runPreCommitHook()
+		case "post-commit":
+			exitCode = runPostCommitHook()
 		case "post-merge":
 			exitCode = runPostMergeHook()
 		case "pre-push":

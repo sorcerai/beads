@@ -44,6 +44,33 @@ func runBDRaw(t *testing.T, bd, dir string, args ...string) (stdout, stderr stri
 	return so.String(), se.String(), err
 }
 
+// runBDStdin runs bd with stdin wired to the given string and returns stdout.
+// The agent tool hooks read their whole payload from stdin, so exercising them
+// through the same built-binary harness needs this one extra wire.
+func runBDStdin(t *testing.T, bd, dir, stdin string, args ...string) (string, error) {
+	t.Helper()
+	cmd := exec.Command(bd, args...)
+	cmd.Dir = dir
+	cmd.Env = bdEnv(dir)
+	cmd.Stdin = strings.NewReader(stdin)
+	so, se, err := runCommandBuffers(t, cmd)
+	if err != nil {
+		return so.String() + se.String(), err
+	}
+	return so.String(), nil
+}
+
+// runBDEnvRaw is runBDRaw with a caller-supplied environment, for the hook
+// paths whose whole behavior is an env var.
+func runBDEnvRaw(t *testing.T, bd, dir string, env []string, args ...string) (string, error) {
+	t.Helper()
+	cmd := exec.Command(bd, args...)
+	cmd.Dir = dir
+	cmd.Env = env
+	so, se, err := runCommandBuffers(t, cmd)
+	return so.String() + se.String(), err
+}
+
 // mustCodemapJSON decodes the first JSON object in out into v.
 func mustCodemapJSON(t *testing.T, out string, v any) {
 	t.Helper()
