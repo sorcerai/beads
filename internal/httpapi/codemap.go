@@ -260,6 +260,14 @@ func (s *Server) recordRequest(w http.ResponseWriter, r *http.Request) (codemapo
 			"`"+recordPathsMember+"` must be an array of strings"))
 		return request, false
 	}
+	// The document's `minItems: 1`, enforced here because it is a SHAPE rule:
+	// the role refuses an empty list too, but as a request-wide ErrValidation
+	// that cannot name the member the client has to change.
+	if len(*paths) == 0 {
+		s.fail(w, r, InvalidArgument(recordPathsMember, ReasonInvalidValue,
+			"`"+recordPathsMember+"` must carry at least one path"))
+		return request, false
+	}
 	request.Paths = *paths
 
 	raw, ok = members[recordSourceMember]

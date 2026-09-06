@@ -42,8 +42,8 @@ func TestClaimPrintsCodeAndFilesFlagRecords(t *testing.T) {
 		ID   string `json:"id"`
 		Code struct {
 			Files []struct {
-				Path string `json:"Path"`
-			} `json:"Files"`
+				Path string `json:"path"`
+			} `json:"files"`
 		} `json:"code"`
 	}
 	mustJSONArray(t, js, &arr)

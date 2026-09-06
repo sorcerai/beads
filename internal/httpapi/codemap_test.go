@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"net/http"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -243,6 +244,27 @@ func TestCodemapReadsMapTheRolesThreeFailures(t *testing.T) {
 	}
 }
 
+// TestGetCodemapShapeAnswers409ForAnUnindexedRepository: the shape read has no
+// 404 of its own, so an unbuilt map is the only miss-shaped answer it gives.
+func TestGetCodemapShapeAnswers409ForAnUnindexedRepository(t *testing.T) {
+	ts := newTestServer(t, rolesConfig(Config{
+		CodeMapReader: &roleCodeMapReader{err: &codemapops.ErrNotIndexed{RepoID: testRepoID}},
+		IssueFiles:    &roleIssueFiles{},
+	}))
+
+	resp := ts.get(t, codemapShapePath+"?repo_id="+testRepoID)
+	if resp.StatusCode != http.StatusConflict {
+		t.Fatalf("status = %d, want 409: %s", resp.StatusCode, readAll(t, resp))
+	}
+	body := decodeBody(t, resp)
+	if body["code"] != string(CodeCodeMapNotBuilt) {
+		t.Errorf("code = %v, want codemap_not_built", body["code"])
+	}
+	if detail, _ := body["detail"].(string); !strings.Contains(detail, "bd codemap build") {
+		t.Errorf("detail = %q, want the command that fixes it", detail)
+	}
+}
+
 // TestGetCodemapShapeForwardsTopFiles: an absent parameter leaves the role's
 // own default, and a supplied one reaches it unchanged.
 func TestGetCodemapShapeForwardsTopFiles(t *testing.T) {
@@ -360,6 +382,7 @@ func TestRecordIssueFilesRefusesWhatTheDocumentRefuses(t *testing.T) {
 		{"no paths", `{"source":"manual"}`, "paths", ReasonInvalidValue},
 		{"null paths", `{"paths":null,"source":"manual"}`, "paths", ReasonInvalidValue},
 		{"paths not an array", `{"paths":"a/a.go","source":"manual"}`, "paths", ReasonInvalidValue},
+		{"empty paths", `{"paths":[],"source":"manual"}`, "paths", ReasonInvalidValue},
 		{"no source", `{"paths":["a/a.go"]}`, "source", ReasonInvalidValue},
 		{"observed source", `{"paths":["a/a.go"],"source":"commit"}`, "source", ReasonInvalidValue},
 		{"unknown source", `{"paths":["a/a.go"],"source":"guess"}`, "source", ReasonInvalidValue},
