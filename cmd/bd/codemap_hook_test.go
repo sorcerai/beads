@@ -2,6 +2,8 @@ package main
 
 import (
 	"context"
+
+	"github.com/spf13/cobra"
 	"strings"
 	"testing"
 
@@ -59,21 +61,39 @@ func TestPostToolTracksOnlyEditingTools(t *testing.T) {
 	}
 }
 
-// TestPreToolSkipsStoreInitButPostToolDoesNot pins the reason codemap-hook is a
-// parent with two subcommands rather than one command taking an argument:
-// commandOptsOutOfStore walks the ancestor chain, so annotating the leaf
-// exempts pre-tool from store initialization without exempting its sibling.
-// A pre-tool that opened the embedded store would cost seconds and contend
-// with whatever else the agent is running.
-func TestPreToolSkipsStoreInitButPostToolDoesNot(t *testing.T) {
-	if !commandOptsOutOfStore(codemapHookPreToolCmd) {
-		t.Error("pre-tool must skip store initialization")
+// TestBothToolHooksSkipRootStoreInit pins the annotation both halves need, for
+// two different reasons.
+//
+// pre-tool never wants a store at all: it reads the derived cache, and opening
+// the embedded store would cost seconds and contend with whatever else the
+// agent is running.
+//
+// post-tool DOES want one — it is a write path — but it must open it ITSELF,
+// because the root pre-run opens before RunE can read stdin and an open that
+// happens before the handler's context exists cannot be bounded by it. The
+// budget has to cover the slowest step or it is decoration.
+func TestBothToolHooksSkipRootStoreInit(t *testing.T) {
+	for _, cmd := range []*cobra.Command{codemapHookPreToolCmd, codemapHookPostToolCmd} {
+		if !commandOptsOutOfStore(cmd) {
+			t.Errorf("%s must skip the root pre-run's store init", cmd.Name())
+		}
+		if !cmd.Hidden {
+			t.Errorf("%s is plumbing and must stay hidden", cmd.Name())
+		}
 	}
-	if commandOptsOutOfStore(codemapHookPostToolCmd) {
-		t.Error("post-tool is a write path and must open the store")
-	}
-	if !codemapHookCmd.Hidden || !codemapHookPreToolCmd.Hidden {
+	if !codemapHookCmd.Hidden {
 		t.Error("codemap-hook is plumbing and must stay hidden")
+	}
+}
+
+// TestPostToolBudgetIsConfigurable pins the knob the budget regression test
+// uses, and that a nonsense value falls back rather than disabling the bound.
+func TestPostToolBudgetIsConfigurable(t *testing.T) {
+	for env, want := range map[string]string{"": "2s", "1ms": "1ms", "5": "5s", "junk": "2s"} {
+		t.Setenv(codemapToolTimeoutEnv, env)
+		if got := hookTimeoutFromEnv(codemapToolTimeoutEnv, postToolTimeout).String(); got != want {
+			t.Errorf("%s=%q → %s, want %s", codemapToolTimeoutEnv, env, got, want)
+		}
 	}
 }
 

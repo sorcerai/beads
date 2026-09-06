@@ -72,7 +72,7 @@ func TestRecordCommitSkipsUnknownIDsAndSurvivesGitHook(t *testing.T) {
 		t.Fatalf("a bad revision outside a hook must exit non-zero: %s", out)
 	}
 	cmdEnv := append(bdEnv(dir), "BD_GIT_HOOK=1")
-	if out, err := runBDEnvRaw(t, bd, dir, cmdEnv, "codemap", "record-commit", "definitely-not-a-rev"); err != nil {
+	if out, err := runBDEnvRaw(t, bd, dir, "", cmdEnv, "codemap", "record-commit", "definitely-not-a-rev"); err != nil {
 		t.Fatalf("BD_GIT_HOOK=1 must exit 0: %v\n%s", err, out)
 	}
 }

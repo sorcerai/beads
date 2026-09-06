@@ -60,13 +60,14 @@ func runBDStdin(t *testing.T, bd, dir, stdin string, args ...string) (string, er
 	return so.String(), nil
 }
 
-// runBDEnvRaw is runBDRaw with a caller-supplied environment, for the hook
-// paths whose whole behavior is an env var.
-func runBDEnvRaw(t *testing.T, bd, dir string, env []string, args ...string) (string, error) {
+// runBDEnvRaw is runBDStdin with a caller-supplied environment, for the hook
+// paths whose whole behavior is an env var. It returns combined output.
+func runBDEnvRaw(t *testing.T, bd, dir, stdin string, env []string, args ...string) (string, error) {
 	t.Helper()
 	cmd := exec.Command(bd, args...)
 	cmd.Dir = dir
 	cmd.Env = env
+	cmd.Stdin = strings.NewReader(stdin)
 	so, se, err := runCommandBuffers(t, cmd)
 	return so.String() + se.String(), err
 }

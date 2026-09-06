@@ -73,6 +73,11 @@ func bdEnv(dir string) []string {
 	}
 	return append(env,
 		"HOME="+dir,
+		// os.UserCacheDir reads XDG_CACHE_HOME first on Linux and HOME on
+		// macOS. Setting both keeps the agent hooks' one-shot markers inside
+		// the test's own directory on every platform, rather than leaking into
+		// the developer's real cache and making a rerun see a stale marker.
+		"XDG_CACHE_HOME="+filepath.Join(dir, "cache"),
 		"BEADS_DOLT_AUTO_START=0",
 		"BEADS_NO_DAEMON=1",
 		"BD_DISABLE_METRICS=1",

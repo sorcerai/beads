@@ -1729,3 +1729,47 @@ func TestRemoveClaudeRemovesCodemapToolHooks(t *testing.T) {
 		}
 	}
 }
+
+// TestInstallClaudeRegistersCodemapHooksEvenWithPlugin pins that the plugin
+// branch skips only SessionStart. The beads plugin supplies no PreToolUse or
+// PostToolUse hook, so skipping the code map hooks for plugin users would not
+// avoid a duplicate — it would leave them with no code map integration at all.
+func TestInstallClaudeRegistersCodemapHooksEvenWithPlugin(t *testing.T) {
+	env, stdout, _ := newClaudeTestEnv(t)
+	writeSettings(t, projectSettingsPath(env.projectDir), settingsWithPlugin())
+
+	if err := installClaude(env, false, false); err != nil {
+		t.Fatalf("installClaude: %v", err)
+	}
+
+	out := stdout.String()
+	if !strings.Contains(out, "plugin-managed") {
+		t.Error("expected plugin-managed message in output")
+	}
+	if strings.Contains(out, "Registered SessionStart hook") {
+		t.Error("SessionStart stays plugin-managed")
+	}
+
+	data, err := env.readFile(projectSettingsPath(env.projectDir))
+	if err != nil {
+		t.Fatalf("read settings: %v", err)
+	}
+	for _, want := range []string{
+		`"command": "bd codemap-hook pre-tool"`,
+		`"matcher": "Read|Edit|Write|MultiEdit"`,
+		`"command": "bd codemap-hook post-tool"`,
+		`"matcher": "Edit|Write|MultiEdit|NotebookEdit"`,
+	} {
+		if !strings.Contains(string(data), want) {
+			t.Fatalf("plugin user must still get the code map hooks, missing %q:\n%s", want, data)
+		}
+	}
+	var settings map[string]interface{}
+	if err := json.Unmarshal(data, &settings); err != nil {
+		t.Fatalf("parse settings: %v", err)
+	}
+	hooks, _ := settings["hooks"].(map[string]interface{})
+	if _, hasSession := hooks["SessionStart"]; hasSession {
+		t.Error("SessionStart must still not be written when the plugin is present")
+	}
+}

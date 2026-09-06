@@ -270,21 +270,27 @@ func installClaude(env claudeEnv, global bool, stealth bool) error {
 	// so project-level hooks don't fire bd prime twice per session.
 	pluginManaged := hasBeadsPlugin(env)
 	if pluginManaged {
-		_, _ = fmt.Fprintln(env.stdout, "✓ Beads plugin detected — hooks are plugin-managed, skipping")
+		_, _ = fmt.Fprintln(env.stdout, "✓ Beads plugin detected — SessionStart is plugin-managed, skipping")
 	} else {
 		if addHookCommand(hooks, "SessionStart", command, "") {
 			_, _ = fmt.Fprintln(env.stdout, "✓ Registered SessionStart hook")
 		}
-		// The code-map tool hooks. PreToolUse matches the tools that OPEN a
-		// file, so the agent is told what the map knows before it reads;
-		// PostToolUse matches only the tools that CHANGE one, because a read
-		// says nothing about what the issue being worked touched.
-		if addHookCommand(hooks, "PreToolUse", codemapPreToolCommand, codemapPreToolMatcher) {
-			_, _ = fmt.Fprintln(env.stdout, "✓ Registered PreToolUse code map hook")
-		}
-		if addHookCommand(hooks, "PostToolUse", codemapPostToolCommand, codemapPostToolMatcher) {
-			_, _ = fmt.Fprintln(env.stdout, "✓ Registered PostToolUse code map hook")
-		}
+	}
+
+	// The code-map tool hooks are registered in BOTH branches: only
+	// SessionStart is plugin-managed, and the plugin supplies no PreToolUse or
+	// PostToolUse hook, so skipping these for plugin users would leave them
+	// with no code map integration at all rather than avoiding a duplicate.
+	//
+	// PreToolUse matches the tools that OPEN a file, so the agent is told what
+	// the map knows before it reads; PostToolUse matches only the tools that
+	// CHANGE one, because a read says nothing about what the issue being
+	// worked touched.
+	if addHookCommand(hooks, "PreToolUse", codemapPreToolCommand, codemapPreToolMatcher) {
+		_, _ = fmt.Fprintln(env.stdout, "✓ Registered PreToolUse code map hook")
+	}
+	if addHookCommand(hooks, "PostToolUse", codemapPostToolCommand, codemapPostToolMatcher) {
+		_, _ = fmt.Fprintln(env.stdout, "✓ Registered PostToolUse code map hook")
 	}
 
 	data, err := json.MarshalIndent(settings, "", "  ")

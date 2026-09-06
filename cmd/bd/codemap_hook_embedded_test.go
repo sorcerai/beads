@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/steveyegge/beads/internal/codemap/cache"
 )
@@ -130,5 +131,54 @@ func TestPostToolRecordsOnlyForInProgressActiveIssue(t *testing.T) {
 	}
 	if out := runCodemap(t, bd, dir, "files", id); strings.Contains(out, "b/b.go") {
 		t.Fatalf("a Read must record nothing: %s", out)
+	}
+}
+
+// TestPostToolBudgetCoversTheStoreOpen is the regression guard for the budget
+// bug: the store used to open in the root pre-run, BEFORE the handler's context
+// existed, so the one expensive step was structurally outside the deadline.
+// post-tool now carries the skip-store annotation and opens the store itself
+// under the budget — so squeezing the budget to nothing must fail AT THE OPEN,
+// leaving a clean "{}" and an unrecorded file rather than a wait.
+func TestPostToolBudgetCoversTheStoreOpen(t *testing.T) {
+	if os.Getenv("BEADS_TEST_EMBEDDED_DOLT") != "1" {
+		t.Skip("set BEADS_TEST_EMBEDDED_DOLT=1 to run embedded dolt integration tests")
+	}
+	t.Parallel()
+
+	bd := buildEmbeddedBD(t)
+	dir, _, _ := bdInit(t, bd, "--prefix", "pb")
+	writeGoMini(t, dir)
+
+	id := createIssue(t, bd, dir, "budget")
+	if stdout, stderr, err := runBDRaw(t, bd, dir, "update", id, "--claim"); err != nil {
+		t.Fatalf("bd update --claim: %v\n%s\n%s", err, stdout, stderr)
+	}
+	in := claudeHookPayload(t, "s1", dir, "Edit", filepath.Join(dir, "a", "a.go"))
+
+	env := append(bdEnv(dir), "BD_CODEMAP_TOOL_TIMEOUT=1ms")
+	start := time.Now()
+	out, err := runBDEnvRaw(t, bd, dir, in, env, "codemap-hook", "post-tool")
+	elapsed := time.Since(start)
+	if err != nil {
+		t.Fatalf("post-tool must never fail a tool call: %v\n%s", err, out)
+	}
+	if !strings.Contains(out, "{}") {
+		t.Fatalf("expected {} on stdout: %s", out)
+	}
+	if elapsed > 30*time.Second {
+		t.Fatalf("post-tool took %s", elapsed)
+	}
+	if files := runCodemap(t, bd, dir, "files", id); strings.Contains(files, "a/a.go") {
+		t.Fatalf("a budget that expired before the open must record nothing: %s", files)
+	}
+
+	// The same payload without the squeezed budget still records, so the test
+	// above is proving a timeout and not a broken hook.
+	if out, err := runBDStdin(t, bd, dir, in, "codemap-hook", "post-tool"); err != nil {
+		t.Fatalf("post-tool: %v\n%s", err, out)
+	}
+	if files := runCodemap(t, bd, dir, "files", id); !strings.Contains(files, "a/a.go") {
+		t.Fatalf("expected the record with a normal budget: %s", files)
 	}
 }

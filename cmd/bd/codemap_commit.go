@@ -218,6 +218,9 @@ func runPostCommitHook() int {
 	// #nosec G702 -- os.Args[0] is this bd binary re-invoking itself with a
 	// fixed subcommand; no argument here is attacker-controlled.
 	cmd := exec.CommandContext(ctx, os.Args[0], "codemap", "record-commit", "HEAD")
+	// Without this, CombinedOutput keeps reading until the pipes close, so a
+	// grandchild that inherited them holds the commit open past the deadline.
+	cmd.WaitDelay = time.Second
 	if out, err := cmd.CombinedOutput(); err != nil {
 		// #nosec G705 -- this is a git hook's stderr on a developer's terminal,
 		// not a web response; the "taint" is our own subcommand's diagnostics.
@@ -227,9 +230,16 @@ func runPostCommitHook() int {
 }
 
 func codemapHookTimeout() time.Duration {
-	v := strings.TrimSpace(os.Getenv(codemapHookTimeoutEnv))
+	return hookTimeoutFromEnv(codemapHookTimeoutEnv, codemapHookDefaultTimeout)
+}
+
+// hookTimeoutFromEnv reads a hook budget from env, accepting a Go duration
+// ("15s") or bare seconds ("15"). Anything unparseable or non-positive falls
+// back to def rather than to no timeout at all.
+func hookTimeoutFromEnv(name string, def time.Duration) time.Duration {
+	v := strings.TrimSpace(os.Getenv(name))
 	if v == "" {
-		return codemapHookDefaultTimeout
+		return def
 	}
 	if d, err := time.ParseDuration(v); err == nil && d > 0 {
 		return d
@@ -237,5 +247,5 @@ func codemapHookTimeout() time.Duration {
 	if n, err := strconv.Atoi(v); err == nil && n > 0 {
 		return time.Duration(n) * time.Second
 	}
-	return codemapHookDefaultTimeout
+	return def
 }

@@ -60,12 +60,13 @@ type claudeHookSpecificOutput struct {
 // codemapHookMarkerSubdir is the cache subdirectory both halves dedupe under.
 const codemapHookMarkerSubdir = "codemap-hooks"
 
-// codemapHookMarkerDirOverride lets tests redirect the marker location.
-var codemapHookMarkerDirOverride string
-
 // postToolTimeout bounds the whole post-tool handler, store open included. A
 // tool call is a person waiting, so the hook gives up rather than hanging.
 const postToolTimeout = 2 * time.Second
+
+// codemapToolTimeoutEnv overrides that budget. It exists mostly so a test can
+// prove the store open is inside it: set it to 1ms and the open is what fails.
+const codemapToolTimeoutEnv = "BD_CODEMAP_TOOL_TIMEOUT"
 
 var codemapHookCmd = &cobra.Command{
 	Use:    "codemap-hook",
@@ -89,9 +90,18 @@ var codemapHookPreToolCmd = &cobra.Command{
 }
 
 var codemapHookPostToolCmd = &cobra.Command{
-	Use:           "post-tool",
-	Hidden:        true,
-	Short:         "Record that the issue being worked touched the file a tool just edited",
+	Use:    "post-tool",
+	Hidden: true,
+	Short:  "Record that the issue being worked touched the file a tool just edited",
+	// post-tool skips the root pre-run's store init and opens the store
+	// ITSELF, under the budget. The pre-run opens before RunE can read stdin,
+	// so a context created in the handler would bound everything EXCEPT the
+	// expensive part — an embedded-Dolt open is seconds on a cold workspace.
+	// What a tool call waits for is the process, so the process is what the
+	// budget has to cover. PersistentPostRunE still closes the store and runs
+	// the auto-commit, exactly as it does for every other lazily-opened
+	// command, so nothing is lost by opening late.
+	Annotations:   map[string]string{skipStoreAnnotation: "1"},
 	Args:          cobra.NoArgs,
 	SilenceUsage:  true,
 	SilenceErrors: true,
@@ -271,9 +281,18 @@ func recordPostToolEdit(ctx context.Context, stdin io.Reader) error {
 		return nil
 	}
 
-	ctx, cancel := context.WithTimeout(ctx, postToolTimeout)
+	ctx, cancel := context.WithTimeout(ctx, hookTimeoutFromEnv(codemapToolTimeoutEnv, postToolTimeout))
 	defer cancel()
 
+	// The open the root pre-run would have done, but on OUR context. This is
+	// the same lazy-open path `ensureDirectMode` uses, so it also no-ops if a
+	// store is somehow already active. A proxied-server workspace fails here
+	// with "proxy server store should be uow provider" and records nothing:
+	// rebuilding the unit-of-work provider needs config resolution that only
+	// the skipped pre-run does. One stderr line, never a silent miss.
+	if err := ensureStoreActiveWithContext(ctx); err != nil {
+		return err
+	}
 	reader, err := openIssueReader()
 	if err != nil {
 		return err
@@ -318,8 +337,11 @@ func recordPostToolEdit(ctx context.Context, stdin io.Reader) error {
 // BD_NO_CODEMAP that silenced only one of them would be a trap.
 func codemapHooksDisabled() bool { return os.Getenv("BD_NO_CODEMAP") == "1" }
 
+// codemapHookMarkerBaseDir resolves under os.UserCacheDir, so the tests isolate
+// markers with XDG_CACHE_HOME/HOME rather than an override hook nothing else
+// needed.
 func codemapHookMarkerBaseDir() string {
-	return agentHookMarkerBaseDir(codemapHookMarkerSubdir, codemapHookMarkerDirOverride)
+	return agentHookMarkerBaseDir(codemapHookMarkerSubdir, "")
 }
 
 // decodeToolHookInput reads the payload. A malformed payload is not an error
