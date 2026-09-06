@@ -10,6 +10,7 @@ import (
 	"strings"
 
 	"github.com/spf13/cobra"
+	"github.com/steveyegge/beads/internal/agyclient"
 	"github.com/steveyegge/beads/internal/codemap/scout"
 	"github.com/steveyegge/beads/internal/ui"
 )
@@ -94,7 +95,7 @@ automatically if the primary errors/times out. Run 'agy models' to see options.`
 		_ = backupModel
 
 		prompt := buildArchDraftPrompt(graph, lang, repoRoot)
-		synthesis, err := callAgWithFallback(prompt)
+		synthesis, err := agyclient.Call(prompt, "", "")
 		if err != nil {
 			return HandleErrorRespectJSON("synthesis failed (agy default + any backup command): %v", err)
 		}
@@ -311,48 +312,6 @@ func isLocalPythonModule(imp string, localSet map[string]bool) bool {
 		return true
 	}
 	return localSet[imp]
-}
-
-// callAgWithFallback runs `agy --print <prompt>` (agy's default model — the
-// --model flag is broken in print mode). On failure it retries once, then tries
-// an optional alternate command from BD_ARCH_DRAFT_BACKUP_CMD (e.g. a different
-// CLI the user wires up) if set. Returns the model's text.
-func callAgWithFallback(prompt string) (string, error) {
-	// Primary: agy default model (Gemini 3.1 Pro, follows instructions).
-	if out, err := callAgOnce(prompt); err == nil {
-		return out, nil
-	} else {
-		fmt.Fprintf(os.Stderr, "  %s agy default model failed (%v); retrying...\n", ui.RenderWarn("⚠"), err)
-		// One retry for transient errors (rate limit / timeout).
-		if out, err2 := callAgOnce(prompt); err2 == nil {
-			return out, nil
-		}
-	}
-	// Optional alternate command escape hatch. The user can wire a different
-	// CLI here (BD_ARCH_DRAFT_BACKUP_CMD) since agy's --model flag can't swap.
-	if alt := os.Getenv("BD_ARCH_DRAFT_BACKUP_CMD"); alt != "" {
-		fmt.Fprintf(os.Stderr, "  %s trying backup command: %s\n", ui.RenderWarn("⚠"), alt)
-		// alt is a shell command that reads the prompt on stdin and prints the result.
-		cmd := exec.Command("sh", "-c", alt)
-		cmd.Stdin = strings.NewReader(prompt)
-		cmd.Stderr = os.Stderr
-		out, err := cmd.Output()
-		if err == nil {
-			return string(out), nil
-		}
-		return "", fmt.Errorf("backup command also failed: %w", err)
-	}
-	return "", fmt.Errorf("agy synthesis failed and no BD_ARCH_DRAFT_BACKUP_CMD set")
-}
-
-func callAgOnce(prompt string) (string, error) {
-	cmd := exec.Command("agy", "--print", prompt)
-	cmd.Stderr = os.Stderr
-	out, err := cmd.Output()
-	if err != nil {
-		return "", err
-	}
-	return string(out), nil
 }
 
 // buildArchDraftPrompt constructs the synthesis prompt. Strict output format so

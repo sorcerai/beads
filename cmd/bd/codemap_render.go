@@ -94,6 +94,9 @@ func renderFileContext(w io.Writer, fc codemapops.FileContext) {
 	if fc.Package.Path != "" {
 		fmt.Fprintf(w, "  package %s\n", fc.Package.Path)
 	}
+	if fc.Node.Layer != "" {
+		fmt.Fprintf(w, "  layer %s\n", ui.RenderCategory(fc.Node.Layer))
+	}
 	renderRefList(w, "imports", fc.Imports)
 	renderRefList(w, "importers", fc.Importers)
 	renderRefList(w, "tests", fc.Tests)

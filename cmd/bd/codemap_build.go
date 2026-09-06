@@ -18,14 +18,11 @@ import (
 	"github.com/steveyegge/beads/issueops"
 )
 
-// summariesNotYet is the exact notice `--summaries` prints until the
-// summarizer pass exists. Accepting the flag and saying so beats rejecting it:
-// the flag is in the shipped help for `bd codemap refresh` already.
-const summariesNotYet = "Warning: --summaries is not available yet (bd codemap refresh --summaries lands with the summarizer)"
-
 func init() {
-	codemapBuildCmd.Flags().Bool("summaries", false, "Also summarize changed files (not available yet)")
-	codemapRefreshCmd.Flags().Bool("summaries", false, "Also summarize changed files (not available yet)")
+	for _, c := range []*cobra.Command{codemapBuildCmd, codemapRefreshCmd} {
+		c.Flags().Bool("summaries", false, "Also summarize files whose summary is missing or stale (calls agy)")
+		c.Flags().Int("max-files", 0, "With --summaries, summarize at most N files")
+	}
 	codemapCmd.AddCommand(codemapBuildCmd, codemapRefreshCmd, codemapStatusCmd)
 }
 
@@ -36,9 +33,6 @@ var codemapBuildCmd = &cobra.Command{
 	SilenceUsage:  true,
 	SilenceErrors: true,
 	RunE: func(cmd *cobra.Command, _ []string) error {
-		if summaries, _ := cmd.Flags().GetBool("summaries"); summaries {
-			fmt.Fprintln(os.Stderr, summariesNotYet)
-		}
 		root, repoID, err := codemapRepoRoot()
 		if err != nil {
 			return HandleErrorRespectJSON("%v", err)
@@ -78,14 +72,24 @@ var codemapBuildCmd = &cobra.Command{
 		}
 		langs := langsOf(graphs)
 		if jsonOutput {
-			return outputJSON(map[string]any{
+			if err := outputJSON(map[string]any{
 				"repo_id": repoID, "head_sha": head,
 				"nodes_upserted": res.NodesUpserted, "nodes_deleted": res.NodesDeleted,
 				"edges_written": res.EdgesWritten, "edges_pruned": res.EdgesPruned,
 				"dropped": merged.Dropped, "languages": langs,
-			})
+			}); err != nil {
+				return err
+			}
+		} else {
+			renderBuilt(os.Stdout, res, langs, merged.Dropped)
 		}
-		renderBuilt(os.Stdout, res, langs, merged.Dropped)
+		// LAST, and after the cache rebuild for two separate reasons: the
+		// rebuild recomputes staleness from the database and would undo the
+		// entries the summarizer just wrote, and the map is already indexed by
+		// the time a model is asked anything — a dead agy must not hide that.
+		if err := maybeSummarize(ctx, cmd, root, repoID); err != nil {
+			return HandleError("%v", err)
+		}
 		return nil
 	},
 }
@@ -97,9 +101,6 @@ var codemapRefreshCmd = &cobra.Command{
 	SilenceUsage:  true,
 	SilenceErrors: true,
 	RunE: func(cmd *cobra.Command, _ []string) error {
-		if summaries, _ := cmd.Flags().GetBool("summaries"); summaries {
-			fmt.Fprintln(os.Stderr, summariesNotYet)
-		}
 		root, repoID, err := codemapRepoRoot()
 		if err != nil {
 			return HandleErrorRespectJSON("%v", err)
@@ -109,15 +110,31 @@ var codemapRefreshCmd = &cobra.Command{
 			return HandleErrorRespectJSON("%v", err)
 		}
 		if jsonOutput {
-			return outputJSON(map[string]any{
+			if err := outputJSON(map[string]any{
 				"repo_id": repoID, "head_sha": res.HeadSHA, "only": res.Only,
 				"nodes_upserted": res.NodesUpserted, "nodes_deleted": res.NodesDeleted,
 				"edges_written": res.EdgesWritten, "edges_pruned": res.EdgesPruned,
-			})
+			}); err != nil {
+				return err
+			}
+		} else {
+			renderRefreshed(os.Stdout, res)
 		}
-		renderRefreshed(os.Stdout, res)
+		if err := maybeSummarize(rootCtx, cmd, root, repoID); err != nil {
+			return HandleError("%v", err)
+		}
 		return nil
 	},
+}
+
+// maybeSummarize runs the summarizer pass when --summaries was asked for, and
+// is a no-op otherwise: NOTHING in bd calls a model without that flag.
+func maybeSummarize(ctx context.Context, cmd *cobra.Command, root, repoID string) error {
+	if summaries, _ := cmd.Flags().GetBool("summaries"); !summaries {
+		return nil
+	}
+	maxFiles, _ := cmd.Flags().GetInt("max-files")
+	return runSummaries(ctx, root, repoID, maxFiles)
 }
 
 var codemapStatusCmd = &cobra.Command{

@@ -1085,6 +1085,10 @@ var recognizedConfigKeys = map[string]bool{
 	// Same class as the prime memory caps: read at session start, before the
 	// database is necessarily reachable, so it lives in config.yaml.
 	"codemap.prime.max_lines": true,
+	// The label recorded on each summary row (and printed by the summarizer).
+	// agy's --model flag is broken in print mode, so this names the model bd
+	// writes down, not one it selects.
+	"codemap.summaries.model": true,
 	// The events-journal family. All four are startup settings that land in
 	// config.yaml (config.YamlOnlyKeys), and every one of them is documented as
 	// a `bd config set` invocation — including the auto-prune opt-out, where an

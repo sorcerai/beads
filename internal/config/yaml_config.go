@@ -69,6 +69,8 @@ var YamlOnlyKeys = map[string]bool{
 	"prime.max-memory-chars": true,
 	// Same reason for the code-map section's line cap.
 	"codemap.prime.max_lines": true,
+	// The summarizer's model label, read before the summarizer opens the store.
+	"codemap.summaries.model": true,
 
 	// Validation settings (bd-t7jq)
 	// Values: "warn" | "error" | "none"
