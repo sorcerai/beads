@@ -61,6 +61,19 @@ func TestGoScoutMini(t *testing.T) {
 	if len(only.ExternalPackages) != 1 || only.ExternalPackages[0] != "example.com/mini/a" {
 		t.Errorf("imported-but-not-rescanned package must be declared external: %v", only.ExternalPackages)
 	}
+	if len(only.ScopedPackages) != 1 || only.ScopedPackages[0] != "example.com/mini/b" {
+		t.Errorf("scan scope must be reported: %v", only.ScopedPackages)
+	}
+
+	// A scope whose directory no longer exists still has to name its package,
+	// or the incremental apply has nothing to scope its delete to.
+	gone, err := (GoScout{}).Scan(root, []string{"nosuchdir"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(gone.ScopedPackages) != 1 || gone.ScopedPackages[0] != "example.com/mini/nosuchdir" {
+		t.Errorf("a missing directory must still appear in ScopedPackages: %v", gone.ScopedPackages)
+	}
 }
 
 // TestGoScoutIncrementalByDirectory pins the handoff from PackageDirsFor, whose

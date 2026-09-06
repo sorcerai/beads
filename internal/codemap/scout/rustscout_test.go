@@ -78,6 +78,9 @@ func TestRustScoutIncrementalScope(t *testing.T) {
 		if len(g.ExternalPackages) != 1 || g.ExternalPackages[0] != "core" {
 			t.Errorf("scope %v: unscanned dependency must be external, got %v", only, g.ExternalPackages)
 		}
+		if len(g.ScopedPackages) != 1 || g.ScopedPackages[0] != "cli" {
+			t.Errorf("scope %v: scan scope must be reported, got %v", only, g.ScopedPackages)
+		}
 		// cli/src/lost.rs holds the one genuinely unresolvable path. main.rs's
 		// `use core::util` resolves in a full scan, so scoping it out must make
 		// it out of scope, not a drop.

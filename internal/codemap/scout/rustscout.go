@@ -94,6 +94,16 @@ func (RustScout) Scan(root string, only []string) (codemapops.Graph, error) {
 	}
 
 	g := codemapops.Graph{Lang: "rust"}
+	if only != nil {
+		// The crate names this scope matched. A workspace member whose
+		// directory is gone is no longer in `cargo metadata` either, so it
+		// cannot be named here — see Graph.ScopedPackages.
+		g.ScopedPackages = make([]string, 0, len(crates))
+		for _, c := range crates {
+			g.ScopedPackages = append(g.ScopedPackages, c.name)
+		}
+		sort.Strings(g.ScopedPackages)
+	}
 	// Pass 1: crate nodes, crate->crate edges, and every indexable file, so
 	// pass 2 can resolve a reference only to a file the map actually holds.
 	fileOf := map[string]*crate{}

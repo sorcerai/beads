@@ -52,6 +52,15 @@ type Graph struct {
 	// no Node in this Graph carries that Path — the package lives outside
 	// the scan's scope, not missing from it.
 	ExternalPackages []string
+
+	// ScopedPackages lists the package paths the scan was asked about,
+	// including ones that no longer exist.
+	//
+	// A deleted directory produces no Node, so an incremental apply scoped to
+	// the packages the scan RETURNED would never delete the vanished package's
+	// rows. This field is what the scan was ASKED for, which is the scope the
+	// delete has to cover.
+	ScopedPackages []string
 }
 
 // Validate checks that every edge endpoint names a node (or a declared

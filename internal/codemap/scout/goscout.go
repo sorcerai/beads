@@ -72,14 +72,17 @@ func (GoScout) Scan(root string, only []string) (codemapops.Graph, error) {
 		return codemapops.Graph{}, err
 	}
 	if only != nil && len(only) == 0 {
-		return codemapops.Graph{Lang: "go"}, nil // nothing in scope
+		return codemapops.Graph{Lang: "go", ScopedPackages: []string{}}, nil // nothing in scope
 	}
 	patterns := []string{"./..."}
+	var scoped []string
 	if only != nil {
 		patterns = make([]string, 0, len(only))
 		for _, o := range only {
 			patterns = append(patterns, goPattern(mod, o))
+			scoped = append(scoped, goScopeImportPath(mod, o))
 		}
+		sort.Strings(scoped)
 	}
 	cmd := exec.Command("go", append([]string{"list", "-json", "-e"}, patterns...)...) // #nosec G204 -- patterns are import paths from the caller's own repo
 	cmd.Dir = root
@@ -88,7 +91,7 @@ func (GoScout) Scan(root string, only []string) (codemapops.Graph, error) {
 		return codemapops.Graph{}, fmt.Errorf("go list: %w", err)
 	}
 
-	g := codemapops.Graph{Lang: "go"}
+	g := codemapops.Graph{Lang: "go", ScopedPackages: scoped}
 	dec := json.NewDecoder(bytes.NewReader(out))
 	fset := token.NewFileSet()
 	// isInternal reports whether an import path belongs to this module.
@@ -178,6 +181,21 @@ func goPattern(mod, only string) string {
 		return only
 	}
 	return "./" + only
+}
+
+// goScopeImportPath names the package one `only` entry refers to, WITHOUT
+// asking the toolchain — a scope whose directory has been deleted still has to
+// name the package whose rows the apply must remove, and `go list -e` answers
+// such a pattern with a placeholder carrying no import path at all.
+func goScopeImportPath(mod, only string) string {
+	if only == mod || strings.HasPrefix(only, mod+"/") {
+		return only
+	}
+	dir := path.Clean(strings.TrimPrefix(only, "./"))
+	if dir == "." || dir == "" {
+		return mod
+	}
+	return mod + "/" + dir
 }
 
 type weighted struct {

@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"sort"
@@ -14,6 +15,7 @@ import (
 	"github.com/steveyegge/beads/codemapops"
 	"github.com/steveyegge/beads/internal/codemap/cache"
 	"github.com/steveyegge/beads/internal/codemap/scout"
+	"github.com/steveyegge/beads/issueops"
 )
 
 // summariesNotYet is the exact notice `--summaries` prints until the
@@ -71,8 +73,7 @@ var codemapBuildCmd = &cobra.Command{
 		}
 		commandDidWrite.Store(true)
 
-		paths := filePathsOf(merged)
-		if err := rebuildCache(ctx, repoID, head, paths); err != nil {
+		if err := rebuildCache(ctx, repoID, head, merged, true, nil); err != nil {
 			fmt.Fprintf(os.Stderr, "Warning: cache: %v\n", err)
 		}
 		langs := langsOf(graphs)
@@ -243,9 +244,11 @@ func refreshCodemap(ctx context.Context, root, repoID string) (refreshResult, er
 	// One apply per language, each scoped by Only to the packages that
 	// language actually rescanned, so no language deletes another's nodes and
 	// an untouched package keeps its rows.
-	var rescanned []string
 	for _, g := range graphs {
-		only := packagePathsOf(g)
+		// The union, not just the packages the scan RETURNED: a deleted
+		// directory produces no node, so scoping the apply to what came back
+		// would leave the vanished package's rows behind forever.
+		only := unionStrings(g.ScopedPackages, packagePathsOf(g))
 		if len(only) == 0 {
 			continue
 		}
@@ -258,7 +261,6 @@ func refreshCodemap(ctx context.Context, root, repoID string) (refreshResult, er
 		out.NodesDeleted += res.NodesDeleted
 		out.EdgesWritten += res.EdgesWritten
 		out.EdgesPruned += res.EdgesPruned
-		rescanned = append(rescanned, filePathsOf(g)...)
 	}
 	sort.Strings(out.Only)
 	commandDidWrite.Store(true)
@@ -267,71 +269,128 @@ func refreshCodemap(ctx context.Context, root, repoID string) (refreshResult, er
 	if err != nil {
 		return out, err
 	}
-	if err := rebuildCache(ctx, repoID, head, mergeCachePaths(rescanned, deleted)); err != nil {
+	if err := rebuildCache(ctx, repoID, head, mergeGraphs(graphs), false, deleted); err != nil {
 		fmt.Fprintf(os.Stderr, "Warning: cache: %v\n", err)
 	}
 	return out, nil
 }
 
-// rebuildCache reprojects the derived cache for paths. The cache is
-// disposable, so a missing .beads directory is an error the caller may warn
-// about rather than a failed refresh.
-func rebuildCache(ctx context.Context, repoID, head string, paths []string) error {
+// rebuildCache reprojects the derived cache from the graph the caller just
+// applied. The cache is disposable, so a missing .beads directory is an error
+// the caller may warn about rather than a failed build.
+//
+// full says the graph covers the whole repository, which is what decides
+// whether an entry in the OLD cache that the graph does not mention is a file
+// outside this scan's scope (keep it) or a file that has left the tree (drop
+// it).
+func rebuildCache(ctx context.Context, repoID, head string, g codemapops.Graph, full bool, deleted []string) error {
 	beadsDir, err := codemapBeadsDir()
 	if err != nil {
 		return err
 	}
+	prev, err := cache.Read(beadsDir)
+	if err != nil && !errors.Is(err, os.ErrNotExist) {
+		// A corrupt cache is not a reason to fail the build; it is a reason to
+		// rebuild from nothing.
+		fmt.Fprintf(os.Stderr, "Warning: discarding unreadable code map cache: %v\n", err)
+		prev = cache.File{}
+	}
+	prev = prunePrev(prev, g, full, deleted)
+
 	reader, err := openCodeMapReader()
 	if err != nil {
 		return err
 	}
-	files, err := openIssueFiles()
+	// ONE stale query for the whole repository rather than a per-file freshness
+	// check. Reader.Stale defaults a limit of 0 to 100, so ask for a ceiling no
+	// real repository reaches.
+	stale, err := reader.Stale(ctx, repoID, staleScanLimit)
 	if err != nil {
 		return err
 	}
-	f, err := cache.Build(ctx, repoID, head, reader, files, paths)
+	links, err := openIssueLinks(ctx, repoID)
 	if err != nil {
 		return err
 	}
-	return cache.Write(beadsDir, f)
+	return cache.Write(beadsDir, cache.BuildFromGraph(ctx, repoID, head, g, prev, stale, links))
 }
 
-// mergeCachePaths folds the freshly rescanned paths into whatever the previous
-// cache covered, dropping the files this range deleted. Without the merge an
-// incremental refresh would shrink the cache to just the changed packages.
-func mergeCachePaths(rescanned, deleted []string) []string {
-	gone := make(map[string]struct{}, len(deleted))
+// staleScanLimit is the "no limit" the Reader has no spelling for.
+const staleScanLimit = 100000
+
+// prunePrev drops the previous cache entries this rebuild must not carry
+// forward: everything outside a whole-repository graph, and the files a
+// refresh's commit range deleted.
+func prunePrev(prev cache.File, g codemapops.Graph, full bool, deleted []string) cache.File {
+	if prev.Files == nil {
+		return prev
+	}
+	if full {
+		keep := make(map[string]struct{}, len(g.Nodes))
+		for _, n := range g.Nodes {
+			if n.Kind == codemapops.NodeFile {
+				keep[n.Path] = struct{}{}
+			}
+		}
+		for p := range prev.Files {
+			if _, ok := keep[p]; !ok {
+				delete(prev.Files, p)
+			}
+		}
+		return prev
+	}
 	for _, d := range deleted {
-		gone[d] = struct{}{}
+		delete(prev.Files, d)
 	}
-	seen := make(map[string]struct{})
-	var out []string
-	add := func(p string) {
-		if _, dead := gone[p]; dead {
-			return
+	return prev
+}
+
+// openIssueLinks maps each path to the open issues touching it, in
+// O(open issues + touched paths) round trips rather than the O(files) ByPath
+// calls the per-file cache build used to make.
+//
+// TWO steps because neither role method alone is both cheap and correct:
+// ByIssue enumerates rows without a repository filter, so it can only propose
+// CANDIDATE paths; ByPath is repo-scoped and authoritative but would cost a
+// call per file if asked about all of them. Asking it only about the paths some
+// open issue actually touched is a set far smaller than the tree.
+func openIssueLinks(ctx context.Context, repoID string) (map[string][]codemapops.IssueRef, error) {
+	reader, err := openIssueReader()
+	if err != nil {
+		return nil, err
+	}
+	page, err := reader.List(ctx, issueops.ListRequest{Status: "open", SkipLabels: true, SkipCounts: true})
+	if err != nil {
+		return nil, err
+	}
+	files, err := openIssueFiles()
+	if err != nil {
+		return nil, err
+	}
+	candidates := map[string]struct{}{}
+	for _, item := range page.Items {
+		if item == nil || item.Issue == nil {
+			continue
 		}
-		if _, dup := seen[p]; dup {
-			return
+		rows, err := files.ByIssue(ctx, item.ID)
+		if err != nil {
+			return nil, err
 		}
-		seen[p] = struct{}{}
-		out = append(out, p)
-	}
-	if beadsDir, err := codemapBeadsDir(); err == nil {
-		if prev, err := cache.Read(beadsDir); err == nil {
-			prevPaths := make([]string, 0, len(prev.Files))
-			for p := range prev.Files {
-				prevPaths = append(prevPaths, p)
-			}
-			sort.Strings(prevPaths)
-			for _, p := range prevPaths {
-				add(p)
-			}
+		for _, r := range rows {
+			candidates[r.Path] = struct{}{}
 		}
 	}
-	for _, p := range rescanned {
-		add(p)
+	links := make(map[string][]codemapops.IssueRef, len(candidates))
+	for p := range candidates {
+		refs, err := files.ByPath(ctx, repoID, p, true)
+		if err != nil {
+			return nil, err
+		}
+		if len(refs) > 0 {
+			links[p] = refs
+		}
 	}
-	return out
+	return links, nil
 }
 
 func gitChangedFiles(root, from, to string) ([]string, error) {

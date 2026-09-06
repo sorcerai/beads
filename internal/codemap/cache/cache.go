@@ -6,13 +6,12 @@ package cache
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"time"
 
-	"github.com/steveyegge/beads/beadserrors"
 	"github.com/steveyegge/beads/codemapops"
 	"github.com/steveyegge/beads/internal/atomicfile"
 )
@@ -72,52 +71,81 @@ func Read(beadsDir string) (File, error) {
 	return f, nil
 }
 
-// Build projects the indexed map for paths into a cache document. A path the
-// map does not know yields a bare entry rather than failing the whole build,
-// because a caller's changed-file list routinely names new or ignored files.
-func Build(ctx context.Context, repoID, headSHA string, reader codemapops.Reader, files codemapops.IssueFiles, paths []string) (File, error) {
+// BuildFromGraph projects a freshly scanned graph into a cache document,
+// deriving each file's imports and importers from the graph's own edges.
+//
+// It reads NOTHING per file. The previous shape asked the store for one
+// FileContext and one ByPath per path, which is two transactions per file and
+// what made `bd codemap build` spend minutes on a scan that takes seconds.
+// Everything it still needs from the store arrives whole: prev for the
+// summaries a scan does not carry, stale for which of them have gone out of
+// date, and links for the open issues per path.
+//
+// Entries in prev whose path is NOT a file node in g are carried forward,
+// because an incremental refresh only rescans some packages. A whole-repository
+// build passes a prev already reduced to the graph's own paths, so a file that
+// left the tree leaves the cache with it.
+func BuildFromGraph(_ context.Context, repoID, headSHA string, g codemapops.Graph, prev File, stale []codemapops.NodeRef, links map[string][]codemapops.IssueRef) File {
+	staleSet := make(map[string]struct{}, len(stale))
+	for _, s := range stale {
+		staleSet[s.Path] = struct{}{}
+	}
+	// file -> packages it imports, and package -> whatever imports it.
+	imports := map[string][]string{}
+	importersOf := map[string][]string{}
+	for _, e := range g.Edges {
+		if e.Kind != codemapops.EdgeImports {
+			continue
+		}
+		imports[e.Src] = append(imports[e.Src], e.Dst)
+		importersOf[e.Dst] = append(importersOf[e.Dst], e.Src)
+	}
+
 	out := File{
 		GeneratedAt: time.Now().UTC(),
 		HeadSHA:     headSHA,
 		RepoID:      repoID,
-		Files:       make(map[string]Entry, len(paths)),
+		Files:       make(map[string]Entry, len(prev.Files)+len(g.Nodes)),
 	}
-	for _, p := range paths {
-		if _, done := out.Files[p]; done {
+	scanned := make(map[string]struct{}, len(g.Nodes))
+	for _, n := range g.Nodes {
+		if n.Kind == codemapops.NodeFile {
+			scanned[n.Path] = struct{}{}
+		}
+	}
+	for p, e := range prev.Files {
+		if _, rescanned := scanned[p]; !rescanned {
+			out.Files[p] = e
+		}
+	}
+	for _, n := range g.Nodes {
+		if n.Kind != codemapops.NodeFile {
 			continue
 		}
-		entry := Entry{Path: p}
-		fc, err := reader.FileContext(ctx, repoID, p)
-		switch {
-		case err == nil:
-			entry.Summary = fc.Node.Summary
-			entry.Layer = fc.Node.Layer
-			entry.Stale = fc.Node.Stale
-			entry.Imports = nodePaths(fc.Imports)
-			entry.Importers = nodePaths(fc.Importers)
-		case errors.Is(err, beadserrors.ErrNotFound):
-			// Not indexed: the bare entry is the honest answer.
-		default:
-			return File{}, fmt.Errorf("file context for %s: %w", p, err)
+		entry := Entry{Path: n.Path}
+		// A scan carries no summary; only a summarizer pass writes one, so the
+		// previous entry is the only place it can come from.
+		if old, ok := prev.Files[n.Path]; ok {
+			entry.Summary, entry.Layer = old.Summary, old.Layer
 		}
-		issues, err := files.ByPath(ctx, repoID, p, true)
-		if err != nil && !errors.Is(err, beadserrors.ErrNotFound) {
-			return File{}, fmt.Errorf("open issues for %s: %w", p, err)
-		}
-		entry.OpenIssues = issues
-		out.Files[p] = entry
+		_, entry.Stale = staleSet[n.Path]
+		entry.Imports = capNames(imports[n.Path])
+		entry.Importers = capNames(importersOf[n.PackagePath])
+		entry.OpenIssues = links[n.Path]
+		out.Files[n.Path] = entry
 	}
-	return out, nil
+	return out
 }
 
-// nodePaths flattens refs to their paths, capped at maxNames.
-func nodePaths(refs []codemapops.NodeRef) []string {
-	if len(refs) > maxNames {
-		refs = refs[:maxNames]
+// capNames sorts for a stable cache and caps the list at maxNames.
+func capNames(names []string) []string {
+	if len(names) == 0 {
+		return nil
 	}
-	out := make([]string, 0, len(refs))
-	for _, r := range refs {
-		out = append(out, r.Path)
+	out := append([]string(nil), names...)
+	sort.Strings(out)
+	if len(out) > maxNames {
+		out = out[:maxNames]
 	}
 	return out
 }

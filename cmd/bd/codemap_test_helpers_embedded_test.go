@@ -160,3 +160,13 @@ func createIssue(t *testing.T, bd, dir, title string) string {
 	}
 	return issue.ID
 }
+
+// gitRm removes a tracked path and stages the removal.
+func gitRm(t *testing.T, dir, path string) {
+	t.Helper()
+	cmd := exec.Command("git", "rm", "-rq", "--", path)
+	cmd.Dir = dir
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("git rm %s: %v\n%s", path, err, out)
+	}
+}

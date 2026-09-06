@@ -116,3 +116,43 @@ func TestCodemapQueriesAndLink(t *testing.T) {
 		t.Fatalf("escaping path accepted: %s", out)
 	}
 }
+
+// TestCodemapRefreshDeletedPackage pins the orphan case: when a package
+// directory is deleted, the scan returns no node for it, so an apply scoped to
+// what came BACK would leave its rows behind forever. Only ScopedPackages —
+// what the scan was ASKED about — covers the delete.
+func TestCodemapRefreshDeletedPackage(t *testing.T) {
+	if os.Getenv("BEADS_TEST_EMBEDDED_DOLT") != "1" {
+		t.Skip("set BEADS_TEST_EMBEDDED_DOLT=1 to run embedded dolt integration tests")
+	}
+	t.Parallel()
+
+	bd := buildEmbeddedBD(t)
+	dir, _, _ := bdInit(t, bd, "--prefix", "cd")
+	writeGoMini(t, dir)
+
+	out := runCodemap(t, bd, dir, "build", "--json")
+	var before struct {
+		NodesUpserted int `json:"nodes_upserted"`
+	}
+	mustCodemapJSON(t, out, &before)
+
+	gitRm(t, dir, "b")
+	gitCommit(t, dir, "drop package b")
+
+	runCodemap(t, bd, dir, "refresh")
+
+	// Package b plus its two files are gone: three fewer nodes.
+	out = runCodemap(t, bd, dir, "status", "--json")
+	var after struct {
+		Nodes int `json:"nodes"`
+	}
+	mustCodemapJSON(t, out, &after)
+	if after.Nodes != before.NodesUpserted-3 {
+		t.Errorf("orphan nodes left behind: had %d, now %d, want %d",
+			before.NodesUpserted, after.Nodes, before.NodesUpserted-3)
+	}
+	if outStr, err := runCodemapErr(t, bd, dir, "show", "example.com/mini/b"); err == nil {
+		t.Errorf("deleted package still in the map: %s", outStr)
+	}
+}

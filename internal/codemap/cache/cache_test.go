@@ -8,7 +8,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/steveyegge/beads/beadserrors"
 	"github.com/steveyegge/beads/codemapops"
 )
 
@@ -41,85 +40,79 @@ func TestWriteReadRoundTripAndCorrupt(t *testing.T) {
 	}
 }
 
-// fakeReader answers FileContext from a fixed map; an absent path is not found.
-type fakeReader struct {
-	ctxs map[string]codemapops.FileContext
-}
-
-func (f fakeReader) FileContext(_ context.Context, _, path string) (codemapops.FileContext, error) {
-	fc, ok := f.ctxs[path]
-	if !ok {
-		return codemapops.FileContext{}, fmt.Errorf("file %q: %w", path, beadserrors.ErrNotFound)
-	}
-	return fc, nil
-}
-
-func (fakeReader) PackageContext(context.Context, string, string) (codemapops.PackageContext, error) {
-	return codemapops.PackageContext{}, nil
-}
-func (fakeReader) Stale(context.Context, string, int) ([]codemapops.NodeRef, error) { return nil, nil }
-func (fakeReader) Shape(context.Context, string, codemapops.ShapeOptions) (codemapops.Shape, error) {
-	return codemapops.Shape{}, nil
-}
-
-// fakeFiles answers ByPath from a fixed map.
-type fakeFiles struct {
-	byPath map[string][]codemapops.IssueRef
-}
-
-func (f fakeFiles) ByPath(_ context.Context, _, path string, openOnly bool) ([]codemapops.IssueRef, error) {
-	if !openOnly {
-		return nil, errors.New("cache must ask for open issues only")
-	}
-	return f.byPath[path], nil
-}
-
-func (fakeFiles) Record(context.Context, codemapops.RecordRequest) (codemapops.RecordResult, error) {
-	return codemapops.RecordResult{}, nil
-}
-func (fakeFiles) ByIssue(context.Context, string) ([]codemapops.IssueFile, error) { return nil, nil }
-func (fakeFiles) IssueCodeContext(context.Context, string, string) (codemapops.IssueCodeContext, error) {
-	return codemapops.IssueCodeContext{}, nil
-}
-
-func TestBuild(t *testing.T) {
-	var importers []codemapops.NodeRef
-	for i := 0; i < 20; i++ {
-		importers = append(importers, codemapops.NodeRef{Path: fmt.Sprintf("imp%02d.go", i)})
-	}
-	reader := fakeReader{ctxs: map[string]codemapops.FileContext{
-		"a.go": {
-			Node:      codemapops.NodeRef{Path: "a.go", Summary: "does a", Layer: "core", Stale: true},
-			Imports:   []codemapops.NodeRef{{Path: "pkg/x"}, {Path: "pkg/y"}},
-			Importers: importers,
+// goMiniGraph is the shape the go scout produces for scout/testdata/go-mini.
+func goMiniGraph() codemapops.Graph {
+	return codemapops.Graph{Lang: "go",
+		Nodes: []codemapops.Node{
+			{Kind: codemapops.NodePackage, Path: "example.com/mini/a", Name: "a", Lang: "go"},
+			{Kind: codemapops.NodePackage, Path: "example.com/mini/b", Name: "b", Lang: "go"},
+			{Kind: codemapops.NodeFile, Path: "a/a.go", Name: "a.go", PackagePath: "example.com/mini/a", Lang: "go"},
+			{Kind: codemapops.NodeFile, Path: "b/b.go", Name: "b.go", PackagePath: "example.com/mini/b", Lang: "go"},
+			{Kind: codemapops.NodeFile, Path: "b/b_test.go", Name: "b_test.go", PackagePath: "example.com/mini/b", Lang: "go", IsTest: true},
 		},
-	}}
-	files := fakeFiles{byPath: map[string][]codemapops.IssueRef{
-		"a.go": {{ID: "bd-1", Title: "fix a", Status: "open"}},
-	}}
+		Edges: []codemapops.Edge{
+			{Src: "example.com/mini/a", Dst: "a/a.go", Kind: codemapops.EdgeContains, Weight: 1},
+			{Src: "example.com/mini/b", Dst: "b/b.go", Kind: codemapops.EdgeContains, Weight: 1},
+			{Src: "example.com/mini/b", Dst: "example.com/mini/a", Kind: codemapops.EdgeImports, Weight: 1},
+			{Src: "b/b.go", Dst: "example.com/mini/a", Kind: codemapops.EdgeImports, Weight: 1},
+			{Src: "b/b_test.go", Dst: "example.com/mini/b", Kind: codemapops.EdgeTests, Weight: 1},
+		}}
+}
 
-	f, err := Build(context.Background(), "r1", "sha1", reader, files, []string{"a.go", "gone.go"})
-	if err != nil {
-		t.Fatal(err)
-	}
+func TestBuildFromGraph(t *testing.T) {
+	g := goMiniGraph()
+	prev := File{Files: map[string]Entry{
+		"a/a.go": {Path: "a/a.go", Summary: "does a", Layer: "core"},
+		"old.go": {Path: "old.go", Summary: "outside this scan"},
+	}}
+	stale := []codemapops.NodeRef{{Path: "a/a.go"}}
+	links := map[string][]codemapops.IssueRef{"b/b.go": {{ID: "bd-1", Title: "fix b", Status: "open"}}}
+
+	f := BuildFromGraph(context.Background(), "r1", "sha1", g, prev, stale, links)
 	if f.RepoID != "r1" || f.HeadSHA != "sha1" || f.GeneratedAt.IsZero() {
-		t.Errorf("header wrong: %+v", f)
+		t.Fatalf("header wrong: %+v", f)
 	}
-	a := f.Files["a.go"]
-	if a.Summary != "does a" || a.Layer != "core" || !a.Stale {
-		t.Errorf("entry metadata wrong: %+v", a)
+	a := f.Files["a/a.go"]
+	if a.Summary != "does a" || a.Layer != "core" {
+		t.Errorf("summary/layer must carry forward from prev: %+v", a)
 	}
-	if len(a.Importers) != 12 || a.Importers[0] != "imp00.go" {
-		t.Errorf("importers not capped at 12: %v", a.Importers)
+	if !a.Stale {
+		t.Errorf("a/a.go is in the stale slice: %+v", a)
 	}
-	if len(a.Imports) != 2 || a.Imports[0] != "pkg/x" {
+	// a/a.go imports nothing; its PACKAGE is imported by package b and file b/b.go.
+	if len(a.Imports) != 0 {
 		t.Errorf("imports wrong: %v", a.Imports)
 	}
-	if len(a.OpenIssues) != 1 || a.OpenIssues[0].ID != "bd-1" {
-		t.Errorf("open issues not joined: %v", a.OpenIssues)
+	if len(a.Importers) != 2 || a.Importers[0] != "b/b.go" || a.Importers[1] != "example.com/mini/b" {
+		t.Errorf("importers must come from the graph edges, sorted: %v", a.Importers)
 	}
-	gone, ok := f.Files["gone.go"]
-	if !ok || gone.Path != "gone.go" || gone.Summary != "" || len(gone.Importers) != 0 {
-		t.Errorf("unindexed path must yield a bare entry, got %+v (present=%v)", gone, ok)
+	b := f.Files["b/b.go"]
+	if len(b.Imports) != 1 || b.Imports[0] != "example.com/mini/a" {
+		t.Errorf("b imports wrong: %v", b.Imports)
+	}
+	if b.Stale {
+		t.Errorf("b/b.go is not in the stale slice: %+v", b)
+	}
+	if len(b.OpenIssues) != 1 || b.OpenIssues[0].ID != "bd-1" {
+		t.Errorf("open issues not joined: %v", b.OpenIssues)
+	}
+	if _, ok := f.Files["example.com/mini/a"]; ok {
+		t.Error("package nodes must not become cache entries")
+	}
+	// An entry the graph does not mention survives an incremental rebuild.
+	if _, ok := f.Files["old.go"]; !ok {
+		t.Error("prev entry outside the scan must carry forward")
+	}
+}
+
+func TestBuildFromGraphCapsNames(t *testing.T) {
+	g := codemapops.Graph{Lang: "go",
+		Nodes: []codemapops.Node{{Kind: codemapops.NodeFile, Path: "a.go", Name: "a.go", PackagePath: "pkg/a", Lang: "go"}}}
+	for i := 0; i < 20; i++ {
+		g.Edges = append(g.Edges, codemapops.Edge{Src: "a.go", Dst: fmt.Sprintf("pkg/x%02d", i), Kind: codemapops.EdgeImports, Weight: 1})
+	}
+	f := BuildFromGraph(context.Background(), "r1", "sha1", g, File{}, nil, nil)
+	if got := f.Files["a.go"].Imports; len(got) != maxNames || got[0] != "pkg/x00" {
+		t.Errorf("imports not capped at %d: %v", maxNames, got)
 	}
 }
