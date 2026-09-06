@@ -54,7 +54,7 @@ func openIssueReader() (issueops.Reader, error) {
 // not-found is normalized to the same message shape.
 func resolveLabelTarget(ctx context.Context, id string) (string, error) {
 	if usesProxiedServer() {
-		return resolveLabelTargetProxied(ctx, id)
+		return resolveIssueIDProxied(ctx, id)
 	}
 	return utils.ResolvePartialID(ctx, store, id)
 }

@@ -41,6 +41,10 @@ func runUpdateProxiedServer(cmd *cobra.Command, ctx context.Context, args []stri
 	// failed IDs from exit-code automation; report them all and exit non-zero,
 	// mirroring the non-proxied path in update.go (beads audit finding #10).
 	var failures []updateIDFailure
+	// The id the direct route records: the FIRST one that actually updated,
+	// set after the whole batch. .beads/last-touched is local per-clone state,
+	// so it is written the same way on both routes (update.go).
+	var firstUpdatedID string
 
 	for _, id := range args {
 		issue, fail, err := applyUpdateProxiedOne(ctx, id, in)
@@ -51,11 +55,18 @@ func runUpdateProxiedServer(cmd *cobra.Command, ctx context.Context, args []stri
 			failures = append(failures, *fail)
 			continue
 		}
+		if firstUpdatedID == "" {
+			firstUpdatedID = issue.ID
+		}
 		if jsonOut {
 			updated = append(updated, issue)
 		} else {
 			fmt.Printf("%s Updated issue: %s\n", ui.RenderPass("✓"), formatFeedbackID(issue.ID, issue.Title))
 		}
+	}
+
+	if firstUpdatedID != "" {
+		SetLastTouchedID(firstUpdatedID)
 	}
 
 	if jsonOut && len(updated) > 0 {

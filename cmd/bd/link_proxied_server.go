@@ -49,6 +49,9 @@ func runLinkProxiedServer(cmd *cobra.Command, ctx context.Context, args []string
 	// to run both inside the write.
 	res := depEdgeFeedback(ctx, id1, id2, true)
 
+	// The from-side id, as the direct route records it (link.go).
+	SetLastTouchedID(id1)
+
 	printCycleDetectionError(res.cycleErr)
 	printCycleWarnings(res.cycles)
 

@@ -61,6 +61,13 @@ var codemapLinkCmd = &cobra.Command{
 // resolveCodemapIssueID turns a partial id into a full one the same way every
 // other verb that takes an issue argument does.
 func resolveCodemapIssueID(ctx context.Context, input string) (string, error) {
+	// The same route fork resolveLabelTarget makes. Without it this forced
+	// direct mode on every route, so `bd codemap files` and `bd codemap link`
+	// died on a proxied workspace with "proxy server store should be uow
+	// provider" — the one place these two verbs still assumed a local store.
+	if usesProxiedServer() {
+		return resolveIssueIDProxied(ctx, input)
+	}
 	if err := ensureDirectMode("codemap"); err != nil {
 		return "", err
 	}

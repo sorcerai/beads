@@ -161,6 +161,7 @@ func runCreateProxiedSingle(_ *cobra.Command, ctx context.Context, in createInpu
 		fmt.Printf("  Priority: P%d\n", created.Priority)
 		fmt.Printf("  Status: %s\n", created.Status)
 	}
+	SetLastTouchedID(created.ID)
 	return nil
 }
 

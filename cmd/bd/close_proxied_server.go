@@ -196,6 +196,17 @@ func runCloseProxiedServer(cmd *cobra.Command, ctx context.Context, args []strin
 	}
 	firePostCloseHook(ctx, nil, lifecycleClosed)
 
+	// Same precedence the direct route uses (close.go): the first settled
+	// issue, then a claimed-next one overwrites it as the newer touch.
+	// .beads/last-touched is local per-clone state, written identically on
+	// both routes.
+	if len(lifecycleClosed) > 0 {
+		SetLastTouchedID(lifecycleClosed[0])
+	}
+	if claimedNextIssue != nil {
+		SetLastTouchedID(claimedNextIssue.ID)
+	}
+
 	if len(args) > 0 && len(outcomes) == 0 {
 		return SilentExit()
 	}

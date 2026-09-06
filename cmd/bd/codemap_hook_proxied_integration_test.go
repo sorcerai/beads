@@ -28,14 +28,11 @@ func TestPostToolRecordsOnProxiedServer(t *testing.T) {
 		t.Fatalf("bd update --claim: %v\n%s", err, out)
 	}
 
-	// Seeded by hand because the proxied create/claim path never calls
-	// SetLastTouchedID, so .beads/last-touched does not exist on a proxied
-	// workspace at all. That is a separate gap — post-tool's active-issue
-	// source is empty there regardless of which store route it takes — and it
-	// would otherwise mask what this test is for, which is the store OPEN.
-	lastTouched := filepath.Join(p.beadsDir, lastTouchedFile)
-	if err := os.WriteFile(lastTouched, []byte(issue.ID+"\n"), 0o600); err != nil {
-		t.Fatal(err)
+	// NOT seeded by hand: the proxied create and claim paths now write
+	// .beads/last-touched exactly as the direct ones do, so post-tool's active
+	// issue resolves on this route too. That is half of what this test pins.
+	if _, err := os.Stat(filepath.Join(p.beadsDir, lastTouchedFile)); err != nil {
+		t.Fatalf("proxied claim must record the last-touched issue: %v", err)
 	}
 
 	in := claudeHookPayload(t, "s1", p.dir, "Edit", filepath.Join(p.dir, "a", "a.go"))
@@ -47,15 +44,27 @@ func TestPostToolRecordsOnProxiedServer(t *testing.T) {
 		t.Fatalf("expected {} on stdout: %s", out)
 	}
 
-	// Read it back with `who`, not `files`: `files` resolves its issue argument
-	// through resolveCodemapIssueID, which calls ensureDirectMode
-	// unconditionally and so cannot run on a proxied workspace at all. That is
-	// a Task 16 bug, reported separately; `who` is route-agnostic.
 	who, err := bdProxiedRun(t, bd, p.dir, "codemap", "who", "a/a.go", "--all")
 	if err != nil {
 		t.Fatalf("bd codemap who: %v\n%s", err, who)
 	}
 	if !strings.Contains(string(who), issue.ID) {
 		t.Fatalf("a proxied workspace must record the edit too: %s", who)
+	}
+
+	// `files` and `link` resolve their issue argument through
+	// resolveCodemapIssueID, which used to force direct mode and so could not
+	// run on a proxied workspace at all. Write with one, read with the other.
+	if out, err := bdProxiedRun(t, bd, p.dir, "codemap", "link", issue.ID, "b/b.go"); err != nil {
+		t.Fatalf("bd codemap link: %v\n%s", err, out)
+	}
+	files, err := bdProxiedRun(t, bd, p.dir, "codemap", "files", issue.ID)
+	if err != nil {
+		t.Fatalf("bd codemap files: %v\n%s", err, files)
+	}
+	for _, want := range []string{"a/a.go", "hook", "b/b.go", "manual"} {
+		if !strings.Contains(string(files), want) {
+			t.Fatalf("codemap files missing %q on a proxied workspace: %s", want, files)
+		}
 	}
 }

@@ -14,7 +14,7 @@ import (
 	"github.com/steveyegge/beads/internal/workapi"
 )
 
-// resolveLabelTargetProxied is `bd label`'s exact-id lookup on the
+// resolveIssueIDProxied is `bd label`'s exact-id lookup on the
 // proxied-server route: the same issue-then-wisp resolution
 // workapi.GetIssueOrWisp gives every other proxied front door, with not-found
 // normalized to the shape the direct route's resolver produces.
@@ -25,7 +25,10 @@ import (
 // issueops.Lifecycle and issueops.Reader, which resolve the plane themselves
 // inside their own transaction. Only the resolution stays, because the roles
 // take an exact id by contract.
-func resolveLabelTargetProxied(ctx context.Context, id string) (string, error) {
+// resolveIssueIDProxied resolves any issue id on the proxied route — the
+// exact-then-wisp lookup every proxied front door shares. Not label-specific
+// despite where it lives; `bd codemap files` and `bd codemap link` use it too.
+func resolveIssueIDProxied(ctx context.Context, id string) (string, error) {
 	uw, err := proxiedOpenReadUOW(ctx)
 	if err != nil {
 		return "", err
