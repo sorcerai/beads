@@ -48,15 +48,23 @@ func ModulePath(root string) (string, error) {
 }
 
 // goListCmd builds the `go list` invocation a scan reads its package graph
-// from, with the environment pinned: GOPROXY=off because a code map is a read
-// of the tree in front of it and must never reach the network to resolve a
-// dependency, and GOTOOLCHAIN=local because a go.mod naming a newer toolchain
-// would otherwise make an indexing run download one. Both turn a slow surprise
-// into a plain `go list` error the caller already reports.
+// from, with GOPROXY=off: a code map is a read of the tree in front of it and
+// must never reach the network to resolve a dependency, so a missing module
+// becomes a plain `go list` error the caller already reports rather than a slow
+// surprise.
+//
+// GOTOOLCHAIN IS DELIBERATELY NOT PINNED. `GOTOOLCHAIN=local` was tried and
+// reverted: it refuses to run at all when go.mod names a toolchain newer than
+// the system go ("go.mod requires go >= 1.26.5 (running go 1.26.4)"), which is
+// the ordinary state of a repository whose contributors track a release the
+// distro has not shipped — this repository included. It failed every scan, not
+// just an adversarial one. Toolchain selection therefore stays whatever the
+// caller's environment already grants `go build`, which the operator has
+// necessarily run to have a bd binary at all.
 func goListCmd(root string, patterns []string) *exec.Cmd {
 	cmd := exec.Command("go", append([]string{"list", "-json", "-e"}, patterns...)...) // #nosec G204 -- patterns are import paths from the caller's own repo
 	cmd.Dir = root
-	cmd.Env = append(os.Environ(), "GOPROXY=off", "GOTOOLCHAIN=local")
+	cmd.Env = append(os.Environ(), "GOPROXY=off")
 	return cmd
 }
 

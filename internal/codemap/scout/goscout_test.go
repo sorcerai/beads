@@ -110,21 +110,27 @@ func TestGoScoutModulePathAndDetect(t *testing.T) {
 	}
 }
 
-// A scan must not reach the network or download a toolchain: the map describes
-// the tree in front of it. Asserting on the constructed command keeps the check
-// off `go list` itself, which would need a module to run against.
+// A scan must not reach the network for a module: the map describes the tree in
+// front of it. Asserting on the constructed command keeps the check off
+// `go list` itself, which would need a module to run against.
+//
+// The second half of this test is the one that matters: GOTOOLCHAIN must stay
+// unpinned. Pinning it to local made every scan fail on a repository whose
+// go.mod names a toolchain newer than the system go, which is this repository
+// on an ordinary workstation.
 func TestGoListCmdPinsItsEnvironment(t *testing.T) {
 	cmd := goListCmd(t.TempDir(), []string{"./..."})
-	want := map[string]bool{"GOPROXY=off": false, "GOTOOLCHAIN=local": false}
+	proxyOff := false
 	for _, e := range cmd.Env {
-		if _, ok := want[e]; ok {
-			want[e] = true
+		if e == "GOPROXY=off" {
+			proxyOff = true
+		}
+		if e == "GOTOOLCHAIN=local" {
+			t.Errorf("go list must not pin GOTOOLCHAIN: it refuses to run when go.mod requires a newer toolchain than the system go")
 		}
 	}
-	for e, found := range want {
-		if !found {
-			t.Errorf("go list env is missing %s: %v", e, cmd.Env)
-		}
+	if !proxyOff {
+		t.Errorf("go list env is missing GOPROXY=off: %v", cmd.Env)
 	}
 	if cmd.Dir == "" {
 		t.Error("go list must run in the repository root")
