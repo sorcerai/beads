@@ -443,6 +443,24 @@ worse than no map, because the guess is indistinguishable from a fact.
   cause file-watcher churn in workspaces that watch for writes
   ([GH#804](https://github.com/gastownhall/beads/issues/804)).
 
+## Diagram
+
+`docs/diagrams/codemap.architecture.json` is a typed [Archify](https://github.com/tt-a1i/archify)
+specification of this plane: the scout, the CLI, the roles, the tables, the
+derived cache and the three hooks, with each component pinned to the file it
+lives in. It is the source, not the picture — render it when you want the
+picture:
+
+```bash
+node ~/.claude/skills/archify/bin/archify.mjs deliver architecture \
+  docs/diagrams/codemap.architecture.json /tmp/codemap.html \
+  --quality showcase --repo-root . --open
+```
+
+The rendered HTML is deliberately not committed. It is 717 KB of generated
+output that would be rewritten on every edit, and the specification it comes
+from is seven kilobytes and reviewable in a diff.
+
 ## See also
 
 - [ADR-0004: Code Map](https://github.com/gastownhall/beads/blob/main/engdocs/adr/0004-code-map.md) — why it is shaped this way

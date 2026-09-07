@@ -1,0 +1,365 @@
+{
+  "schema_version": 1,
+  "diagram_type": "architecture",
+  "meta": {
+    "title": "Beads Code Map Plane",
+    "quality_profile": "showcase",
+    "repository": {
+      "url": "https://github.com/sorcerai/beads",
+      "revision": "c262205983bdba3a50739fe9f7e8436800ec02e8"
+    },
+    "viewBox": [
+      1140,
+      670
+    ],
+    "views": [
+      {
+        "id": "index-path",
+        "label": "Indexing path",
+        "focus": [
+          "tree",
+          "scout",
+          "cli",
+          "roles",
+          "dolt"
+        ],
+        "note": "How a working tree becomes rows: the scout reads it, the CLI applies one graph, the roles write one transaction."
+      },
+      {
+        "id": "agent-turn",
+        "label": "What an agent turn touches",
+        "focus": [
+          "cache",
+          "pretool",
+          "posttool",
+          "roles",
+          "surfaces"
+        ],
+        "note": "The read hook never opens the database; the write hook goes through the same role every other front door uses."
+      },
+      {
+        "id": "automatic",
+        "label": "What runs unattended",
+        "focus": [
+          "gitcommit",
+          "cli",
+          "roles",
+          "cache"
+        ],
+        "note": "A commit links its files and refreshes the changed packages. Nothing else indexes implicitly."
+      }
+    ]
+  },
+  "components": [
+    {
+      "id": "tree",
+      "type": "external",
+      "label": "Working tree",
+      "sublabel": "Go and Rust sources",
+      "pos": [
+        60,
+        330
+      ],
+      "size": [
+        170,
+        68
+      ]
+    },
+    {
+      "id": "scout",
+      "type": "backend",
+      "label": "Scout",
+      "sublabel": "go list \u00b7 cargo metadata",
+      "tag": "never guesses",
+      "pos": [
+        330,
+        330
+      ],
+      "size": [
+        170,
+        68
+      ],
+      "sources": [
+        {
+          "path": "internal/codemap/scout/goscout.go",
+          "label": "Go scout"
+        },
+        {
+          "path": "internal/codemap/scout/rustscout.go",
+          "label": "Rust scout"
+        }
+      ]
+    },
+    {
+      "id": "cli",
+      "type": "backend",
+      "label": "bd codemap",
+      "sublabel": "build \u00b7 refresh \u00b7 show",
+      "pos": [
+        600,
+        330
+      ],
+      "size": [
+        170,
+        68
+      ],
+      "sources": [
+        {
+          "path": "cmd/bd/codemap_build.go",
+          "label": "build and refresh"
+        }
+      ]
+    },
+    {
+      "id": "roles",
+      "type": "backend",
+      "label": "codemapops roles",
+      "sublabel": "Indexer \u00b7 Reader \u00b7 IssueFiles",
+      "tag": "one body, three legs",
+      "pos": [
+        870,
+        330
+      ],
+      "size": [
+        170,
+        68
+      ],
+      "sources": [
+        {
+          "path": "codemapops/indexer.go",
+          "label": "Indexer contract"
+        },
+        {
+          "path": "codemapops/reader.go",
+          "label": "Reader contract"
+        },
+        {
+          "path": "codemapops/issue_files.go",
+          "label": "IssueFiles contract"
+        }
+      ]
+    },
+    {
+      "id": "dolt",
+      "type": "database",
+      "label": "Dolt tables",
+      "sublabel": "3 tables \u00b7 migration 0067",
+      "pos": [
+        870,
+        550
+      ],
+      "size": [
+        170,
+        68
+      ],
+      "sources": [
+        {
+          "path": "internal/storage/schema/migrations/0067_create_codemap.up.sql",
+          "label": "schema"
+        }
+      ]
+    },
+    {
+      "id": "cache",
+      "type": "database",
+      "label": "Derived cache",
+      "sublabel": ".beads/codemap.cache.json",
+      "pos": [
+        600,
+        110
+      ],
+      "size": [
+        170,
+        68
+      ],
+      "sources": [
+        {
+          "path": "internal/codemap/cache/cache.go",
+          "label": "built from the scan"
+        }
+      ]
+    },
+    {
+      "id": "pretool",
+      "type": "frontend",
+      "label": "PreToolUse hook",
+      "sublabel": "briefing before Read/Edit",
+      "tag": "17 ms",
+      "pos": [
+        330,
+        110
+      ],
+      "size": [
+        170,
+        68
+      ],
+      "sources": [
+        {
+          "path": "cmd/bd/codemap_hook.go",
+          "label": "pre-tool"
+        }
+      ]
+    },
+    {
+      "id": "surfaces",
+      "type": "frontend",
+      "label": "bd show \u00b7 claim \u00b7 prime",
+      "sublabel": "CODE section \u00b7 repo shape",
+      "pos": [
+        870,
+        110
+      ],
+      "size": [
+        170,
+        68
+      ],
+      "sources": [
+        {
+          "path": "cmd/bd/show.go",
+          "label": "CODE section"
+        },
+        {
+          "path": "cmd/bd/prime.go",
+          "label": "prime section"
+        }
+      ]
+    },
+    {
+      "id": "gitcommit",
+      "type": "external",
+      "label": "post-commit hook",
+      "sublabel": "managed git hook",
+      "pos": [
+        330,
+        550
+      ],
+      "size": [
+        170,
+        68
+      ],
+      "sources": [
+        {
+          "path": "cmd/bd/codemap_commit.go",
+          "label": "record-commit"
+        }
+      ]
+    },
+    {
+      "id": "posttool",
+      "type": "frontend",
+      "label": "PostToolUse hook",
+      "sublabel": "after Edit or Write",
+      "pos": [
+        600,
+        550
+      ],
+      "size": [
+        170,
+        68
+      ],
+      "sources": [
+        {
+          "path": "cmd/bd/codemap_hook.go",
+          "label": "post-tool"
+        }
+      ]
+    }
+  ],
+  "boundaries": [
+    {
+      "kind": "region",
+      "label": "Role tier",
+      "wraps": [
+        "roles",
+        "dolt"
+      ]
+    }
+  ],
+  "connections": [
+    {
+      "id": "read-tree",
+      "from": "tree",
+      "to": "scout",
+      "label": "read-only"
+    },
+    {
+      "id": "graph",
+      "from": "scout",
+      "to": "cli",
+      "label": "import graph",
+      "variant": "emphasis"
+    },
+    {
+      "id": "apply",
+      "from": "cli",
+      "to": "roles",
+      "label": "Apply",
+      "variant": "emphasis"
+    },
+    {
+      "id": "persist",
+      "from": "roles",
+      "to": "dolt",
+      "label": "one transaction",
+      "variant": "emphasis",
+      "labelDy": 24
+    },
+    {
+      "id": "derive",
+      "from": "cli",
+      "to": "cache",
+      "label": "writes the cache"
+    },
+    {
+      "id": "brief",
+      "from": "cache",
+      "to": "pretool",
+      "label": "no store open"
+    },
+    {
+      "id": "commit-link",
+      "from": "gitcommit",
+      "to": "cli",
+      "label": "link + refresh"
+    },
+    {
+      "id": "record-edit",
+      "from": "posttool",
+      "to": "roles",
+      "label": "records edits"
+    },
+    {
+      "id": "read-context",
+      "from": "surfaces",
+      "to": "roles",
+      "label": "reads context",
+      "labelDy": 24
+    }
+  ],
+  "cards": [
+    {
+      "dot": "cyan",
+      "title": "Indexed",
+      "items": [
+        "Packages, files and import edges",
+        "code_nodes \u00b7 code_edges \u00b7 issue_files"
+      ]
+    },
+    {
+      "dot": "emerald",
+      "title": "Automatic",
+      "items": [
+        "Every commit links its files and refreshes",
+        "A briefing before Claude reads a file"
+      ]
+    },
+    {
+      "dot": "amber",
+      "title": "Manual on purpose",
+      "items": [
+        "The first build, and --summaries",
+        "The read hook never opens the database"
+      ]
+    }
+  ]
+}

@@ -1,5 +1,16 @@
 {
   "hooks": {
+    "PostToolUse": [
+      {
+        "hooks": [
+          {
+            "command": "bd codemap-hook post-tool",
+            "type": "command"
+          }
+        ],
+        "matcher": "Edit|Write|MultiEdit|NotebookEdit"
+      }
+    ],
     "PreToolUse": [
       {
         "hooks": [
@@ -13,6 +24,15 @@
           }
         ],
         "matcher": "Bash"
+      },
+      {
+        "hooks": [
+          {
+            "command": "bd codemap-hook pre-tool",
+            "type": "command"
+          }
+        ],
+        "matcher": "Read|Edit|Write|MultiEdit"
       }
     ],
     "SessionStart": [
