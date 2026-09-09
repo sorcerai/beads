@@ -2,8 +2,6 @@ package main
 
 import (
 	"github.com/spf13/cobra"
-
-	"github.com/steveyegge/beads/internal/metrics"
 )
 
 var childrenCmd = &cobra.Command{
@@ -24,12 +22,6 @@ Examples:
 	SilenceUsage:  true,
 	SilenceErrors: true,
 	RunE: func(cmd *cobra.Command, args []string) error {
-		evt := metrics.NewCommandEvent("children")
-		defer func() {
-			if c := metrics.Global(); c != nil {
-				c.CloseEventAndAdd(evt)
-			}
-		}()
 
 		parentID := args[0]
 		pretty, _ := cmd.Flags().GetBool("pretty")

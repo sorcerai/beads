@@ -16,7 +16,6 @@ import (
 	"github.com/anthropics/anthropic-sdk-go/option"
 	"github.com/spf13/cobra"
 	"github.com/steveyegge/beads/internal/config"
-	"github.com/steveyegge/beads/internal/metrics"
 	"github.com/steveyegge/beads/internal/telemetry"
 	"github.com/steveyegge/beads/internal/types"
 	"github.com/steveyegge/beads/internal/ui"
@@ -80,12 +79,6 @@ type duplicatePair struct {
 }
 
 func runFindDuplicates(cmd *cobra.Command, _ []string) error {
-	evt := metrics.NewCommandEvent("find-duplicates")
-	defer func() {
-		if c := metrics.Global(); c != nil {
-			c.CloseEventAndAdd(evt)
-		}
-	}()
 
 	method, _ := cmd.Flags().GetString("method")
 	threshold, _ := cmd.Flags().GetFloat64("threshold")

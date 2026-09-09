@@ -259,8 +259,6 @@ func bootstrapBackendGuardEnv(home, beadsDir string) []string {
 		"BEADS_DOLT_AUTO_START=0",
 		"BEADS_NO_DAEMON=1",
 		"BEADS_TEST_IGNORE_REPO_CONFIG=1",
-		"BD_DISABLE_METRICS=1",
-		"BD_DISABLE_EVENT_FLUSH=1",
 		"BD_NON_INTERACTIVE=1",
 	)
 }

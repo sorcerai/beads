@@ -22,13 +22,6 @@ import (
 // hermeticInitEnv sets sync.remote via BD_SYNC_REMOTE (viper AutomaticEnv,
 // config.go:165-169), stripped of inherited BD_*/BEADS_* vars and
 // HOME-isolated so ambient ~/.beads or ~/.config/bd config can't leak in.
-//
-// BD_DISABLE_METRICS and BD_DISABLE_EVENT_FLUSH are re-added after the strip:
-// they are not ambient user config, they are fixed harness guards this test
-// package owns (test_repo_beads_guard_test.go:139-140), and dropping them
-// re-arms the detached-flusher race that test_repo_beads_guard_test.go:118-135
-// documents — the subprocess's homeDir is a t.TempDir() that gets RemoveAll'd
-// while the orphaned `bd send-metrics` child still holds files open under it.
 func hermeticInitEnv(homeDir string, extra ...string) []string {
 	var env []string
 	for _, e := range os.Environ() {
@@ -37,8 +30,7 @@ func hermeticInitEnv(homeDir string, extra ...string) []string {
 		}
 		env = append(env, e)
 	}
-	env = append(env, "HOME="+homeDir, "GIT_CONFIG_GLOBAL=/dev/null", "GIT_CONFIG_SYSTEM=/dev/null",
-		"BD_DISABLE_METRICS=1", "BD_DISABLE_EVENT_FLUSH=1")
+	env = append(env, "HOME="+homeDir, "GIT_CONFIG_GLOBAL=/dev/null", "GIT_CONFIG_SYSTEM=/dev/null")
 	return append(env, extra...)
 }
 
@@ -60,7 +52,7 @@ func TestInitReinitLocalConfiguredRemoteWithoutDoltDataSucceeds(t *testing.T) {
 	runGitForBootstrapTest(t, workDir, "init", "-b", "main")
 	runGitForBootstrapTest(t, workDir, "config", "core.hooksPath", ".git/hooks")
 
-	homeDir := t.TempDir() // must differ from workDir: metrics.go caches to $HOME/.beads
+	homeDir := t.TempDir() // must differ from workDir: keeps the init hermetic
 
 	cmd := exec.Command(bdBin, "init", "--reinit-local", "--prefix", "cfg", "--quiet", "--non-interactive", "--skip-hooks", "--skip-agents")
 	cmd.Dir = workDir
@@ -98,7 +90,7 @@ func TestInitFreshWithUnreachableGitOriginSucceeds(t *testing.T) {
 	runGitForBootstrapTest(t, workDir, "remote", "add", "origin",
 		filepath.Join(t.TempDir(), "does-not-exist.git"))
 
-	homeDir := t.TempDir() // must differ from workDir: metrics.go caches to $HOME/.beads
+	homeDir := t.TempDir() // must differ from workDir: keeps the init hermetic
 
 	cmd := exec.Command(bdBin, "init", "--backend", "dolt", "--prefix", "org", "--quiet", "--non-interactive", "--skip-hooks", "--skip-agents")
 	cmd.Dir = workDir
@@ -118,10 +110,10 @@ func TestInitFreshWithUnreachableGitOriginSucceeds(t *testing.T) {
 		t.Fatalf(".beads should have been created by a successful init: %v", err)
 	}
 
+	// Telemetry was removed entirely; bd must not write usage-data dirs under
+	// the isolated HOME (or anywhere outside the target repo).
 	if _, err := os.Stat(filepath.Join(homeDir, ".beads", "eventsData")); !os.IsNotExist(err) {
-		t.Errorf("metrics queue dir was created under the isolated HOME (err=%v); "+
-			"the detached send-metrics child will race t.TempDir cleanup "+
-			"(see test_repo_beads_guard_test.go:118)", err)
+		t.Errorf("telemetry queue dir was created under the isolated HOME (err=%v)", err)
 	}
 }
 

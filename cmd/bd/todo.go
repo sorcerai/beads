@@ -8,7 +8,6 @@ import (
 	"strings"
 
 	"github.com/spf13/cobra"
-	"github.com/steveyegge/beads/internal/metrics"
 	"github.com/steveyegge/beads/internal/types"
 	"github.com/steveyegge/beads/internal/ui"
 	"github.com/steveyegge/beads/internal/utils"
@@ -30,12 +29,6 @@ TODOs can be promoted to full issues by changing type or priority:
 	SilenceUsage:  true,
 	SilenceErrors: true,
 	RunE: func(cmd *cobra.Command, args []string) error {
-		evt := metrics.NewCommandEvent("todo")
-		defer func() {
-			if c := metrics.Global(); c != nil {
-				c.CloseEventAndAdd(evt)
-			}
-		}()
 
 		// Delegate to the shared, non-emitting list core so a single `bd todo`
 		// records exactly one cli_command event ("todo"), not also "todo-list".
@@ -51,13 +44,6 @@ var addTodoCmd = &cobra.Command{
 	SilenceErrors: true,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		CheckReadonly("todo add")
-
-		evt := metrics.NewCommandEvent("todo-add")
-		defer func() {
-			if c := metrics.Global(); c != nil {
-				c.CloseEventAndAdd(evt)
-			}
-		}()
 
 		if usesProxiedServer() {
 			return runTodoAddProxiedServer(cmd, rootCtx, args)
@@ -107,12 +93,6 @@ var listTodosCmd = &cobra.Command{
 	SilenceUsage:  true,
 	SilenceErrors: true,
 	RunE: func(cmd *cobra.Command, args []string) error {
-		evt := metrics.NewCommandEvent("todo-list")
-		defer func() {
-			if c := metrics.Global(); c != nil {
-				c.CloseEventAndAdd(evt)
-			}
-		}()
 
 		return runTodoListCore(cmd, args)
 	},
@@ -187,13 +167,6 @@ var doneTodoCmd = &cobra.Command{
 	SilenceErrors: true,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		CheckReadonly("todo done")
-
-		evt := metrics.NewCommandEvent("todo-done")
-		defer func() {
-			if c := metrics.Global(); c != nil {
-				c.CloseEventAndAdd(evt)
-			}
-		}()
 
 		if usesProxiedServer() {
 			return runTodoDoneProxiedServer(cmd, rootCtx, args)

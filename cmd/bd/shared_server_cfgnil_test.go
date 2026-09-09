@@ -63,7 +63,6 @@ func TestSharedServerCfgNilHonorsSharedServer(t *testing.T) {
 		// races Go's automatic RemoveAll and the test fails its own cleanup with
 		// "unlinkat …: directory not empty" (matches the sibling shared-server
 		// and protocol tests, which disable it for the same reason).
-		"BD_DISABLE_EVENT_FLUSH=1",
 		"BEADS_TEST_MODE=1",
 		"GIT_TERMINAL_PROMPT=0",
 		"GIT_ASKPASS=",

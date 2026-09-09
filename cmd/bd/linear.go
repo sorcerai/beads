@@ -17,7 +17,6 @@ import (
 	"github.com/steveyegge/beads/internal/config"
 	"github.com/steveyegge/beads/internal/debug"
 	"github.com/steveyegge/beads/internal/linear"
-	"github.com/steveyegge/beads/internal/metrics"
 	"github.com/steveyegge/beads/internal/storage"
 	"github.com/steveyegge/beads/internal/tracker"
 	"github.com/steveyegge/beads/internal/types"
@@ -218,12 +217,6 @@ func runLinearSync(cmd *cobra.Command, args []string) error {
 	if usesProxiedServer() {
 		return HandleErrorRespectJSON("linear sync is not supported in proxied-server mode")
 	}
-	evt := metrics.NewCommandEvent("linear-sync")
-	defer func() {
-		if c := metrics.Global(); c != nil {
-			c.CloseEventAndAdd(evt)
-		}
-	}()
 
 	pull, _ := cmd.Flags().GetBool("pull")
 	push, _ := cmd.Flags().GetBool("push")
@@ -819,12 +812,6 @@ func runLinearStatus(cmd *cobra.Command, args []string) error {
 	if usesProxiedServer() {
 		return HandleErrorRespectJSON("linear status is not supported in proxied-server mode")
 	}
-	evt := metrics.NewCommandEvent("linear-status")
-	defer func() {
-		if c := metrics.Global(); c != nil {
-			c.CloseEventAndAdd(evt)
-		}
-	}()
 
 	ctx := rootCtx
 
@@ -935,12 +922,6 @@ func runLinearTeams(cmd *cobra.Command, args []string) error {
 	if usesProxiedServer() {
 		return HandleErrorRespectJSON("linear teams is not supported in proxied-server mode")
 	}
-	evt := metrics.NewCommandEvent("linear-teams")
-	defer func() {
-		if c := metrics.Global(); c != nil {
-			c.CloseEventAndAdd(evt)
-		}
-	}()
 
 	ctx := rootCtx
 

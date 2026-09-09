@@ -11,7 +11,6 @@ import (
 	"strings"
 
 	"github.com/spf13/cobra"
-	"github.com/steveyegge/beads/internal/metrics"
 	"github.com/steveyegge/beads/internal/storage"
 	"github.com/steveyegge/beads/internal/storage/issueops"
 	"github.com/steveyegge/beads/internal/types"
@@ -87,13 +86,6 @@ normal 'bd' subcommands for interactive/read operations.`,
 	SilenceErrors: false,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		CheckReadonly("batch")
-
-		evt := metrics.NewCommandEvent("batch")
-		defer func() {
-			if c := metrics.Global(); c != nil {
-				c.CloseEventAndAdd(evt)
-			}
-		}()
 
 		proxied := usesProxiedServer()
 		if !proxied && store == nil {

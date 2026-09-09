@@ -10,7 +10,6 @@ import (
 
 	"github.com/steveyegge/beads/internal/config"
 	"github.com/steveyegge/beads/internal/doltserver"
-	"github.com/steveyegge/beads/internal/metrics"
 	"github.com/steveyegge/beads/internal/testutil"
 )
 
@@ -113,31 +112,13 @@ func testMainInner(m *testing.M) int {
 	_ = os.Setenv("XDG_CONFIG_HOME", filepath.Join(tmp, "xdg-config"))
 	_ = os.Setenv("BEADS_TEST_IGNORE_REPO_CONFIG", "1")
 
-	// Keep telemetry out of the test suite entirely (wy-12x1p).
-	//
-	// Every `bd` run with metrics enabled ends in metrics.CloseAndFlush, which
-	// (a) writes an eventkit queue under $HOME/.beads/eventsData and (b) spawns
-	// a DETACHED `bd send-metrics` child (cmd.Process.Release — no Wait) that
-	// outlives its parent. The e2e tests here run the bd binary with
-	// HOME=t.TempDir(), so those orphans keep creating/removing .evtq files and
-	// holding eventkit.lock under a temp dir the test is about to delete. Go's
-	// t.TempDir cleanup then fails with
-	//
-	//   TempDir RemoveAll cleanup: unlinkat .../NNN: directory not empty
-	//
-	// which reddens the whole cmd/bd package with no assertion failure in
-	// sight. It is load-dependent, so it flaked intermittently on a busy
-	// machine (TestPrime_HookJSON_{Local,Redirected}PrimeOverride were the
-	// observed victims, but every subprocess test here was exposed).
-	//
-	// Both vars are set: EnvDisableEventFlush alone would stop the detached
-	// child, and EnvDisableMetrics additionally keeps the queue files out of
-	// the isolated HOME — and a test suite should never upload telemetry.
-	// Subprocess envs in this package are built with append(os.Environ(), ...),
-	// so setting it here covers all of them. Tests that specifically exercise
-	// metrics resolution already unset these per-test and restore them.
-	_ = os.Setenv(metrics.EnvDisableMetrics, "1")
-	_ = os.Setenv(metrics.EnvDisableEventFlush, "1")
+	// Telemetry was removed from bd entirely (no usage metrics, no OTel export),
+	// so there is nothing to disable here. This comment preserves the history:
+	// the wy-12x1p flake came from a detached `bd send-metrics` child holding
+	// files open under a t.TempDir HOME during cleanup, reddening the whole
+	// cmd/bd package with "TempDir RemoveAll cleanup: ... directory not empty".
+	// If telemetry is ever reintroduced, the test harness will need an
+	// equivalent process-wide opt-out here again.
 
 	// Also reset viper state that was loaded by main.go's init().
 	config.ResetForTesting()

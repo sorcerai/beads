@@ -11,7 +11,6 @@ import (
 	"time"
 
 	"github.com/spf13/cobra"
-	"github.com/steveyegge/beads/internal/metrics"
 	"github.com/steveyegge/beads/internal/types"
 	"github.com/steveyegge/beads/internal/ui"
 )
@@ -60,12 +59,6 @@ By default, shows only open gates. Use --all to include closed gates.`,
 	SilenceUsage:  true,
 	SilenceErrors: true,
 	RunE: func(cmd *cobra.Command, args []string) error {
-		evt := metrics.NewCommandEvent("gate-list")
-		defer func() {
-			if c := metrics.Global(); c != nil {
-				c.CloseEventAndAdd(evt)
-			}
-		}()
 
 		if usesProxiedServer() {
 			return runGateListProxiedServer(cmd, rootCtx, args)
@@ -237,13 +230,6 @@ This is used by 'bd done --phase-complete' to register for gate wake notificatio
 		}
 		CheckReadonly("gate add-waiter")
 
-		evt := metrics.NewCommandEvent("gate-add-waiter")
-		defer func() {
-			if c := metrics.Global(); c != nil {
-				c.CloseEventAndAdd(evt)
-			}
-		}()
-
 		gateID := args[0]
 		waiter := args[1]
 		ctx := rootCtx
@@ -321,13 +307,6 @@ Examples:
 			return runGateCreateProxiedServer(cmd, rootCtx)
 		}
 		CheckReadonly("gate create")
-
-		evt := metrics.NewCommandEvent("gate-create")
-		defer func() {
-			if c := metrics.Global(); c != nil {
-				c.CloseEventAndAdd(evt)
-			}
-		}()
 
 		in, err := gatherGateCreateInput(cmd)
 		if err != nil {
@@ -464,12 +443,6 @@ This is similar to 'bd show' but validates that the issue is a gate.`,
 		if usesProxiedServer() {
 			return runGateShowProxiedServer(cmd, rootCtx, args)
 		}
-		evt := metrics.NewCommandEvent("gate-show")
-		defer func() {
-			if c := metrics.Global(); c != nil {
-				c.CloseEventAndAdd(evt)
-			}
-		}()
 
 		gateID := args[0]
 		ctx := rootCtx
@@ -540,13 +513,6 @@ Use --reason to provide context for why the gate was resolved.`,
 			return runGateResolveProxiedServer(cmd, rootCtx, args)
 		}
 		CheckReadonly("gate resolve")
-
-		evt := metrics.NewCommandEvent("gate-resolve")
-		defer func() {
-			if c := metrics.Global(); c != nil {
-				c.CloseEventAndAdd(evt)
-			}
-		}()
 
 		gateID := args[0]
 		reason, _ := cmd.Flags().GetString("reason")
@@ -629,13 +595,6 @@ Examples:
 			return runGateCheckProxiedServer(cmd, rootCtx)
 		}
 		CheckReadonly("gate check")
-
-		evt := metrics.NewCommandEvent("gate-check")
-		defer func() {
-			if c := metrics.Global(); c != nil {
-				c.CloseEventAndAdd(evt)
-			}
-		}()
 
 		gateTypeFilter, _ := cmd.Flags().GetString("type")
 		dryRun, _ := cmd.Flags().GetBool("dry-run")

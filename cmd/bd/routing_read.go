@@ -131,7 +131,7 @@ func routingNoticeText(rule routing.RoutingRule) (reason, fix string) {
 //
 // Gated on !quietFlag: --quiet is documented as "Suppress non-essential
 // output (errors only)" (cmd/bd/main.go), and other non-error stderr
-// notices in this package (tips.go, metrics.go) respect it the same way.
+// notices in this package (tips.go) respect it the same way.
 func printContributorRoutingNotice(ctx context.Context, localStore storage.DoltStorage, rule routing.RoutingRule) {
 	if quietFlag {
 		return

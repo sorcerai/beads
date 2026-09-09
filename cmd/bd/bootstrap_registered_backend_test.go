@@ -84,8 +84,6 @@ func TestBootstrapRejectsRegisteredBackendBeforeWorkspaceWrites(t *testing.T) {
 
 	t.Setenv("BEADS_DIR", beadsDir)
 	t.Setenv("BD_NON_INTERACTIVE", "1")
-	t.Setenv("BD_DISABLE_METRICS", "1")
-	t.Setenv("BD_DISABLE_EVENT_FLUSH", "1")
 
 	var execErr error
 	stderr := captureBootstrapStderr(t, func() {

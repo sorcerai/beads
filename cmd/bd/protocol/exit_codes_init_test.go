@@ -59,7 +59,6 @@ func initEnv(home string, extra ...string) []string {
 		"BEADS_TEST_MODE=1",
 		// See the note in helpers_test.go env(): the detached metrics child
 		// writes under HOME after bd exits and races t.TempDir() cleanup.
-		"BD_DISABLE_METRICS=1",
 		"BEADS_DB=",
 		"BEADS_DIR=",
 	}

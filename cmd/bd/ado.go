@@ -11,7 +11,6 @@ import (
 	"github.com/spf13/cobra"
 	"github.com/steveyegge/beads/internal/ado"
 	"github.com/steveyegge/beads/internal/config"
-	"github.com/steveyegge/beads/internal/metrics"
 	"github.com/steveyegge/beads/internal/storage"
 	"github.com/steveyegge/beads/internal/storage/dolt"
 	"github.com/steveyegge/beads/internal/tracker"
@@ -359,12 +358,6 @@ func runADOStatus(cmd *cobra.Command, _ []string) error {
 	if usesProxiedServer() {
 		return HandleErrorRespectJSON("ado status is not supported in proxied-server mode")
 	}
-	evt := metrics.NewCommandEvent("ado-status")
-	defer func() {
-		if c := metrics.Global(); c != nil {
-			c.CloseEventAndAdd(evt)
-		}
-	}()
 
 	cfg := getADOConfig()
 
@@ -415,12 +408,6 @@ func runADOProjects(cmd *cobra.Command, _ []string) error {
 	if usesProxiedServer() {
 		return HandleErrorRespectJSON("ado projects is not supported in proxied-server mode")
 	}
-	evt := metrics.NewCommandEvent("ado-projects")
-	defer func() {
-		if c := metrics.Global(); c != nil {
-			c.CloseEventAndAdd(evt)
-		}
-	}()
 
 	cfg := getADOConfig()
 	if cfg.PAT == "" {
@@ -487,12 +474,6 @@ func runADOSync(cmd *cobra.Command, _ []string) error {
 	if usesProxiedServer() {
 		return HandleErrorRespectJSON("ado sync is not supported in proxied-server mode")
 	}
-	evt := metrics.NewCommandEvent("ado-sync")
-	defer func() {
-		if c := metrics.Global(); c != nil {
-			c.CloseEventAndAdd(evt)
-		}
-	}()
 
 	cfg := getADOConfig()
 	if err := validateADOConfig(cfg); err != nil {

@@ -13,7 +13,6 @@ import (
 	"github.com/spf13/cobra"
 	"github.com/steveyegge/beads/internal/atomicfile"
 	"github.com/steveyegge/beads/internal/config"
-	"github.com/steveyegge/beads/internal/metrics"
 	"github.com/steveyegge/beads/internal/storage/domain"
 	"github.com/steveyegge/beads/internal/storage/uow"
 	"github.com/steveyegge/beads/internal/types"
@@ -77,12 +76,6 @@ func init() {
 }
 
 func runExport(cmd *cobra.Command, args []string) error {
-	evt := metrics.NewCommandEvent("export")
-	defer func() {
-		if c := metrics.Global(); c != nil {
-			c.CloseEventAndAdd(evt)
-		}
-	}()
 
 	ctx := rootCtx
 

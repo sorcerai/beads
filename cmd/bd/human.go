@@ -9,7 +9,6 @@ import (
 	"strings"
 
 	"github.com/spf13/cobra"
-	"github.com/steveyegge/beads/internal/metrics"
 	"github.com/steveyegge/beads/internal/types"
 	"github.com/steveyegge/beads/internal/ui"
 	"github.com/steveyegge/beads/internal/workapi"
@@ -33,12 +32,6 @@ SUBCOMMANDS:
   human dismiss <id>      Dismiss a human-needed bead permanently
   human stats             Show summary statistics for human-needed beads`,
 	Run: func(cmd *cobra.Command, args []string) {
-		evt := metrics.NewCommandEvent("human")
-		defer func() {
-			if c := metrics.Global(); c != nil {
-				c.CloseEventAndAdd(evt)
-			}
-		}()
 
 		fmt.Printf("\n%s\n", ui.RenderBold("bd - Essential Commands for Humans"))
 		fmt.Printf("For all 70+ commands: bd --help\n\n")
@@ -118,12 +111,6 @@ Examples:
 	SilenceUsage:  true,
 	SilenceErrors: true,
 	RunE: func(cmd *cobra.Command, args []string) error {
-		evt := metrics.NewCommandEvent("human-list")
-		defer func() {
-			if c := metrics.Global(); c != nil {
-				c.CloseEventAndAdd(evt)
-			}
-		}()
 
 		status, _ := cmd.Flags().GetString("status")
 
@@ -253,13 +240,6 @@ Examples:
 	RunE: func(cmd *cobra.Command, args []string) error {
 		CheckReadonly("human respond")
 
-		evt := metrics.NewCommandEvent("human-respond")
-		defer func() {
-			if c := metrics.Global(); c != nil {
-				c.CloseEventAndAdd(evt)
-			}
-		}()
-
 		src := cmdTextSources(cmd, args[1:])
 		src.flagText, _ = cmd.Flags().GetString("response")
 		src.flagName = "--response"
@@ -340,13 +320,6 @@ Examples:
 	RunE: func(cmd *cobra.Command, args []string) error {
 		CheckReadonly("human dismiss")
 
-		evt := metrics.NewCommandEvent("human-dismiss")
-		defer func() {
-			if c := metrics.Global(); c != nil {
-				c.CloseEventAndAdd(evt)
-			}
-		}()
-
 		reasonFlag, _ := cmd.Flags().GetString("reason")
 
 		// A dismissal reason is optional, so this is textFromSources rather
@@ -426,12 +399,6 @@ Example:
 	SilenceUsage:  true,
 	SilenceErrors: true,
 	RunE: func(cmd *cobra.Command, args []string) error {
-		evt := metrics.NewCommandEvent("human-stats")
-		defer func() {
-			if c := metrics.Global(); c != nil {
-				c.CloseEventAndAdd(evt)
-			}
-		}()
 
 		// The stats universe is `human list --status=all`: every human-labeled
 		// bead, every status, every type.

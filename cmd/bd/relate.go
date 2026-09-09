@@ -6,7 +6,6 @@ import (
 	"os"
 
 	"github.com/spf13/cobra"
-	"github.com/steveyegge/beads/internal/metrics"
 	"github.com/steveyegge/beads/internal/storage"
 	"github.com/steveyegge/beads/internal/types"
 	"github.com/steveyegge/beads/internal/ui"
@@ -53,13 +52,6 @@ func init() {
 
 func runRelate(cmd *cobra.Command, args []string) error {
 	CheckReadonly("relate")
-
-	evt := metrics.NewCommandEvent("relate")
-	defer func() {
-		if c := metrics.Global(); c != nil {
-			c.CloseEventAndAdd(evt)
-		}
-	}()
 
 	ctx := rootCtx
 
@@ -141,13 +133,6 @@ func runRelate(cmd *cobra.Command, args []string) error {
 
 func runUnrelate(cmd *cobra.Command, args []string) error {
 	CheckReadonly("unrelate")
-
-	evt := metrics.NewCommandEvent("unrelate")
-	defer func() {
-		if c := metrics.Global(); c != nil {
-			c.CloseEventAndAdd(evt)
-		}
-	}()
 
 	ctx := rootCtx
 

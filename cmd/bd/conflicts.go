@@ -9,7 +9,6 @@ import (
 	"strings"
 
 	"github.com/spf13/cobra"
-	"github.com/steveyegge/beads/internal/metrics"
 	"github.com/steveyegge/beads/internal/storage"
 	"github.com/steveyegge/beads/internal/storage/versioncontrolops"
 	"github.com/steveyegge/beads/internal/ui"
@@ -67,7 +66,6 @@ var conflictsListCmd = &cobra.Command{
 	SilenceUsage:  true,
 	SilenceErrors: true,
 	RunE: func(cmd *cobra.Command, args []string) error {
-		defer conflictsMetrics("conflicts-list")()
 		ctx := rootCtx
 		if err := requireConflictSupport(); err != nil {
 			return err
@@ -162,7 +160,6 @@ conflicted table is shown.`,
 	SilenceUsage:  true,
 	SilenceErrors: true,
 	RunE: func(cmd *cobra.Command, args []string) error {
-		defer conflictsMetrics("conflicts-show")()
 		ctx := rootCtx
 		if err := requireConflictSupport(); err != nil {
 			return err
@@ -243,7 +240,6 @@ Examples:
 	SilenceUsage:  true,
 	SilenceErrors: true,
 	RunE: func(cmd *cobra.Command, args []string) error {
-		defer conflictsMetrics("conflicts-resolve")()
 		ctx := rootCtx
 		if err := requireConflictSupport(); err != nil {
 			return err
@@ -530,17 +526,6 @@ func concludeJSON(committed bool, blockers storage.MergeBlockers, human string) 
 	}
 	fmt.Println(human)
 	return nil
-}
-
-// conflictsMetrics starts a command metrics event and returns its closer, so
-// each subcommand can arm it with one deferred call.
-func conflictsMetrics(name string) func() {
-	evt := metrics.NewCommandEvent(name)
-	return func() {
-		if c := metrics.Global(); c != nil {
-			c.CloseEventAndAdd(evt)
-		}
-	}
 }
 
 // requireConflictSupport refuses the modes where conflict inspection has no

@@ -100,7 +100,7 @@ func TestLegacyUpgradeGuardRefusesBeforeMutatingHistoricalWorkspace(t *testing.T
 					commandCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 					cmd := exec.CommandContext(commandCtx, bd, tc.args...)
 					cmd.Dir = repoDir
-					cmd.Env = append(os.Environ(), "BD_DISABLE_METRICS=1", "BEADS_DOLT_AUTO_START=0")
+					cmd.Env = append(os.Environ(), "BEADS_DOLT_AUTO_START=0")
 					var stdout, stderr bytes.Buffer
 					cmd.Stdout = &stdout
 					cmd.Stderr = &stderr
@@ -154,8 +154,6 @@ func TestLegacyNoStoreCommandExemptions(t *testing.T) {
 		{name: "root", cmd: rootCmd},
 		{name: "version", cmd: versionCmd},
 		{name: "schema", cmd: schemaCmd},
-		{name: "metrics", cmd: metricsCmd},
-		{name: "metrics subcommand", cmd: metricsOffCmd},
 		{name: "doctor", cmd: doctorCmd},
 		{name: "init", cmd: initCmd},
 		{name: "bootstrap", cmd: bootstrapCmd},
@@ -192,7 +190,7 @@ func TestVersionLeavesHistoricalWorkspaceUnchanged(t *testing.T) {
 
 	cmd := exec.Command(bd, "version")
 	cmd.Dir = repoDir
-	cmd.Env = append(os.Environ(), "BD_DISABLE_METRICS=1", "BEADS_DOLT_AUTO_START=0")
+	cmd.Env = append(os.Environ(), "BEADS_DOLT_AUTO_START=0")
 	output, err := cmd.CombinedOutput()
 	if err != nil {
 		t.Fatalf("bd version failed: %v\n%s", err, output)
@@ -228,7 +226,7 @@ func TestLegacyBackendConfigRefusesBeforeMetadataMigration(t *testing.T) {
 				before := legacyUpgradeTreeDigest(t, beadsDir)
 				cmd := exec.Command(bd, args...)
 				cmd.Dir = repoDir
-				cmd.Env = append(os.Environ(), "BD_DISABLE_METRICS=1", "BEADS_DOLT_AUTO_START=0")
+				cmd.Env = append(os.Environ(), "BEADS_DOLT_AUTO_START=0")
 				output, err := cmd.CombinedOutput()
 				if err == nil {
 					t.Fatalf("bd %s unexpectedly accepted backend %q:\n%s", strings.Join(args, " "), backend, output)
@@ -274,7 +272,7 @@ func TestBootstrapRefusesLegacyServerBeforeMigratingLegacyConfig(t *testing.T) {
 	before := legacyUpgradeTreeDigest(t, beadsDir)
 	cmd := exec.Command(bd, "bootstrap", "--dry-run", "--yes")
 	cmd.Dir = repoDir
-	cmd.Env = append(os.Environ(), "BD_DISABLE_METRICS=1", "BEADS_DOLT_AUTO_START=0")
+	cmd.Env = append(os.Environ(), "BEADS_DOLT_AUTO_START=0")
 	output, err := cmd.CombinedOutput()
 	if err == nil {
 		t.Fatalf("bd bootstrap unexpectedly accepted historical server workspace:\n%s", output)
@@ -324,7 +322,6 @@ func TestBootstrapRefusesLegacyAncestorConfigWithoutMigratingIt(t *testing.T) {
 	cmd := exec.Command(bd, "bootstrap", "--dry-run", "--yes")
 	cmd.Dir = root
 	cmd.Env = append(os.Environ(),
-		"BD_DISABLE_METRICS=1",
 		"BEADS_DOLT_AUTO_START=0",
 		"BEADS_DOLT_SHARED_SERVER=1",
 		"BEADS_DIR="+selectedBeadsDir,
@@ -370,8 +367,6 @@ func TestInitProxiedServerRefusesHistoricalExternalWorkspaceBeforeMutation(t *te
 	cmd := exec.Command(bd, "init", "--proxied-server", "--quiet", "--non-interactive", "--skip-hooks", "--skip-agents")
 	cmd.Dir = repoDir
 	cmd.Env = append(os.Environ(),
-		"BD_DISABLE_METRICS=1",
-		"BD_DISABLE_EVENT_FLUSH=1",
 		"BEADS_DOLT_AUTO_START=0",
 		"HOME="+home,
 	)
@@ -455,8 +450,6 @@ func TestLegacyGuardUsesSelectedTargetSharedServerConfig(t *testing.T) {
 				cmd := exec.Command(bd, selector.args(target, targetBeadsDir)...)
 				cmd.Dir = caller
 				cmd.Env = append(os.Environ(),
-					"BD_DISABLE_METRICS=1",
-					"BD_DISABLE_EVENT_FLUSH=1",
 					"BEADS_DOLT_AUTO_START=0",
 					"BEADS_DOLT_SERVER_PORT=59999",
 					"BEADS_DOLT_SHARED_SERVER=0",

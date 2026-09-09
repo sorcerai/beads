@@ -26,7 +26,7 @@ func TestCommandStartupRejectsRemovedBackendsBeforeLocalWrites(t *testing.T) {
 
 			cmd := exec.Command(bd, "list", "--json")
 			cmd.Dir = root
-			cmd.Env = append(removedBackendTestEnv(beadsDir), "BD_DISABLE_METRICS=1")
+			cmd.Env = removedBackendTestEnv(beadsDir)
 			out, err := cmd.CombinedOutput()
 			if err == nil {
 				t.Fatalf("removed backend %s unexpectedly opened", backend)
@@ -61,7 +61,7 @@ func TestCommandStartupRejectsUnknownBackendBeforeLocalWrites(t *testing.T) {
 
 	cmd := exec.Command(bd, "list", "--json")
 	cmd.Dir = root
-	cmd.Env = append(removedBackendTestEnv(beadsDir), "BD_DISABLE_METRICS=1")
+	cmd.Env = removedBackendTestEnv(beadsDir)
 	out, err := cmd.CombinedOutput()
 	if err == nil {
 		t.Fatalf("unknown backend unexpectedly opened:\n%s", out)
@@ -130,7 +130,7 @@ func TestDoctorRejectsUnknownBackendBeforeDoltChecks(t *testing.T) {
 
 	cmd := exec.Command(bd, "doctor", "--server", "--json")
 	cmd.Dir = root
-	cmd.Env = append(removedBackendTestEnv(beadsDir), "BEADS_DOLT_AUTO_START=0", "BD_DISABLE_METRICS=1")
+	cmd.Env = append(removedBackendTestEnv(beadsDir), "BEADS_DOLT_AUTO_START=0")
 	out, err := cmd.CombinedOutput()
 	if err == nil {
 		t.Fatalf("doctor unexpectedly ran Dolt checks for unknown backend:\n%s", out)
@@ -188,7 +188,7 @@ func TestLegacyInitFlagsReachRemovedBackendGuidance(t *testing.T) {
 			beadsDir := filepath.Join(root, ".beads")
 			cmd := exec.Command(bd, tt.args...)
 			cmd.Dir = root
-			cmd.Env = append(removedBackendTestEnv(beadsDir), "BD_DISABLE_METRICS=1")
+			cmd.Env = removedBackendTestEnv(beadsDir)
 			out, err := cmd.CombinedOutput()
 			if err == nil {
 				t.Fatalf("legacy %s init unexpectedly succeeded: %s", tt.backend, out)
@@ -239,7 +239,7 @@ func TestDoltAdministrativeCommandsRejectRemovedBackends(t *testing.T) {
 		t.Run(command.name, func(t *testing.T) {
 			cmd := exec.Command(bd, command.args...)
 			cmd.Dir = root
-			cmd.Env = append(removedBackendTestEnv(beadsDir), "BD_DISABLE_METRICS=1")
+			cmd.Env = removedBackendTestEnv(beadsDir)
 			out, err := cmd.CombinedOutput()
 			if err == nil {
 				t.Fatalf("%q unexpectedly succeeded for removed backend %s: %s", strings.Join(command.args, " "), configfile.BackendSQLite, out)
@@ -276,7 +276,7 @@ func TestDoltReadOnlyCommandsRejectUnknownBackend(t *testing.T) {
 	for _, args := range [][]string{{"dolt", "show"}, {"dolt", "status"}, {"dolt", "killall"}} {
 		cmd := exec.Command(bd, args...)
 		cmd.Dir = root
-		cmd.Env = append(removedBackendTestEnv(beadsDir), "BEADS_DOLT_AUTO_START=0", "BD_DISABLE_METRICS=1")
+		cmd.Env = append(removedBackendTestEnv(beadsDir), "BEADS_DOLT_AUTO_START=0")
 		out, err := cmd.CombinedOutput()
 		if err == nil {
 			t.Errorf("bd %s unexpectedly treated unknown metadata as Dolt:\n%s", strings.Join(args, " "), out)
@@ -307,7 +307,6 @@ func TestDoltKillallRejectsCorruptMetadataBeforeServerCleanup(t *testing.T) {
 		"BEADS_DOLT_SHARED_SERVER=1",
 		"BEADS_DOLT_AUTO_START=0",
 		"BEADS_SHARED_SERVER_DIR="+filepath.Join(root, "shared-server"),
-		"BD_DISABLE_METRICS=1",
 	)
 	out, err := cmd.CombinedOutput()
 	if err == nil {

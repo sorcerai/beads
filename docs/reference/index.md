@@ -22,8 +22,6 @@ rather than teach concepts (that's [How Beads Works](/core-concepts/index)).
   contract behind every `--json` flag.
 - [Events Journal](/reference/events-journal) — the durable, replayable record
   of committed mutations that external tooling tails, and its boundaries.
-- [Observability (OpenTelemetry)](/reference/observability) — traces and
-  metrics bd can emit, and how to point them at a collector.
 - [Troubleshooting](/reference/troubleshooting) — symptom-first fixes for
   common failures (deeper runbooks live in [Recovery](/recovery/index)).
 - [Antivirus False Positives](/reference/antivirus) — Windows AV heuristics

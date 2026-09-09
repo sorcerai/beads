@@ -5,7 +5,6 @@ import (
 	"time"
 
 	"github.com/spf13/cobra"
-	"github.com/steveyegge/beads/internal/metrics"
 	"github.com/steveyegge/beads/internal/storage"
 )
 
@@ -48,12 +47,6 @@ Examples:
 		if usesProxiedServer() {
 			return runCompactProxiedServer(rootCtx)
 		}
-		evt := metrics.NewCommandEvent("compact")
-		defer func() {
-			if c := metrics.Global(); c != nil {
-				c.CloseEventAndAdd(evt)
-			}
-		}()
 
 		if !compactDoltDryRun {
 			CheckReadonly("compact")

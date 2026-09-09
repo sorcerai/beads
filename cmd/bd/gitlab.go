@@ -15,7 +15,6 @@ import (
 	"github.com/spf13/cobra"
 	"github.com/steveyegge/beads/internal/config"
 	"github.com/steveyegge/beads/internal/gitlab"
-	"github.com/steveyegge/beads/internal/metrics"
 	"github.com/steveyegge/beads/internal/storage"
 	"github.com/steveyegge/beads/internal/tracker"
 	"github.com/steveyegge/beads/internal/types"
@@ -345,12 +344,6 @@ func runGitLabStatus(cmd *cobra.Command, args []string) error {
 	if usesProxiedServer() {
 		return HandleErrorRespectJSON("gitlab status is not supported in proxied-server mode")
 	}
-	evt := metrics.NewCommandEvent("gitlab-status")
-	defer func() {
-		if c := metrics.Global(); c != nil {
-			c.CloseEventAndAdd(evt)
-		}
-	}()
 
 	config := getGitLabConfig()
 
@@ -408,12 +401,6 @@ func runGitLabProjects(cmd *cobra.Command, args []string) error {
 	if usesProxiedServer() {
 		return HandleErrorRespectJSON("gitlab projects is not supported in proxied-server mode")
 	}
-	evt := metrics.NewCommandEvent("gitlab-projects")
-	defer func() {
-		if c := metrics.Global(); c != nil {
-			c.CloseEventAndAdd(evt)
-		}
-	}()
 
 	config := getGitLabConfig()
 	if err := validateGitLabConfig(config); err != nil {
@@ -468,12 +455,6 @@ func runGitLabSync(cmd *cobra.Command, args []string) error {
 	if usesProxiedServer() {
 		return HandleErrorRespectJSON("gitlab sync is not supported in proxied-server mode")
 	}
-	evt := metrics.NewCommandEvent("gitlab-sync")
-	defer func() {
-		if c := metrics.Global(); c != nil {
-			c.CloseEventAndAdd(evt)
-		}
-	}()
 
 	config := getGitLabConfig()
 	if err := validateGitLabConfig(config); err != nil {

@@ -8,7 +8,6 @@ import (
 
 	"github.com/spf13/cobra"
 	"github.com/steveyegge/beads/internal/config"
-	"github.com/steveyegge/beads/internal/metrics"
 )
 
 var backupCmd = &cobra.Command{
@@ -58,12 +57,6 @@ func newBackupStatusCommand(sizeDatabase backupSizeFunc) *cobra.Command {
 			if usesProxiedServer() {
 				return HandleErrorRespectJSON("backup status is not supported in proxied-server mode")
 			}
-			evt := metrics.NewCommandEvent("backup-status")
-			defer func() {
-				if c := metrics.Global(); c != nil {
-					c.CloseEventAndAdd(evt)
-				}
-			}()
 
 			dir, err := backupDir()
 			if err != nil {

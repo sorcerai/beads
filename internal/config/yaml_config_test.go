@@ -1379,37 +1379,33 @@ func TestSetAndUnsetYamlConfig_WithBEADS_DIR_FromOutsideRepo(t *testing.T) {
 	}
 }
 
-// TestMetricsConsentResolvesUserGlobalOnly is the regression guard for the
-// metrics opt-out authority blocker on PR #4419: a user who runs `bd metrics
-// off` (or pins their own endpoint) in the user-global config must not have
-// that choice re-enabled or redirected by a repository's project/BEADS_DIR
+// TestUserGlobalKeyResolvesUserGlobalOnly is the regression guard for the
+// user-global authority finding on PR #4419: a value the user sets in the
+// user-global config must not be redefined by a repository's project/BEADS_DIR
 // config, which has the highest viper precedence in the merged config.
-func TestMetricsConsentResolvesUserGlobalOnly(t *testing.T) {
+func TestUserGlobalKeyResolvesUserGlobalOnly(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
 	t.Setenv("USERPROFILE", home)
 	t.Setenv("XDG_CONFIG_HOME", filepath.Join(home, ".config"))
 
-	const userEndpoint = "https://user-global.example/collect"
-	const projectEndpoint = "https://project-override.example/collect"
-
-	// User opted out globally and pinned their own endpoint.
+	// User pinned their node identity globally.
 	userCfgDir := filepath.Join(home, ".config", "bd")
 	if err := os.MkdirAll(userCfgDir, 0o755); err != nil {
 		t.Fatalf("mkdir user config dir: %v", err)
 	}
-	userCfg := "metrics:\n  disabled: true\n  endpoint: " + userEndpoint + "\n"
+	userCfg := "node_id: user-machine\n"
 	if err := os.WriteFile(filepath.Join(userCfgDir, "config.yaml"), []byte(userCfg), 0o600); err != nil {
 		t.Fatalf("write user config: %v", err)
 	}
 
-	// A repository tries to re-enable metrics and redirect the endpoint through
-	// the highest-precedence BEADS_DIR config.
+	// A repository tries to override the node identity through the
+	// highest-precedence BEADS_DIR config.
 	projectBeadsDir := filepath.Join(t.TempDir(), ".beads")
 	if err := os.MkdirAll(projectBeadsDir, 0o755); err != nil {
 		t.Fatalf("mkdir project .beads: %v", err)
 	}
-	projectCfg := "metrics.disabled: false\nmetrics.endpoint: " + projectEndpoint + "\n"
+	projectCfg := "node_id: project-machine\n"
 	if err := os.WriteFile(filepath.Join(projectBeadsDir, "config.yaml"), []byte(projectCfg), 0o644); err != nil {
 		t.Fatalf("write project config: %v", err)
 	}
@@ -1422,28 +1418,25 @@ func TestMetricsConsentResolvesUserGlobalOnly(t *testing.T) {
 	}
 
 	// Precondition: the project override really is live in the merged config, so
-	// the assertions below prove the consent readers bypass it rather than just
-	// agreeing with an absent override.
-	if GetBool("metrics.disabled") {
-		t.Fatalf("precondition: merged metrics.disabled should be false (project override), got true")
-	}
-	if got := GetString("metrics.endpoint"); got != projectEndpoint {
-		t.Fatalf("precondition: merged metrics.endpoint = %q, want project override %q", got, projectEndpoint)
+	// the assertions below prove the user-global readers bypass it rather than
+	// just agreeing with an absent override.
+	if got := GetString("node_id"); got != "project-machine" {
+		t.Fatalf("precondition: merged node_id = %q, want project override %q", got, "project-machine")
 	}
 
-	// Contract: consent + endpoint honor the user-global config only.
-	if !MetricsDisabledByUserConfig() {
-		t.Errorf("MetricsDisabledByUserConfig() = false; project config must not re-enable a user who opted out")
+	// Contract: user-global reads honor the user-global config only.
+	if !IsUserGlobalKey("node_id") {
+		t.Errorf("IsUserGlobalKey(node_id) = false; node_id must stay a user-global key")
 	}
-	if got := UserMetricsEndpoint(); got != userEndpoint {
-		t.Errorf("UserMetricsEndpoint() = %q, want %q; project config must not redirect the endpoint", got, userEndpoint)
+	if got := GetUserYamlConfig("node_id"); got != "user-machine" {
+		t.Errorf("GetUserYamlConfig(node_id) = %q, want %q; project config must not shadow the user-global value", got, "user-machine")
 	}
 }
 
 // TestGetUserYamlConfigIgnoresProjectOverride is the regression guard for the
-// `bd config get metrics.*` / effective-config-display finding on PR #4419: a
+// `bd config get` / effective-config-display finding on PR #4419: a
 // read of a user-global key must report the user-global value that actually
-// governs runtime metrics behavior, not the merged value a repository's
+// governs runtime behavior, not the merged value a repository's
 // project/BEADS_DIR config (highest viper precedence) can shadow.
 // GetUserYamlConfig backs the config get / config show user-global path.
 func TestGetUserYamlConfigIgnoresProjectOverride(t *testing.T) {
@@ -1452,25 +1445,22 @@ func TestGetUserYamlConfigIgnoresProjectOverride(t *testing.T) {
 	t.Setenv("USERPROFILE", home)
 	t.Setenv("XDG_CONFIG_HOME", filepath.Join(home, ".config"))
 
-	const userEndpoint = "https://user-global.example/collect"
-	const projectEndpoint = "https://project-override.example/collect"
-
 	userCfgDir := filepath.Join(home, ".config", "bd")
 	if err := os.MkdirAll(userCfgDir, 0o755); err != nil {
 		t.Fatalf("mkdir user config dir: %v", err)
 	}
-	userCfg := "metrics:\n  disabled: true\n  endpoint: " + userEndpoint + "\n"
+	userCfg := "node_id: user-machine\n"
 	if err := os.WriteFile(filepath.Join(userCfgDir, "config.yaml"), []byte(userCfg), 0o600); err != nil {
 		t.Fatalf("write user config: %v", err)
 	}
 
-	// A repository tries to flip metrics and redirect the endpoint through the
+	// A repository tries to override the node identity through the
 	// highest-precedence BEADS_DIR config.
 	projectBeadsDir := filepath.Join(t.TempDir(), ".beads")
 	if err := os.MkdirAll(projectBeadsDir, 0o755); err != nil {
 		t.Fatalf("mkdir project .beads: %v", err)
 	}
-	projectCfg := "metrics.disabled: false\nmetrics.endpoint: " + projectEndpoint + "\n"
+	projectCfg := "node_id: project-machine\n"
 	if err := os.WriteFile(filepath.Join(projectBeadsDir, "config.yaml"), []byte(projectCfg), 0o644); err != nil {
 		t.Fatalf("write project config: %v", err)
 	}
@@ -1485,93 +1475,18 @@ func TestGetUserYamlConfigIgnoresProjectOverride(t *testing.T) {
 	// Precondition: the project override is live in the merged config, so the
 	// assertions below prove GetUserYamlConfig bypasses it rather than just
 	// agreeing with an absent override.
-	if GetBool("metrics.disabled") {
-		t.Fatalf("precondition: merged metrics.disabled should be false (project override), got true")
+	if got := GetString("node_id"); got != "project-machine" {
+		t.Fatalf("precondition: merged node_id = %q, want project override %q", got, "project-machine")
 	}
 
-	// Contract: a user-global key read reports the user-global value, matching
-	// what `bd metrics` actually honors — not the project override.
-	if got := GetUserYamlConfig("metrics.disabled"); got != "true" {
-		t.Errorf("GetUserYamlConfig(metrics.disabled) = %q, want %q; project config must not shadow the user-global value", got, "true")
-	}
-	if got := GetUserYamlConfig("metrics.endpoint"); got != userEndpoint {
-		t.Errorf("GetUserYamlConfig(metrics.endpoint) = %q, want %q; project config must not shadow the user-global value", got, userEndpoint)
+	// Contract: a user-global key read reports the user-global value, not the
+	// project override.
+	if got := GetUserYamlConfig("node_id"); got != "user-machine" {
+		t.Errorf("GetUserYamlConfig(node_id) = %q, want %q; project config must not shadow the user-global value", got, "user-machine")
 	}
 	// An unset user-global key reads as empty, never the project value.
-	if got := GetUserYamlConfig("metrics.notice_shown"); got != "" {
-		t.Errorf("GetUserYamlConfig(metrics.notice_shown) = %q, want empty (unset in user-global)", got)
+	if got := GetUserYamlConfig("node_id_missing"); got != "" {
+		t.Errorf("GetUserYamlConfig(node_id_missing) = %q, want empty (unset in user-global)", got)
 	}
 }
 
-// TestMetricsNoticeShownResolvesUserGlobalOnly guards the first-run disclosure
-// finding on PR #4419: metrics.notice_shown must be resolved from the user-global
-// config only, so a repository cannot set it true to suppress the one-time
-// disclosure for a user who has never seen it, and a repository setting it false
-// cannot force the notice to re-appear once the user has dismissed it globally.
-func TestMetricsNoticeShownResolvesUserGlobalOnly(t *testing.T) {
-	writeUserNotice := func(t *testing.T, home string, body string) {
-		t.Helper()
-		userCfgDir := filepath.Join(home, ".config", "bd")
-		if err := os.MkdirAll(userCfgDir, 0o755); err != nil {
-			t.Fatalf("mkdir user config dir: %v", err)
-		}
-		if err := os.WriteFile(filepath.Join(userCfgDir, "config.yaml"), []byte(body), 0o600); err != nil {
-			t.Fatalf("write user config: %v", err)
-		}
-	}
-	writeProjectNotice := func(t *testing.T, value string) {
-		t.Helper()
-		projectBeadsDir := filepath.Join(t.TempDir(), ".beads")
-		if err := os.MkdirAll(projectBeadsDir, 0o755); err != nil {
-			t.Fatalf("mkdir project .beads: %v", err)
-		}
-		if err := os.WriteFile(filepath.Join(projectBeadsDir, "config.yaml"),
-			[]byte("metrics.notice_shown: "+value+"\n"), 0o644); err != nil {
-			t.Fatalf("write project config: %v", err)
-		}
-		t.Setenv("BEADS_DIR", projectBeadsDir)
-	}
-
-	t.Run("project true cannot suppress an unseen notice", func(t *testing.T) {
-		home := t.TempDir()
-		t.Setenv("HOME", home)
-		t.Setenv("USERPROFILE", home)
-		t.Setenv("XDG_CONFIG_HOME", filepath.Join(home, ".config"))
-		// User-global has no notice marker; the repository tries to claim it was
-		// already shown via the highest-precedence project config.
-		writeProjectNotice(t, "true")
-
-		ResetForTesting()
-		t.Cleanup(ResetForTesting)
-		if err := Initialize(); err != nil {
-			t.Fatalf("Initialize: %v", err)
-		}
-		if !GetBool("metrics.notice_shown") {
-			t.Fatalf("precondition: merged metrics.notice_shown should be true (project override)")
-		}
-		if MetricsNoticeShownByUserConfig() {
-			t.Errorf("MetricsNoticeShownByUserConfig() = true; a project must not suppress an unseen disclosure")
-		}
-	})
-
-	t.Run("user-global true is authoritative over project false", func(t *testing.T) {
-		home := t.TempDir()
-		t.Setenv("HOME", home)
-		t.Setenv("USERPROFILE", home)
-		t.Setenv("XDG_CONFIG_HOME", filepath.Join(home, ".config"))
-		writeUserNotice(t, home, "metrics:\n  notice_shown: true\n")
-		writeProjectNotice(t, "false")
-
-		ResetForTesting()
-		t.Cleanup(ResetForTesting)
-		if err := Initialize(); err != nil {
-			t.Fatalf("Initialize: %v", err)
-		}
-		if GetBool("metrics.notice_shown") {
-			t.Fatalf("precondition: merged metrics.notice_shown should be false (project override)")
-		}
-		if !MetricsNoticeShownByUserConfig() {
-			t.Errorf("MetricsNoticeShownByUserConfig() = false; user-global true must win over project false")
-		}
-	})
-}

@@ -128,7 +128,7 @@ func IsYamlOnlyKey(key string) bool {
 	// Check prefix matches for nested keys
 	// NOTE: import.* is exact-match via YamlOnlyKeys, NOT a prefix namespace:
 	// an unlisted import.* key must not be treated as yaml-only.
-	prefixes := []string{"routing.", "sync.", "git.", "directory.", "repos.", "external_projects.", "validation.", "hierarchy.", "ai.", "backup.", "export.", "dolt.", "federation.", "metrics.", "list.", "audit."}
+	prefixes := []string{"routing.", "sync.", "git.", "directory.", "repos.", "external_projects.", "validation.", "hierarchy.", "ai.", "backup.", "export.", "dolt.", "federation.", "list.", "audit."}
 	for _, prefix := range prefixes {
 		if strings.HasPrefix(key, prefix) {
 			return true
@@ -315,7 +315,7 @@ func SetYamlConfigInDir(beadsDir, key, value string) error {
 	return setYamlConfigAtPath(configPath, key, value)
 }
 
-var userGlobalKeyPrefixes = []string{"metrics."}
+var userGlobalKeyPrefixes = []string{}
 
 // userGlobalExactKeys are per-MACHINE settings that must never be written to
 // the project .beads/config.yaml, which is a git-TRACKED file (see
@@ -348,14 +348,12 @@ func IsUserGlobalKey(key string) bool {
 
 // readUserGlobalYamlValue reads a single dotted key from the user-global
 // config.yaml ONLY, never project or BEADS_DIR config. It accepts both the
-// nested form (metrics:\n  disabled: true) and the flat dotted form
-// (metrics.disabled: true). It returns the raw scalar string and whether the
-// key was present.
+// nested form and the flat dotted form. It returns the raw scalar string and
+// whether the key was present.
 //
-// Consent-bearing settings (metrics enablement and endpoint) are resolved
-// through this rather than merged viper so a repository's .beads/config.yaml can
-// never re-enable metrics for a user who opted out, nor redirect where metrics
-// are sent. See MetricsDisabledByUserConfig / UserMetricsEndpoint.
+// User-global settings are resolved through this rather than merged viper so a
+// repository's .beads/config.yaml can never override a user's own global
+// choice.
 func readUserGlobalYamlValue(key string) (string, bool) {
 	configPath, err := UserConfigYamlPath()
 	if err != nil {
@@ -419,57 +417,13 @@ func yamlScalarString(v interface{}) (string, bool) {
 
 // GetUserYamlConfig reads a single dotted key from the user-global config.yaml
 // ONLY, never project/BEADS_DIR config, returning "" if unset. It is the read
-// counterpart of SetUserYamlConfig/UnsetUserYamlConfig and the generic form of
-// the per-key consent helpers below. User-global keys (see IsUserGlobalKey —
-// currently metrics.*) must be read through this so `bd config get` reports the
+// counterpart of SetUserYamlConfig/UnsetUserYamlConfig. User-global keys (see
+// IsUserGlobalKey) must be read through this so `bd config get` reports the
 // value that actually governs runtime behavior, not the merged value a project's
 // .beads/config.yaml could shadow.
 func GetUserYamlConfig(key string) string {
 	raw, _ := readUserGlobalYamlValue(key)
 	return strings.TrimSpace(raw)
-}
-
-// MetricsDisabledByUserConfig reports whether the user-global config.yaml sets
-// metrics.disabled: true. Project/BEADS_DIR config is intentionally ignored so a
-// repository can never re-enable metrics for a user who opted out globally.
-// Absent or unparseable values read as "not disabled" (the default).
-func MetricsDisabledByUserConfig() bool {
-	raw, ok := readUserGlobalYamlValue("metrics.disabled")
-	if !ok {
-		return false
-	}
-	disabled, err := strconv.ParseBool(strings.TrimSpace(raw))
-	if err != nil {
-		return false
-	}
-	return disabled
-}
-
-// UserMetricsEndpoint returns the metrics endpoint configured in the user-global
-// config.yaml, or "" if unset. Project/BEADS_DIR config is intentionally ignored
-// so a repository can never redirect a user's metrics endpoint. Callers fall
-// back to the built-in default when this is empty.
-func UserMetricsEndpoint() string {
-	raw, _ := readUserGlobalYamlValue("metrics.endpoint")
-	return strings.TrimSpace(raw)
-}
-
-// MetricsNoticeShownByUserConfig reports whether the user-global config.yaml
-// records that the first-run metrics disclosure was already shown. Like consent
-// and endpoint, it is resolved from the user-global config ONLY: a repository's
-// .beads/config.yaml must not be able to set metrics.notice_shown: true and
-// suppress the one-time disclosure for a user who has never actually seen it.
-// Absent or unparseable values read as "not shown" (the default).
-func MetricsNoticeShownByUserConfig() bool {
-	raw, ok := readUserGlobalYamlValue("metrics.notice_shown")
-	if !ok {
-		return false
-	}
-	shown, err := strconv.ParseBool(strings.TrimSpace(raw))
-	if err != nil {
-		return false
-	}
-	return shown
 }
 
 func UnsetUserYamlConfig(key string) error {

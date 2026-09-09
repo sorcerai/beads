@@ -12,7 +12,6 @@ import (
 	"github.com/steveyegge/beads/internal/gitlab"
 	"github.com/steveyegge/beads/internal/jira"
 	"github.com/steveyegge/beads/internal/linear"
-	"github.com/steveyegge/beads/internal/metrics"
 	"github.com/steveyegge/beads/internal/notion"
 	"github.com/steveyegge/beads/internal/tracker"
 )
@@ -243,12 +242,6 @@ func outputSyncResult(result *tracker.SyncResult, dryRun bool) {
 // --- ADO implementations ---
 
 func runADOPush(cmd *cobra.Command, args []string) error {
-	evt := metrics.NewCommandEvent("ado-push")
-	defer func() {
-		if c := metrics.Global(); c != nil {
-			c.CloseEventAndAdd(evt)
-		}
-	}()
 
 	if len(args) == 0 {
 		return fmt.Errorf("at least one bead ID is required")
@@ -290,12 +283,6 @@ func runADOPush(cmd *cobra.Command, args []string) error {
 }
 
 func runADOPull(cmd *cobra.Command, args []string) error {
-	evt := metrics.NewCommandEvent("ado-pull")
-	defer func() {
-		if c := metrics.Global(); c != nil {
-			c.CloseEventAndAdd(evt)
-		}
-	}()
 
 	if len(args) == 0 {
 		return fmt.Errorf("at least one bead ID or external reference is required")
@@ -340,12 +327,6 @@ func runADOPull(cmd *cobra.Command, args []string) error {
 // --- Jira implementations ---
 
 func runJiraPush(cmd *cobra.Command, args []string) error {
-	evt := metrics.NewCommandEvent("jira-push")
-	defer func() {
-		if c := metrics.Global(); c != nil {
-			c.CloseEventAndAdd(evt)
-		}
-	}()
 
 	if len(args) == 0 {
 		return HandleError("at least one bead ID is required")
@@ -387,12 +368,6 @@ func runJiraPush(cmd *cobra.Command, args []string) error {
 }
 
 func runJiraPull(cmd *cobra.Command, args []string) error {
-	evt := metrics.NewCommandEvent("jira-pull")
-	defer func() {
-		if c := metrics.Global(); c != nil {
-			c.CloseEventAndAdd(evt)
-		}
-	}()
 
 	if len(args) == 0 {
 		return HandleError("at least one bead ID or external reference is required")
@@ -435,12 +410,6 @@ func runJiraPull(cmd *cobra.Command, args []string) error {
 // --- Linear implementations ---
 
 func runLinearPush(cmd *cobra.Command, args []string) error {
-	evt := metrics.NewCommandEvent("linear-push")
-	defer func() {
-		if c := metrics.Global(); c != nil {
-			c.CloseEventAndAdd(evt)
-		}
-	}()
 
 	if len(args) == 0 {
 		return HandleError("at least one bead ID is required")
@@ -504,12 +473,6 @@ func runLinearPush(cmd *cobra.Command, args []string) error {
 }
 
 func runLinearPull(cmd *cobra.Command, args []string) error {
-	evt := metrics.NewCommandEvent("linear-pull")
-	defer func() {
-		if c := metrics.Global(); c != nil {
-			c.CloseEventAndAdd(evt)
-		}
-	}()
 
 	if len(args) == 0 {
 		return HandleError("at least one bead ID or external reference is required")
@@ -573,12 +536,6 @@ func runLinearPull(cmd *cobra.Command, args []string) error {
 // --- GitHub implementations ---
 
 func runGitHubPush(cmd *cobra.Command, args []string) error {
-	evt := metrics.NewCommandEvent("github-push")
-	defer func() {
-		if c := metrics.Global(); c != nil {
-			c.CloseEventAndAdd(evt)
-		}
-	}()
 
 	if len(args) == 0 {
 		return fmt.Errorf("at least one bead ID is required")
@@ -621,12 +578,6 @@ func runGitHubPush(cmd *cobra.Command, args []string) error {
 }
 
 func runGitHubPull(cmd *cobra.Command, args []string) error {
-	evt := metrics.NewCommandEvent("github-pull")
-	defer func() {
-		if c := metrics.Global(); c != nil {
-			c.CloseEventAndAdd(evt)
-		}
-	}()
 
 	if len(args) == 0 {
 		return fmt.Errorf("at least one bead ID or external reference is required")
@@ -671,12 +622,6 @@ func runGitHubPull(cmd *cobra.Command, args []string) error {
 // --- GitLab implementations ---
 
 func runGitLabPush(cmd *cobra.Command, args []string) error {
-	evt := metrics.NewCommandEvent("gitlab-push")
-	defer func() {
-		if c := metrics.Global(); c != nil {
-			c.CloseEventAndAdd(evt)
-		}
-	}()
 
 	if len(args) == 0 {
 		return fmt.Errorf("at least one bead ID is required")
@@ -774,12 +719,6 @@ func runGitLabPush(cmd *cobra.Command, args []string) error {
 }
 
 func runGitLabPull(cmd *cobra.Command, args []string) error {
-	evt := metrics.NewCommandEvent("gitlab-pull")
-	defer func() {
-		if c := metrics.Global(); c != nil {
-			c.CloseEventAndAdd(evt)
-		}
-	}()
 
 	if len(args) == 0 {
 		return fmt.Errorf("at least one bead ID or external reference is required")
@@ -824,12 +763,6 @@ func runGitLabPull(cmd *cobra.Command, args []string) error {
 // --- Notion implementations ---
 
 func runNotionPush(cmd *cobra.Command, args []string) error {
-	evt := metrics.NewCommandEvent("notion-push")
-	defer func() {
-		if c := metrics.Global(); c != nil {
-			c.CloseEventAndAdd(evt)
-		}
-	}()
 
 	if len(args) == 0 {
 		return fmt.Errorf("at least one bead ID is required")
@@ -878,12 +811,6 @@ func runNotionPush(cmd *cobra.Command, args []string) error {
 }
 
 func runNotionPull(cmd *cobra.Command, args []string) error {
-	evt := metrics.NewCommandEvent("notion-pull")
-	defer func() {
-		if c := metrics.Global(); c != nil {
-			c.CloseEventAndAdd(evt)
-		}
-	}()
 
 	if len(args) == 0 {
 		return fmt.Errorf("at least one bead ID or external reference is required")

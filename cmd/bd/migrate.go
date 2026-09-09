@@ -8,7 +8,6 @@ import (
 	"github.com/spf13/cobra"
 	"github.com/steveyegge/beads/internal/beads"
 	"github.com/steveyegge/beads/internal/configfile"
-	"github.com/steveyegge/beads/internal/metrics"
 	"github.com/steveyegge/beads/internal/storage"
 	"github.com/steveyegge/beads/internal/storage/schema"
 	"github.com/steveyegge/beads/internal/types"
@@ -47,12 +46,6 @@ BD_ALLOW_REMOTE_MIGRATE=1 remains supported for scripted/CI use.
 		if usesProxiedServer() {
 			return HandleErrorRespectJSON("migrate is not supported in proxied-server mode")
 		}
-		evt := metrics.NewCommandEvent("migrate")
-		defer func() {
-			if c := metrics.Global(); c != nil {
-				c.CloseEventAndAdd(evt)
-			}
-		}()
 
 		autoYes, _ := cmd.Flags().GetBool("yes")
 		dryRun, _ := cmd.Flags().GetBool("dry-run")
@@ -788,12 +781,6 @@ Example:
 		if usesProxiedServer() {
 			return HandleErrorRespectJSON("migrate sync is not supported in proxied-server mode")
 		}
-		evt := metrics.NewCommandEvent("migrate-sync")
-		defer func() {
-			if c := metrics.Global(); c != nil {
-				c.CloseEventAndAdd(evt)
-			}
-		}()
 
 		dryRun, _ := cmd.Flags().GetBool("dry-run")
 		if !dryRun {
@@ -823,13 +810,6 @@ Example:
 			return HandleErrorRespectJSON("migrate schema is not supported in proxied-server mode")
 		}
 		CheckReadonly("migrate schema")
-
-		evt := metrics.NewCommandEvent("migrate-schema")
-		defer func() {
-			if c := metrics.Global(); c != nil {
-				c.CloseEventAndAdd(evt)
-			}
-		}()
 
 		return handleSchemaMigrate()
 	},

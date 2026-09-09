@@ -4,7 +4,6 @@ import (
 	"fmt"
 
 	"github.com/spf13/cobra"
-	"github.com/steveyegge/beads/internal/metrics"
 	"github.com/steveyegge/beads/internal/types"
 	"github.com/steveyegge/beads/internal/ui"
 	"github.com/steveyegge/beads/internal/utils"
@@ -62,13 +61,6 @@ func runDuplicate(cmd *cobra.Command, args []string) error {
 		return HandleErrorRespectJSON("duplicate is not supported in proxied-server mode")
 	}
 	CheckReadonly("duplicate")
-
-	evt := metrics.NewCommandEvent("duplicate")
-	defer func() {
-		if c := metrics.Global(); c != nil {
-			c.CloseEventAndAdd(evt)
-		}
-	}()
 
 	ctx := getRootContext()
 	store := getStore()
@@ -132,13 +124,6 @@ func runSupersede(cmd *cobra.Command, args []string) error {
 		return HandleErrorRespectJSON("supersede is not supported in proxied-server mode")
 	}
 	CheckReadonly("supersede")
-
-	evt := metrics.NewCommandEvent("supersede")
-	defer func() {
-		if c := metrics.Global(); c != nil {
-			c.CloseEventAndAdd(evt)
-		}
-	}()
 
 	ctx := getRootContext()
 	store := getStore()

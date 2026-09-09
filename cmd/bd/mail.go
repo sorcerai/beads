@@ -6,8 +6,6 @@ import (
 	"strings"
 
 	"github.com/spf13/cobra"
-
-	"github.com/steveyegge/beads/internal/metrics"
 )
 
 // mailCmd delegates to an external mail provider.
@@ -40,12 +38,6 @@ Examples:
 	SilenceUsage:       true,
 	SilenceErrors:      true,
 	RunE: func(cmd *cobra.Command, args []string) error {
-		evt := metrics.NewCommandEvent("mail")
-		defer func() {
-			if c := metrics.Global(); c != nil {
-				c.CloseEventAndAdd(evt)
-			}
-		}()
 
 		for _, arg := range args {
 			if arg == "--help" || arg == "-h" {

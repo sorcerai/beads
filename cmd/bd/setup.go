@@ -10,7 +10,6 @@ import (
 	"github.com/spf13/cobra"
 	"github.com/steveyegge/beads/cmd/bd/setup"
 	"github.com/steveyegge/beads/internal/beads"
-	"github.com/steveyegge/beads/internal/metrics"
 	"github.com/steveyegge/beads/internal/recipes"
 )
 
@@ -59,12 +58,6 @@ Use 'bd setup <recipe> --remove' to uninstall.`,
 }
 
 func runSetup(cmd *cobra.Command, args []string) error {
-	evt := metrics.NewCommandEvent("setup")
-	defer func() {
-		if c := metrics.Global(); c != nil {
-			c.CloseEventAndAdd(evt)
-		}
-	}()
 
 	if setupList {
 		return listRecipes()

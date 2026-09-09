@@ -11,7 +11,6 @@ import (
 	"github.com/steveyegge/beads/internal/beads"
 	"github.com/steveyegge/beads/internal/config"
 	"github.com/steveyegge/beads/internal/configfile"
-	"github.com/steveyegge/beads/internal/metrics"
 	"github.com/steveyegge/beads/internal/workapi"
 )
 
@@ -45,12 +44,6 @@ Examples:
 	SilenceUsage:  true,
 	SilenceErrors: true,
 	RunE: func(cmd *cobra.Command, _ []string) error {
-		evt := metrics.NewCommandEvent("config-show")
-		defer func() {
-			if c := metrics.Global(); c != nil {
-				c.CloseEventAndAdd(evt)
-			}
-		}()
 
 		sourceFilter, _ := cmd.Flags().GetString("source")
 
@@ -166,12 +159,12 @@ func collectViperEntries() []configEntry {
 			}
 		}
 
-		// User-global keys (metrics.*) are honored at runtime from the user-global
+		// User-global keys are honored at runtime from the user-global
 		// config.yaml only, never merged project config; report that authoritative
 		// value AND its user-global source so the listing matches what bd actually
 		// uses (and `bd config get`), not a project value/source that has no
 		// runtime effect. The viper source label alone is ambiguous: a project
-		// .beads/config.yaml that also sets a metrics key makes GetValueSource
+		// .beads/config.yaml that also sets the key makes GetValueSource
 		// report SourceConfigFile ("config.yaml"), which would attribute the
 		// displayed user-global value to the project file the runtime ignores.
 		if config.IsUserGlobalKey(key) {

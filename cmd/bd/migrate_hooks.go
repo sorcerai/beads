@@ -8,7 +8,6 @@ import (
 
 	"github.com/spf13/cobra"
 	"github.com/steveyegge/beads/cmd/bd/doctor"
-	"github.com/steveyegge/beads/internal/metrics"
 	"golang.org/x/term"
 )
 
@@ -30,12 +29,6 @@ Examples:
 	SilenceUsage:  true,
 	SilenceErrors: true,
 	RunE: func(cmd *cobra.Command, args []string) error {
-		evt := metrics.NewCommandEvent("migrate-hooks")
-		defer func() {
-			if c := metrics.Global(); c != nil {
-				c.CloseEventAndAdd(evt)
-			}
-		}()
 
 		requestedDryRun, _ := cmd.Flags().GetBool("dry-run")
 		requestedApply, _ := cmd.Flags().GetBool("apply")

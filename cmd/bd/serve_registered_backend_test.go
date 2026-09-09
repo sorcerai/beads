@@ -321,8 +321,6 @@ func startServeInProcess(t *testing.T, dir, beadsDir string) (string, <-chan err
 	t.Setenv("BEADS_NO_DAEMON", "1")
 	t.Setenv("BEADS_SKIP_IDENTITY_CHECK", "1")
 	t.Setenv("BD_NON_INTERACTIVE", "1")
-	t.Setenv("BD_DISABLE_METRICS", "1")
-	t.Setenv("BD_DISABLE_EVENT_FLUSH", "1")
 
 	// GetRepoContext caches per process — the context AND the error. A prior
 	// in-process test that resolved (or failed to resolve) a workspace leaves

@@ -7,19 +7,12 @@ import (
 	"time"
 
 	"github.com/steveyegge/beads/internal/beads"
-	"github.com/steveyegge/beads/internal/metrics"
 	"github.com/steveyegge/beads/internal/storage/domain"
 	"github.com/steveyegge/beads/internal/storage/uow"
 	"github.com/steveyegge/beads/internal/ui"
 )
 
 func runPingProxiedServer(ctx context.Context) error {
-	evt := metrics.NewCommandEvent("ping")
-	defer func() {
-		if c := metrics.Global(); c != nil {
-			c.CloseEventAndAdd(evt)
-		}
-	}()
 
 	start := time.Now()
 

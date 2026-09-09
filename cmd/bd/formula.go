@@ -12,7 +12,6 @@ import (
 	"github.com/BurntSushi/toml"
 	"github.com/spf13/cobra"
 	"github.com/steveyegge/beads/internal/formula"
-	"github.com/steveyegge/beads/internal/metrics"
 	"github.com/steveyegge/beads/internal/ui"
 )
 
@@ -108,12 +107,6 @@ type FormulaListEntry struct {
 }
 
 func runFormulaList(cmd *cobra.Command, args []string) error {
-	evt := metrics.NewCommandEvent("formula-list")
-	defer func() {
-		if c := metrics.Global(); c != nil {
-			c.CloseEventAndAdd(evt)
-		}
-	}()
 
 	typeFilter, _ := cmd.Flags().GetString("type")
 
@@ -196,12 +189,6 @@ func runFormulaList(cmd *cobra.Command, args []string) error {
 }
 
 func runFormulaShow(cmd *cobra.Command, args []string) error {
-	evt := metrics.NewCommandEvent("formula-show")
-	defer func() {
-		if c := metrics.Global(); c != nil {
-			c.CloseEventAndAdd(evt)
-		}
-	}()
 
 	name := args[0]
 
@@ -513,12 +500,6 @@ var (
 )
 
 func runFormulaConvert(cmd *cobra.Command, args []string) error {
-	evt := metrics.NewCommandEvent("formula-convert")
-	defer func() {
-		if c := metrics.Global(); c != nil {
-			c.CloseEventAndAdd(evt)
-		}
-	}()
 
 	if convertAll {
 		convertAllFormulas()

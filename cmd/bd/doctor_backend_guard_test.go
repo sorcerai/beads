@@ -32,7 +32,6 @@ func TestDoctorRejectsCorruptMetadataBeforeSharedServerChecks(t *testing.T) {
 		"BEADS_DOLT_SERVER_PORT=1",
 		"BEADS_DOLT_AUTO_START=0",
 		"BEADS_NO_DAEMON=1",
-		"BD_DISABLE_METRICS=1",
 	)
 	out, err := cmd.CombinedOutput()
 	if err == nil {

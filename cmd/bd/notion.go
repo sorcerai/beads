@@ -10,7 +10,6 @@ import (
 
 	"github.com/spf13/cobra"
 	"github.com/steveyegge/beads/internal/config"
-	"github.com/steveyegge/beads/internal/metrics"
 	"github.com/steveyegge/beads/internal/notion"
 	"github.com/steveyegge/beads/internal/storage"
 	"github.com/steveyegge/beads/internal/tracker"
@@ -235,12 +234,6 @@ func runNotionStatus(cmd *cobra.Command, _ []string) error {
 	if usesProxiedServer() {
 		return HandleErrorRespectJSON("notion status is not supported in proxied-server mode")
 	}
-	evt := metrics.NewCommandEvent("notion-status")
-	defer func() {
-		if c := metrics.Global(); c != nil {
-			c.CloseEventAndAdd(evt)
-		}
-	}()
 
 	cfg := getNotionConfig()
 	auth, err := resolveNotionAuth(cmd.Context())
@@ -310,13 +303,6 @@ func runNotionInit(cmd *cobra.Command, _ []string) error {
 	}
 	CheckReadonly("notion init")
 
-	evt := metrics.NewCommandEvent("notion-init")
-	defer func() {
-		if c := metrics.Global(); c != nil {
-			c.CloseEventAndAdd(evt)
-		}
-	}()
-
 	if err := ensureStoreActive(); err != nil {
 		return HandleError("database not available: %v", err)
 	}
@@ -348,13 +334,6 @@ func runNotionConnect(cmd *cobra.Command, _ []string) error {
 		return HandleErrorRespectJSON("notion connect is not supported in proxied-server mode")
 	}
 	CheckReadonly("notion connect")
-
-	evt := metrics.NewCommandEvent("notion-connect")
-	defer func() {
-		if c := metrics.Global(); c != nil {
-			c.CloseEventAndAdd(evt)
-		}
-	}()
 
 	if err := ensureStoreActive(); err != nil {
 		return HandleError("database not available: %v", err)
@@ -421,12 +400,6 @@ func runNotionSync(cmd *cobra.Command, _ []string) error {
 	if usesProxiedServer() {
 		return HandleErrorRespectJSON("notion sync is not supported in proxied-server mode")
 	}
-	evt := metrics.NewCommandEvent("notion-sync")
-	defer func() {
-		if c := metrics.Global(); c != nil {
-			c.CloseEventAndAdd(evt)
-		}
-	}()
 
 	cfg := getNotionConfig()
 	auth, err := resolveNotionAuth(cmd.Context())

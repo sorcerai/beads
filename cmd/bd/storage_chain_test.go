@@ -2,6 +2,8 @@ package main
 
 import (
 	"context"
+	"os"
+	"strings"
 	"testing"
 
 	"github.com/steveyegge/beads/internal/hooks"
@@ -22,10 +24,18 @@ func (s *stubChainStore) ActiveDatabaseSize(context.Context) (int64, error) {
 	return s.databaseSize, nil
 }
 
-// clearTelemetryEnv is defined once for the package, in
-// command_telemetry_test.go; it unsets every BD_OTEL_* / OTEL_* variable
-// telemetry.Enabled or the SDK looks at, so each test starts from a known
-// baseline.
+// clearTelemetryEnv unsets every BD_OTEL_* / OTEL_* variable the telemetry
+// package or the OTel SDK looks at, so each test starts from a known baseline.
+func clearTelemetryEnv(t *testing.T) {
+	t.Helper()
+	for _, e := range os.Environ() {
+		k, _, _ := strings.Cut(e, "=")
+		if strings.HasPrefix(k, "BD_OTEL_") || strings.HasPrefix(k, "OTEL_") {
+			t.Setenv(k, "")
+			_ = os.Unsetenv(k)
+		}
+	}
+}
 
 func TestWireStorageDecorators_NilStorePassesThrough(t *testing.T) {
 	if got := wireStorageDecorators(nil, hooks.NewRunner("/nonexistent"), false); got != nil {

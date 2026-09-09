@@ -4,7 +4,6 @@ import (
 	"fmt"
 
 	"github.com/spf13/cobra"
-	"github.com/steveyegge/beads/internal/metrics"
 	"github.com/steveyegge/beads/internal/storage"
 )
 
@@ -34,13 +33,6 @@ Examples:
 	SilenceErrors: true,
 	RunE: func(_ *cobra.Command, _ []string) error {
 		CheckReadonly("recompute-blocked")
-
-		evt := metrics.NewCommandEvent("recompute-blocked")
-		defer func() {
-			if c := metrics.Global(); c != nil {
-				c.CloseEventAndAdd(evt)
-			}
-		}()
 
 		ctx := rootCtx
 

@@ -4,7 +4,6 @@ import (
 	"fmt"
 
 	"github.com/spf13/cobra"
-	"github.com/steveyegge/beads/internal/metrics"
 	"github.com/steveyegge/beads/internal/storage"
 	"github.com/steveyegge/beads/internal/ui"
 )
@@ -31,12 +30,6 @@ Examples:
 		if usesProxiedServer() {
 			return HandleErrorRespectJSON("diff is not supported in proxied-server mode")
 		}
-		evt := metrics.NewCommandEvent("diff")
-		defer func() {
-			if c := metrics.Global(); c != nil {
-				c.CloseEventAndAdd(evt)
-			}
-		}()
 
 		ctx := rootCtx
 		fromRef := args[0]

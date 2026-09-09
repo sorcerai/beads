@@ -8,7 +8,6 @@ import (
 
 	"github.com/spf13/cobra"
 	"github.com/steveyegge/beads/internal/audit"
-	"github.com/steveyegge/beads/internal/metrics"
 )
 
 var (
@@ -49,12 +48,6 @@ var auditRecordCmd = &cobra.Command{
 	SilenceUsage:  true,
 	SilenceErrors: true,
 	RunE: func(cmd *cobra.Command, _ []string) error {
-		evt := metrics.NewCommandEvent("audit-record")
-		defer func() {
-			if c := metrics.Global(); c != nil {
-				c.CloseEventAndAdd(evt)
-			}
-		}()
 
 		var e audit.Entry
 
@@ -124,12 +117,6 @@ var auditLabelCmd = &cobra.Command{
 	SilenceUsage:  true,
 	SilenceErrors: true,
 	RunE: func(_ *cobra.Command, args []string) error {
-		evt := metrics.NewCommandEvent("audit-label")
-		defer func() {
-			if c := metrics.Global(); c != nil {
-				c.CloseEventAndAdd(evt)
-			}
-		}()
 
 		parentID := args[0]
 		if auditLabelValue == "" {

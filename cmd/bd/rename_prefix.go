@@ -13,7 +13,6 @@ import (
 	"strings"
 
 	"github.com/spf13/cobra"
-	"github.com/steveyegge/beads/internal/metrics"
 	"github.com/steveyegge/beads/internal/storage"
 	"github.com/steveyegge/beads/internal/types"
 	"github.com/steveyegge/beads/internal/ui"
@@ -57,12 +56,6 @@ NOTE: This is a rare operation. Most users never need this command.`,
 		if usesProxiedServer() {
 			return HandleErrorRespectJSON("rename-prefix is not supported in proxied-server mode")
 		}
-		evt := metrics.NewCommandEvent("rename-prefix")
-		defer func() {
-			if c := metrics.Global(); c != nil {
-				c.CloseEventAndAdd(evt)
-			}
-		}()
 
 		newPrefix := args[0]
 		dryRun, _ := cmd.Flags().GetBool("dry-run")

@@ -8,7 +8,6 @@ import (
 
 	"github.com/spf13/cobra"
 	"github.com/steveyegge/beads/internal/formula"
-	"github.com/steveyegge/beads/internal/metrics"
 	"github.com/steveyegge/beads/internal/storage"
 	"github.com/steveyegge/beads/internal/types"
 	"github.com/steveyegge/beads/internal/ui"
@@ -86,13 +85,6 @@ type BondResult struct {
 
 func runMolBond(cmd *cobra.Command, args []string) error {
 	CheckReadonly("mol bond")
-
-	evt := metrics.NewCommandEvent("mol-bond")
-	defer func() {
-		if c := metrics.Global(); c != nil {
-			c.CloseEventAndAdd(evt)
-		}
-	}()
 
 	in, err := gatherMolBondInput(cmd, args)
 	if err != nil {

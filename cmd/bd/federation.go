@@ -8,7 +8,6 @@ import (
 	"strings"
 
 	"github.com/spf13/cobra"
-	"github.com/steveyegge/beads/internal/metrics"
 	"github.com/steveyegge/beads/internal/storage"
 	"github.com/steveyegge/beads/internal/ui"
 	"golang.org/x/term"
@@ -151,12 +150,6 @@ func runFederationSync(cmd *cobra.Command, args []string) error {
 	if usesProxiedServer() {
 		return HandleErrorRespectJSON("federation sync is not supported in proxied-server mode")
 	}
-	evt := metrics.NewCommandEvent("federation-sync")
-	defer func() {
-		if c := metrics.Global(); c != nil {
-			c.CloseEventAndAdd(evt)
-		}
-	}()
 
 	ctx := rootCtx
 
@@ -249,12 +242,6 @@ func runFederationStatus(cmd *cobra.Command, args []string) error {
 	if usesProxiedServer() {
 		return HandleErrorRespectJSON("federation status is not supported in proxied-server mode")
 	}
-	evt := metrics.NewCommandEvent("federation-status")
-	defer func() {
-		if c := metrics.Global(); c != nil {
-			c.CloseEventAndAdd(evt)
-		}
-	}()
 
 	ctx := rootCtx
 
@@ -372,12 +359,6 @@ func runFederationAddPeer(cmd *cobra.Command, args []string) error {
 	if usesProxiedServer() {
 		return HandleErrorRespectJSON("federation add-peer is not supported in proxied-server mode")
 	}
-	evt := metrics.NewCommandEvent("federation-add-peer")
-	defer func() {
-		if c := metrics.Global(); c != nil {
-			c.CloseEventAndAdd(evt)
-		}
-	}()
 
 	ctx := rootCtx
 
@@ -443,12 +424,6 @@ func runFederationRemovePeer(cmd *cobra.Command, args []string) error {
 	if usesProxiedServer() {
 		return HandleErrorRespectJSON("federation remove-peer is not supported in proxied-server mode")
 	}
-	evt := metrics.NewCommandEvent("federation-remove-peer")
-	defer func() {
-		if c := metrics.Global(); c != nil {
-			c.CloseEventAndAdd(evt)
-		}
-	}()
 
 	ctx := rootCtx
 
@@ -472,12 +447,6 @@ func runFederationListPeers(cmd *cobra.Command, args []string) error {
 	if usesProxiedServer() {
 		return HandleErrorRespectJSON("federation list-peers is not supported in proxied-server mode")
 	}
-	evt := metrics.NewCommandEvent("federation-list-peers")
-	defer func() {
-		if c := metrics.Global(); c != nil {
-			c.CloseEventAndAdd(evt)
-		}
-	}()
 
 	ctx := rootCtx
 

@@ -7,7 +7,6 @@ import (
 	"regexp"
 
 	"github.com/spf13/cobra"
-	"github.com/steveyegge/beads/internal/metrics"
 	"github.com/steveyegge/beads/internal/storage"
 	"github.com/steveyegge/beads/internal/types"
 	"github.com/steveyegge/beads/internal/ui"
@@ -43,12 +42,6 @@ func runRename(cmd *cobra.Command, args []string) error {
 	if usesProxiedServer() {
 		return HandleErrorRespectJSON("rename is not supported in proxied-server mode")
 	}
-	evt := metrics.NewCommandEvent("rename")
-	defer func() {
-		if c := metrics.Global(); c != nil {
-			c.CloseEventAndAdd(evt)
-		}
-	}()
 
 	oldID := args[0]
 	newID := args[1]
