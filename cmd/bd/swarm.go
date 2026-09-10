@@ -9,7 +9,6 @@ import (
 	"strings"
 
 	"github.com/spf13/cobra"
-	"github.com/steveyegge/beads/internal/metrics"
 	"github.com/steveyegge/beads/internal/storage"
 	"github.com/steveyegge/beads/internal/types"
 	"github.com/steveyegge/beads/internal/ui"
@@ -160,12 +159,6 @@ Examples:
 		if usesProxiedServer() {
 			return runSwarmValidateProxiedServer(cmd, rootCtx, args)
 		}
-		evt := metrics.NewCommandEvent("swarm-validate")
-		defer func() {
-			if c := metrics.Global(); c != nil {
-				c.CloseEventAndAdd(evt)
-			}
-		}()
 
 		ctx := rootCtx
 		verbose, _ := cmd.Flags().GetBool("verbose")
@@ -667,12 +660,6 @@ Examples:
 		if usesProxiedServer() {
 			return runSwarmStatusProxiedServer(cmd, rootCtx, args)
 		}
-		evt := metrics.NewCommandEvent("swarm-status")
-		defer func() {
-			if c := metrics.Global(); c != nil {
-				c.CloseEventAndAdd(evt)
-			}
-		}()
 
 		ctx := rootCtx
 
@@ -956,13 +943,6 @@ Examples:
 		}
 		CheckReadonly("swarm create")
 
-		evt := metrics.NewCommandEvent("swarm-create")
-		defer func() {
-			if c := metrics.Global(); c != nil {
-				c.CloseEventAndAdd(evt)
-			}
-		}()
-
 		ctx := rootCtx
 		coordinator, _ := cmd.Flags().GetString("coordinator")
 		force, _ := cmd.Flags().GetBool("force")
@@ -1139,12 +1119,6 @@ Examples:
 		if usesProxiedServer() {
 			return HandleErrorRespectJSON("swarm list is not supported in proxied-server mode")
 		}
-		evt := metrics.NewCommandEvent("swarm-list")
-		defer func() {
-			if c := metrics.Global(); c != nil {
-				c.CloseEventAndAdd(evt)
-			}
-		}()
 
 		ctx := rootCtx
 

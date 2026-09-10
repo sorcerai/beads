@@ -100,7 +100,7 @@ func resolveAndProbeDolt(ctx context.Context, errPrefix string, quiet bool) (dol
 	}
 	// Gated on both quietFlag and jsonOutput, matching this package's
 	// convention of keeping JSON-mode stdout/stderr free of advisory chatter
-	// (see e.g. tips.go, metrics.go). WarnDue adds the cross-process gate:
+	// (see e.g. tips.go). WarnDue adds the cross-process gate:
 	// the advisory repeats at most once per day (per the probe cache's
 	// stamp), not on every bd invocation.
 	if res.Warning != nil && !quiet && !jsonOutput && res.WarnDue {

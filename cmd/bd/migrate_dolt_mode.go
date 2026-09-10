@@ -13,7 +13,6 @@ import (
 	"github.com/steveyegge/beads/internal/configfile"
 	"github.com/steveyegge/beads/internal/doltserver"
 	"github.com/steveyegge/beads/internal/lockfile"
-	"github.com/steveyegge/beads/internal/metrics"
 	"github.com/steveyegge/beads/internal/storage/dbproxy/proxy"
 	"github.com/steveyegge/beads/internal/storage/dbproxy/server"
 	"github.com/steveyegge/beads/internal/storage/dbproxy/util"
@@ -24,12 +23,6 @@ const migrateLockFileName = "migrate.lock"
 
 func migrateToProxiedRunE(metricName, checkName string, shared bool) func(*cobra.Command, []string) error {
 	return func(cmd *cobra.Command, _ []string) error {
-		evt := metrics.NewCommandEvent(metricName)
-		defer func() {
-			if c := metrics.Global(); c != nil {
-				c.CloseEventAndAdd(evt)
-			}
-		}()
 
 		dryRun, _ := cmd.Flags().GetBool("dry-run")
 		if !dryRun {
@@ -46,12 +39,6 @@ func migrateToProxiedRunE(metricName, checkName string, shared bool) func(*cobra
 
 func migrateFromProxiedRunE(metricName, checkName string, shared bool) func(*cobra.Command, []string) error {
 	return func(cmd *cobra.Command, _ []string) error {
-		evt := metrics.NewCommandEvent(metricName)
-		defer func() {
-			if c := metrics.Global(); c != nil {
-				c.CloseEventAndAdd(evt)
-			}
-		}()
 
 		dryRun, _ := cmd.Flags().GetBool("dry-run")
 		if !dryRun {

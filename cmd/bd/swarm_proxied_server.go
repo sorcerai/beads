@@ -6,7 +6,6 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"github.com/steveyegge/beads/internal/metrics"
 	"github.com/steveyegge/beads/internal/storage/uow"
 	"github.com/steveyegge/beads/internal/types"
 	"github.com/steveyegge/beads/internal/utils"
@@ -28,12 +27,6 @@ import (
 
 // runSwarmValidateProxiedServer ports `bd swarm validate` to proxied-server mode.
 func runSwarmValidateProxiedServer(cmd *cobra.Command, ctx context.Context, args []string) error {
-	evt := metrics.NewCommandEvent("swarm-validate")
-	defer func() {
-		if c := metrics.Global(); c != nil {
-			c.CloseEventAndAdd(evt)
-		}
-	}()
 
 	verbose, _ := cmd.Flags().GetBool("verbose")
 
@@ -97,12 +90,6 @@ func runSwarmValidateProxiedServer(cmd *cobra.Command, ctx context.Context, args
 
 // runSwarmStatusProxiedServer ports `bd swarm status` to proxied-server mode.
 func runSwarmStatusProxiedServer(_ *cobra.Command, ctx context.Context, args []string) error {
-	evt := metrics.NewCommandEvent("swarm-status")
-	defer func() {
-		if c := metrics.Global(); c != nil {
-			c.CloseEventAndAdd(evt)
-		}
-	}()
 
 	if uowProvider == nil {
 		return HandleErrorRespectJSON("proxied-server UOW provider not initialized")

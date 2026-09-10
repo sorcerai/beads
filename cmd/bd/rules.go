@@ -11,8 +11,6 @@ import (
 	"unicode"
 
 	"github.com/spf13/cobra"
-
-	"github.com/steveyegge/beads/internal/metrics"
 )
 
 // --- Types ---
@@ -668,12 +666,6 @@ func init() {
 }
 
 func runRulesAudit(cmd *cobra.Command, args []string) error {
-	evt := metrics.NewCommandEvent("rules-audit")
-	defer func() {
-		if c := metrics.Global(); c != nil {
-			c.CloseEventAndAdd(evt)
-		}
-	}()
 
 	rulesPath, _ := cmd.Flags().GetString("path")
 	threshold, _ := cmd.Flags().GetFloat64("threshold")
@@ -739,13 +731,6 @@ func runRulesAudit(cmd *cobra.Command, args []string) error {
 
 func runRulesCompact(cmd *cobra.Command, args []string) error {
 	CheckReadonly("rules compact")
-
-	evt := metrics.NewCommandEvent("rules-compact")
-	defer func() {
-		if c := metrics.Global(); c != nil {
-			c.CloseEventAndAdd(evt)
-		}
-	}()
 
 	rulesPath, _ := cmd.Flags().GetString("path")
 	groupNames, _ := cmd.Flags().GetStringSlice("group")

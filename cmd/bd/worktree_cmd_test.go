@@ -84,8 +84,6 @@ func TestWorktreeCreateRejectsInvalidPathBeforeStoreOpen(t *testing.T) {
 	t.Setenv("BEADS_DOLT_SERVER_DATABASE", "")
 	t.Setenv("BEADS_DOLT_SERVER_PORT", "")
 	t.Setenv("BEADS_DOLT_AUTO_START", "0")
-	t.Setenv("BD_DISABLE_METRICS", "1")
-	t.Setenv("BD_DISABLE_EVENT_FLUSH", "1")
 
 	config.ResetForTesting()
 	t.Cleanup(config.ResetForTesting)

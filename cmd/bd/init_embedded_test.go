@@ -80,8 +80,6 @@ func bdEnv(dir string) []string {
 		"XDG_CACHE_HOME="+filepath.Join(dir, "cache"),
 		"BEADS_DOLT_AUTO_START=0",
 		"BEADS_NO_DAEMON=1",
-		"BD_DISABLE_METRICS=1",
-		"BD_DISABLE_EVENT_FLUSH=1",
 	)
 }
 

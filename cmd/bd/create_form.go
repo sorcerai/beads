@@ -10,7 +10,6 @@ import (
 
 	"charm.land/huh/v2"
 	"github.com/spf13/cobra"
-	"github.com/steveyegge/beads/internal/metrics"
 	"github.com/steveyegge/beads/internal/storage"
 	"github.com/steveyegge/beads/internal/storage/domain"
 	"github.com/steveyegge/beads/internal/types"
@@ -235,13 +234,6 @@ The form uses keyboard navigation:
 			return HandleErrorRespectJSON("create-form is not supported in proxied-server mode")
 		}
 		CheckReadonly("create-form")
-
-		evt := metrics.NewCommandEvent("create-form")
-		defer func() {
-			if c := metrics.Global(); c != nil {
-				c.CloseEventAndAdd(evt)
-			}
-		}()
 
 		return runCreateForm(cmd)
 	},

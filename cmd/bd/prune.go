@@ -3,7 +3,6 @@ package main
 import (
 	"github.com/spf13/cobra"
 
-	"github.com/steveyegge/beads/internal/metrics"
 	"github.com/steveyegge/beads/issueops"
 )
 
@@ -45,12 +44,6 @@ EXAMPLES:
 	SilenceUsage:  true,
 	SilenceErrors: true,
 	RunE: func(cmd *cobra.Command, _ []string) error {
-		evt := metrics.NewCommandEvent("prune")
-		defer func() {
-			if c := metrics.Global(); c != nil {
-				c.CloseEventAndAdd(evt)
-			}
-		}()
 
 		ignoreRefs, _ := cmd.Flags().GetBool("ignore-references")
 		return runPurgeOrPrune(cmd, purgeScope{

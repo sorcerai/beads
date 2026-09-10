@@ -74,7 +74,6 @@ This reference covers all 108 live top-level `bd` commands. Regenerate it with:
 - [`bd mail`](/cli-reference/mail)
 - [`bd memories`](/cli-reference/memories)
 - [`bd merge-slot`](/cli-reference/merge-slot)
-- [`bd metrics`](/cli-reference/metrics)
 - [`bd migrate`](/cli-reference/migrate)
 - [`bd mol`](/cli-reference/mol)
 - [`bd note`](/cli-reference/note)

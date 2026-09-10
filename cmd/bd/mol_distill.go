@@ -10,7 +10,6 @@ import (
 
 	"github.com/spf13/cobra"
 	"github.com/steveyegge/beads/internal/formula"
-	"github.com/steveyegge/beads/internal/metrics"
 	"github.com/steveyegge/beads/internal/ui"
 	"github.com/steveyegge/beads/internal/utils"
 )
@@ -122,12 +121,6 @@ func gatherMolDistillInput(cmd *cobra.Command, args []string) molDistillInput {
 }
 
 func runMolDistill(cmd *cobra.Command, args []string) error {
-	evt := metrics.NewCommandEvent("mol-distill")
-	defer func() {
-		if c := metrics.Global(); c != nil {
-			c.CloseEventAndAdd(evt)
-		}
-	}()
 
 	in := gatherMolDistillInput(cmd, args)
 

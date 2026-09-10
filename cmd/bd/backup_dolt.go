@@ -12,7 +12,6 @@ import (
 
 	"github.com/spf13/cobra"
 	"github.com/steveyegge/beads/internal/beads"
-	"github.com/steveyegge/beads/internal/metrics"
 	"github.com/steveyegge/beads/internal/storage"
 	"github.com/steveyegge/beads/internal/storage/versioncontrolops"
 )
@@ -50,12 +49,6 @@ After adding, run 'bd backup sync' to push your data.`,
 		if usesProxiedServer() {
 			return HandleErrorRespectJSON("backup init is not supported in proxied-server mode")
 		}
-		evt := metrics.NewCommandEvent("backup-init")
-		defer func() {
-			if c := metrics.Global(); c != nil {
-				c.CloseEventAndAdd(evt)
-			}
-		}()
 
 		ctx := rootCtx
 		rawPath := args[0]
@@ -128,12 +121,6 @@ Run 'bd backup init <path>' first to configure a destination.`,
 		if usesProxiedServer() {
 			return HandleErrorRespectJSON("backup sync is not supported in proxied-server mode")
 		}
-		evt := metrics.NewCommandEvent("backup-sync")
-		defer func() {
-			if c := metrics.Global(); c != nil {
-				c.CloseEventAndAdd(evt)
-			}
-		}()
 
 		ctx := rootCtx
 		if store == nil {
@@ -410,12 +397,6 @@ backup configuration. The backup data at the destination is not deleted.`,
 		if usesProxiedServer() {
 			return HandleErrorRespectJSON("backup remove is not supported in proxied-server mode")
 		}
-		evt := metrics.NewCommandEvent("backup-remove")
-		defer func() {
-			if c := metrics.Global(); c != nil {
-				c.CloseEventAndAdd(evt)
-			}
-		}()
 
 		ctx := rootCtx
 		if store == nil {

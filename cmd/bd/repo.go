@@ -9,7 +9,6 @@ import (
 
 	"github.com/spf13/cobra"
 	"github.com/steveyegge/beads/internal/config"
-	"github.com/steveyegge/beads/internal/metrics"
 	"github.com/steveyegge/beads/internal/remotecache"
 	"github.com/steveyegge/beads/internal/storage"
 	"github.com/steveyegge/beads/internal/types"
@@ -57,12 +56,6 @@ shared across all clones of this repository.`,
 		if usesProxiedServer() {
 			return HandleErrorRespectJSON("repo add is not supported in proxied-server mode")
 		}
-		evt := metrics.NewCommandEvent("repo-add")
-		defer func() {
-			if c := metrics.Global(); c != nil {
-				c.CloseEventAndAdd(evt)
-			}
-		}()
 
 		repoPath := args[0]
 
@@ -123,12 +116,6 @@ that came from the removed repository.`,
 		if usesProxiedServer() {
 			return HandleErrorRespectJSON("repo remove is not supported in proxied-server mode")
 		}
-		evt := metrics.NewCommandEvent("repo-remove")
-		defer func() {
-			if c := metrics.Global(); c != nil {
-				c.CloseEventAndAdd(evt)
-			}
-		}()
 
 		repoPath := args[0]
 
@@ -195,12 +182,6 @@ repositories configured for hydration.`,
 		if usesProxiedServer() {
 			return HandleErrorRespectJSON("repo list is not supported in proxied-server mode")
 		}
-		evt := metrics.NewCommandEvent("repo-list")
-		defer func() {
-			if c := metrics.Global(); c != nil {
-				c.CloseEventAndAdd(evt)
-			}
-		}()
 
 		configPath, err := config.FindConfigYAMLPath()
 		if err != nil {
@@ -257,12 +238,6 @@ Also triggers Dolt push/pull if a remote is configured.`,
 		if usesProxiedServer() {
 			return HandleErrorRespectJSON("repo sync is not supported in proxied-server mode")
 		}
-		evt := metrics.NewCommandEvent("repo-sync")
-		defer func() {
-			if c := metrics.Global(); c != nil {
-				c.CloseEventAndAdd(evt)
-			}
-		}()
 
 		if err := ensureDirectMode("repo sync requires direct database access"); err != nil {
 			return HandleError("%v", err)

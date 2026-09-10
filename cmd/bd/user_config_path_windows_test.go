@@ -29,8 +29,6 @@ func TestMetricsOffRejectsUnsafeUserRootsInNativeProcess(t *testing.T) {
 		"USERPROFILE="+validHome,
 		"APPDATA="+validAppData,
 		"XDG_CONFIG_HOME="+filepath.Join(validHome, ".config"),
-		"BD_DISABLE_METRICS=1",
-		"BD_DISABLE_EVENT_FLUSH=1",
 		"BEADS_TEST_MODE=1",
 	)
 
@@ -66,8 +64,6 @@ func TestMetricsOffRejectsUnsafeUserRootsInNativeProcess(t *testing.T) {
 			env := append([]string{}, baseEnv...)
 			env = append(env, tt.profileEnv...)
 			env = append(env,
-				"BD_DISABLE_METRICS=1",
-				"BD_DISABLE_EVENT_FLUSH=1",
 				"BEADS_TEST_MODE=1",
 			)
 
@@ -96,7 +92,6 @@ func TestMetricsOffRejectsUnsafeUserRootsInNativeProcess(t *testing.T) {
 		env = append(env,
 			"HOME=/c/Users/hook-user",
 			"APPDATA=relative-appdata",
-			"BD_DISABLE_EVENT_FLUSH=1",
 			"BEADS_TEST_MODE=1",
 		)
 
@@ -127,9 +122,6 @@ func filteredWindowsUserConfigEnv(env []string) []string {
 		"BEADS_DIR":                     true,
 		"BEADS_DB":                      true,
 		"BD_DB":                         true,
-		"BD_DISABLE_METRICS":            true,
-		"BD_DISABLE_EVENT_FLUSH":        true,
-		"DO_NOT_TRACK":                  true,
 		"BEADS_TEST_MODE":               true,
 		"BEADS_TEST_IGNORE_REPO_CONFIG": true,
 	}

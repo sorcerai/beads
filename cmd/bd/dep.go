@@ -12,7 +12,6 @@ import (
 	"strings"
 
 	"github.com/spf13/cobra"
-	"github.com/steveyegge/beads/internal/metrics"
 	"github.com/steveyegge/beads/internal/storage"
 	"github.com/steveyegge/beads/internal/types"
 	"github.com/steveyegge/beads/internal/ui"
@@ -161,12 +160,6 @@ Examples:
 	SilenceUsage:  true,
 	SilenceErrors: true,
 	RunE: func(cmd *cobra.Command, args []string) error {
-		evt := metrics.NewCommandEvent("dep")
-		defer func() {
-			if c := metrics.Global(); c != nil {
-				c.CloseEventAndAdd(evt)
-			}
-		}()
 
 		blocksID, _ := cmd.Flags().GetString("blocks")
 
@@ -324,13 +317,6 @@ Examples:
 	RunE: func(cmd *cobra.Command, args []string) error {
 		CheckReadonly("dep add")
 
-		evt := metrics.NewCommandEvent("dep-add")
-		defer func() {
-			if c := metrics.Global(); c != nil {
-				c.CloseEventAndAdd(evt)
-			}
-		}()
-
 		if usesProxiedServer() {
 			return runDepAddProxiedServer(cmd, rootCtx, args)
 		}
@@ -473,7 +459,7 @@ func shouldWarnImplicitBlocksDefault(dt types.DependencyType, explicit, quiet bo
 	}
 	// --quiet is documented as "Suppress non-essential output (errors only)",
 	// and the other non-error stderr notices in this package (tips.go,
-	// metrics.go, routing_read.go) respect it the same way.
+	// routing_read.go) respect it the same way.
 	if quiet {
 		return false
 	}
@@ -919,12 +905,6 @@ Examples:
 	SilenceUsage:  true,
 	SilenceErrors: true,
 	RunE: func(cmd *cobra.Command, args []string) error {
-		evt := metrics.NewCommandEvent("dep-list")
-		defer func() {
-			if c := metrics.Global(); c != nil {
-				c.CloseEventAndAdd(evt)
-			}
-		}()
 
 		if usesProxiedServer() {
 			return runDepListProxiedServer(cmd, rootCtx, args)
@@ -1097,13 +1077,6 @@ var depRemoveCmd = &cobra.Command{
 	RunE: func(cmd *cobra.Command, args []string) error {
 		CheckReadonly("dep remove")
 
-		evt := metrics.NewCommandEvent("dep-remove")
-		defer func() {
-			if c := metrics.Global(); c != nil {
-				c.CloseEventAndAdd(evt)
-			}
-		}()
-
 		if usesProxiedServer() {
 			return runDepRemoveProxiedServer(cmd, rootCtx, args)
 		}
@@ -1226,12 +1199,6 @@ honored on the --proxied-server route too, which it was not before.`,
 	SilenceUsage:  true,
 	SilenceErrors: true,
 	RunE: func(cmd *cobra.Command, args []string) error {
-		evt := metrics.NewCommandEvent("dep-tree")
-		defer func() {
-			if c := metrics.Global(); c != nil {
-				c.CloseEventAndAdd(evt)
-			}
-		}()
 
 		// Both routes, one body: which accessor answers and how the root id is
 		// resolved are both inside resolveTreeTarget.
@@ -1245,12 +1212,6 @@ var depCyclesCmd = &cobra.Command{
 	SilenceUsage:  true,
 	SilenceErrors: true,
 	RunE: func(cmd *cobra.Command, args []string) error {
-		evt := metrics.NewCommandEvent("dep-cycles")
-		defer func() {
-			if c := metrics.Global(); c != nil {
-				c.CloseEventAndAdd(evt)
-			}
-		}()
 
 		// Both routes, one body: the only difference between them is which
 		// accessor answers, and that is inside openCycleDetector.

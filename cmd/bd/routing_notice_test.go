@@ -109,7 +109,7 @@ func TestPrintContributorRoutingNotice_TextMatchesRule(t *testing.T) {
 
 // TestPrintContributorRoutingNotice_QuietSuppresses verifies --quiet
 // suppresses the routing notice, matching the other non-error stderr
-// notices in this package (tips.go, metrics.go) that respect quietFlag.
+// notices in this package (tips.go) that respect quietFlag.
 func TestPrintContributorRoutingNotice_QuietSuppresses(t *testing.T) {
 	origQuiet := quietFlag
 	t.Cleanup(func() { quietFlag = origQuiet })

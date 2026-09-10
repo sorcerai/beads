@@ -15,7 +15,6 @@ import (
 	"github.com/steveyegge/beads/internal/beads"
 	"github.com/steveyegge/beads/internal/config"
 	"github.com/steveyegge/beads/internal/git"
-	"github.com/steveyegge/beads/internal/metrics"
 	"github.com/steveyegge/beads/internal/remotecache"
 	"github.com/steveyegge/beads/internal/tracker"
 	"github.com/steveyegge/beads/internal/types"
@@ -149,12 +148,6 @@ var configSetCmd = &cobra.Command{
 	SilenceUsage:  true,
 	SilenceErrors: true,
 	RunE: func(_ *cobra.Command, args []string) error {
-		evt := metrics.NewCommandEvent("config-set")
-		defer func() {
-			if c := metrics.Global(); c != nil {
-				c.CloseEventAndAdd(evt)
-			}
-		}()
 
 		key := args[0]
 		value := args[1]
@@ -321,12 +314,6 @@ var configGetCmd = &cobra.Command{
 	SilenceUsage:  true,
 	SilenceErrors: true,
 	RunE: func(cmd *cobra.Command, args []string) error {
-		evt := metrics.NewCommandEvent("config-get")
-		defer func() {
-			if c := metrics.Global(); c != nil {
-				c.CloseEventAndAdd(evt)
-			}
-		}()
 
 		key := args[0]
 
@@ -342,11 +329,11 @@ var configGetCmd = &cobra.Command{
 		}
 
 		if config.IsYamlOnlyKey(key) {
-			// User-global keys (e.g. metrics.*) must be read from the user-global
-			// config.yaml only — the same source the runtime uses for metrics
-			// consent and endpoint. Reading the merged value here would let a
+			// User-global keys must be read from the user-global
+			// config.yaml only — the same source the runtime uses.
+			// Reading the merged value here would let a
 			// project's .beads/config.yaml shadow the effective value and report the
-			// opposite of what `bd metrics` actually honors.
+			// opposite of what is actually honored.
 			if config.IsUserGlobalKey(key) {
 				value := config.GetUserYamlConfig(key)
 				location := config.UserConfigYamlDisplayPath()
@@ -475,12 +462,6 @@ var configListCmd = &cobra.Command{
 	SilenceUsage:  true,
 	SilenceErrors: true,
 	RunE: func(cmd *cobra.Command, args []string) error {
-		evt := metrics.NewCommandEvent("config-list")
-		defer func() {
-			if c := metrics.Global(); c != nil {
-				c.CloseEventAndAdd(evt)
-			}
-		}()
 
 		settings, err := openWorkspaceConfig("config list requires direct database access")
 		if err != nil {
@@ -607,12 +588,6 @@ var configUnsetCmd = &cobra.Command{
 	SilenceUsage:  true,
 	SilenceErrors: true,
 	RunE: func(cmd *cobra.Command, args []string) error {
-		evt := metrics.NewCommandEvent("config-unset")
-		defer func() {
-			if c := metrics.Global(); c != nil {
-				c.CloseEventAndAdd(evt)
-			}
-		}()
 
 		key := args[0]
 
@@ -705,12 +680,6 @@ Checks:
 	SilenceUsage:  true,
 	SilenceErrors: true,
 	RunE: func(cmd *cobra.Command, args []string) error {
-		evt := metrics.NewCommandEvent("config-validate")
-		defer func() {
-			if c := metrics.Global(); c != nil {
-				c.CloseEventAndAdd(evt)
-			}
-		}()
 
 		repoPath, err := resolvedConfigRepoRoot()
 		if err != nil {
@@ -860,12 +829,6 @@ Examples:
 	SilenceUsage:  true,
 	SilenceErrors: true,
 	RunE: func(_ *cobra.Command, args []string) error {
-		evt := metrics.NewCommandEvent("config-set-many")
-		defer func() {
-			if c := metrics.Global(); c != nil {
-				c.CloseEventAndAdd(evt)
-			}
-		}()
 
 		type kvPair struct {
 			key, value string
@@ -1028,7 +991,7 @@ var recognizedConfigPrefixes = []string{
 	"export.", "import.", "dolt.", "custom.",
 	"status.", "types.", "doctor.suppress.", "routing.", "sync.", "git.",
 	"directory.", "repos.", "external_projects.", "validation.",
-	"lint.", "hierarchy.", "ai.", "backup.", "federation.", "metrics.",
+	"lint.", "hierarchy.", "ai.", "backup.", "federation.",
 	"agent.", "claim.", "storage-class.",
 	// codemap.<repo id>.layers is written by `bd codemap --summaries` and is
 	// legitimately set by hand to pin a repository's layer vocabulary.

@@ -14,7 +14,6 @@ import (
 
 	"github.com/spf13/cobra"
 	"github.com/steveyegge/beads/internal/beads"
-	"github.com/steveyegge/beads/internal/metrics"
 	"github.com/steveyegge/beads/internal/types"
 	"github.com/steveyegge/beads/internal/ui"
 )
@@ -76,13 +75,6 @@ func runGateDiscover(cmd *cobra.Command, args []string) error {
 		return HandleErrorRespectJSON("gate discover is not supported in proxied-server mode")
 	}
 	CheckReadonly("gate discover")
-
-	evt := metrics.NewCommandEvent("gate-discover")
-	defer func() {
-		if c := metrics.Global(); c != nil {
-			c.CloseEventAndAdd(evt)
-		}
-	}()
 
 	dryRun, _ := cmd.Flags().GetBool("dry-run")
 	branchFilter, _ := cmd.Flags().GetString("branch")

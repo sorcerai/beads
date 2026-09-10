@@ -172,10 +172,6 @@
       "destination": "/reference/json-schema"
     },
     {
-      "source": "/OBSERVABILITY",
-      "destination": "/reference/observability"
-    },
-    {
       "source": "/TROUBLESHOOTING",
       "destination": "/reference/troubleshooting"
     },
@@ -333,7 +329,6 @@
           "reference/json-schema",
           "reference/events-journal",
           "reference/codemap",
-          "reference/observability",
           "reference/troubleshooting",
           "reference/antivirus",
           "reference/faq",
@@ -400,7 +395,6 @@
               "cli-reference/mail",
               "cli-reference/memories",
               "cli-reference/merge-slot",
-              "cli-reference/metrics",
               "cli-reference/migrate",
               "cli-reference/mol",
               "cli-reference/note",

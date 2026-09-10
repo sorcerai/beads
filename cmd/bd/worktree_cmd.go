@@ -20,7 +20,6 @@ import (
 	"github.com/steveyegge/beads/internal/beads"
 	"github.com/steveyegge/beads/internal/config"
 	"github.com/steveyegge/beads/internal/git"
-	"github.com/steveyegge/beads/internal/metrics"
 	"github.com/steveyegge/beads/internal/ui"
 	"github.com/steveyegge/beads/internal/worktreeremove"
 )
@@ -148,13 +147,6 @@ func repairWorktreeBeadsPermissions(worktreePath string) {
 func runWorktreeCreate(cmd *cobra.Command, args []string) error {
 	CheckReadonly("worktree create")
 
-	evt := metrics.NewCommandEvent("worktree-create")
-	defer func() {
-		if c := metrics.Global(); c != nil {
-			c.CloseEventAndAdd(evt)
-		}
-	}()
-
 	ctx := context.Background()
 
 	name := args[0]
@@ -238,12 +230,6 @@ func runWorktreeCreate(cmd *cobra.Command, args []string) error {
 }
 
 func runWorktreeList(cmd *cobra.Command, args []string) error {
-	evt := metrics.NewCommandEvent("worktree-list")
-	defer func() {
-		if c := metrics.Global(); c != nil {
-			c.CloseEventAndAdd(evt)
-		}
-	}()
 
 	ctx := context.Background()
 
@@ -324,13 +310,6 @@ func runWorktreeRemove(
 ) error {
 	CheckReadonly("worktree remove")
 
-	evt := metrics.NewCommandEvent("worktree-remove")
-	defer func() {
-		if c := metrics.Global(); c != nil {
-			c.CloseEventAndAdd(evt)
-		}
-	}()
-
 	mode := worktreeremove.Normal
 	if options.force.value {
 		mode = worktreeremove.Force
@@ -365,12 +344,6 @@ func (err *worktreeRemovalPartialError) Unwrap() error {
 }
 
 func runWorktreeInfo(cmd *cobra.Command, args []string) error {
-	evt := metrics.NewCommandEvent("worktree-info")
-	defer func() {
-		if c := metrics.Global(); c != nil {
-			c.CloseEventAndAdd(evt)
-		}
-	}()
 
 	ctx := context.Background()
 	cwd, err := os.Getwd()

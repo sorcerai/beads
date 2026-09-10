@@ -10,7 +10,6 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/steveyegge/beads/internal/audit"
-	"github.com/steveyegge/beads/internal/metrics"
 	"github.com/steveyegge/beads/internal/storage"
 	"github.com/steveyegge/beads/internal/storage/domain"
 	"github.com/steveyegge/beads/internal/storage/uow"
@@ -45,13 +44,6 @@ func (proxiedFreshReadGetter) GetIssue(ctx context.Context, id string) (*types.I
 
 func runGateCheckProxiedServer(cmd *cobra.Command, ctx context.Context) error {
 	CheckReadonly("gate check")
-
-	evt := metrics.NewCommandEvent("gate-check")
-	defer func() {
-		if c := metrics.Global(); c != nil {
-			c.CloseEventAndAdd(evt)
-		}
-	}()
 
 	gateTypeFilter, _ := cmd.Flags().GetString("type")
 	dryRun, _ := cmd.Flags().GetBool("dry-run")
@@ -182,12 +174,6 @@ func gateProxiedNotFound(err error) bool {
 }
 
 func runGateShowProxiedServer(_ *cobra.Command, ctx context.Context, args []string) error {
-	evt := metrics.NewCommandEvent("gate-show")
-	defer func() {
-		if c := metrics.Global(); c != nil {
-			c.CloseEventAndAdd(evt)
-		}
-	}()
 
 	gateID := args[0]
 
@@ -227,13 +213,6 @@ type gateAddWaiterApply struct {
 
 func runGateAddWaiterProxiedServer(_ *cobra.Command, ctx context.Context, args []string) error {
 	CheckReadonly("gate add-waiter")
-
-	evt := metrics.NewCommandEvent("gate-add-waiter")
-	defer func() {
-		if c := metrics.Global(); c != nil {
-			c.CloseEventAndAdd(evt)
-		}
-	}()
 
 	gateID := args[0]
 	waiter := args[1]
@@ -296,13 +275,6 @@ type gateCreateApply struct {
 
 func runGateCreateProxiedServer(cmd *cobra.Command, ctx context.Context) error {
 	CheckReadonly("gate create")
-
-	evt := metrics.NewCommandEvent("gate-create")
-	defer func() {
-		if c := metrics.Global(); c != nil {
-			c.CloseEventAndAdd(evt)
-		}
-	}()
 
 	in, err := gatherGateCreateInput(cmd)
 	if err != nil {
@@ -375,13 +347,6 @@ type gateResolveApply struct {
 
 func runGateResolveProxiedServer(cmd *cobra.Command, ctx context.Context, args []string) error {
 	CheckReadonly("gate resolve")
-
-	evt := metrics.NewCommandEvent("gate-resolve")
-	defer func() {
-		if c := metrics.Global(); c != nil {
-			c.CloseEventAndAdd(evt)
-		}
-	}()
 
 	gateID := args[0]
 	reason, _ := cmd.Flags().GetString("reason")

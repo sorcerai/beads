@@ -7,7 +7,6 @@ import (
 	"strconv"
 	"time"
 
-	"github.com/steveyegge/beads/internal/metrics"
 	"github.com/steveyegge/beads/internal/storage/domain"
 	"github.com/steveyegge/beads/internal/storage/uow"
 	"github.com/steveyegge/beads/internal/storage/versioncontrolops"
@@ -15,12 +14,6 @@ import (
 )
 
 func runGCProxiedServer(ctx context.Context) error {
-	evt := metrics.NewCommandEvent("gc")
-	defer func() {
-		if c := metrics.Global(); c != nil {
-			c.CloseEventAndAdd(evt)
-		}
-	}()
 
 	if !gcDryRun {
 		CheckReadonly("gc")

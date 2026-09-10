@@ -11,7 +11,6 @@ import (
 	"github.com/spf13/cobra"
 	"github.com/steveyegge/beads/internal/config"
 	"github.com/steveyegge/beads/internal/github"
-	"github.com/steveyegge/beads/internal/metrics"
 	"github.com/steveyegge/beads/internal/tracker"
 	"github.com/steveyegge/beads/internal/types"
 )
@@ -297,12 +296,6 @@ func runGitHubStatus(cmd *cobra.Command, args []string) error {
 	if usesProxiedServer() {
 		return HandleErrorRespectJSON("github status is not supported in proxied-server mode")
 	}
-	evt := metrics.NewCommandEvent("github-status")
-	defer func() {
-		if c := metrics.Global(); c != nil {
-			c.CloseEventAndAdd(evt)
-		}
-	}()
 
 	config := getGitHubConfig()
 
@@ -332,12 +325,6 @@ func runGitHubRepos(cmd *cobra.Command, args []string) error {
 	if usesProxiedServer() {
 		return HandleErrorRespectJSON("github repos is not supported in proxied-server mode")
 	}
-	evt := metrics.NewCommandEvent("github-repos")
-	defer func() {
-		if c := metrics.Global(); c != nil {
-			c.CloseEventAndAdd(evt)
-		}
-	}()
 
 	config := getGitHubConfig()
 	if config.Token == "" {
@@ -377,12 +364,6 @@ func runGitHubSync(cmd *cobra.Command, args []string) error {
 	if usesProxiedServer() {
 		return HandleErrorRespectJSON("github sync is not supported in proxied-server mode")
 	}
-	evt := metrics.NewCommandEvent("github-sync")
-	defer func() {
-		if c := metrics.Global(); c != nil {
-			c.CloseEventAndAdd(evt)
-		}
-	}()
 
 	config := getGitHubConfig()
 	if err := validateGitHubConfig(config); err != nil {

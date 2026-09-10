@@ -42,8 +42,6 @@ func multiIDUpdateEnv(dir string) []string {
 		"HOME="+dir,
 		"USERPROFILE="+dir,
 		"BD_NON_INTERACTIVE=1",
-		"BD_DISABLE_METRICS=1",
-		"BD_DISABLE_EVENT_FLUSH=1",
 		"BEADS_NO_DAEMON=1",
 		"BEADS_DOLT_AUTO_START=0",
 	)

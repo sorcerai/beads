@@ -7,7 +7,6 @@ import (
 	"time"
 
 	"github.com/spf13/cobra"
-	"github.com/steveyegge/beads/internal/metrics"
 	"github.com/steveyegge/beads/internal/storage"
 	"github.com/steveyegge/beads/internal/types"
 	"github.com/steveyegge/beads/internal/ui"
@@ -131,13 +130,6 @@ func renderSquashResult(result *SquashResult) error {
 
 func runMolSquash(cmd *cobra.Command, args []string) error {
 	CheckReadonly("mol squash")
-
-	evt := metrics.NewCommandEvent("mol-squash")
-	defer func() {
-		if c := metrics.Global(); c != nil {
-			c.CloseEventAndAdd(evt)
-		}
-	}()
 
 	in := gatherMolSquashInput(cmd, args)
 

@@ -439,8 +439,6 @@ github.com/dolthub/dolt/go v0.40.5-0.20260715172757-a6690826d767 h1:RSO4YZ5xuZ2E
 github.com/dolthub/dolt/go v0.40.5-0.20260715172757-a6690826d767/go.mod h1:DXkKITEIpR85Ta86AyjAXYeTULr/tRylidxxy95eraI=
 github.com/dolthub/driver/v2 v2.2.0 h1:Qm9BhvvKNmeTDF6kZdDkdLe62CF1W6GrCA3ZDRx/tlk=
 github.com/dolthub/driver/v2 v2.2.0/go.mod h1:Ngki9vM88/sqin1RKfUt/9Ex8DmoePtHgY7d4+YoolU=
-github.com/dolthub/eventkit v0.0.0-20260611184414-99f5693e696a h1:qNecLF0XIN1BD0RfS/UmlN8ObC3G7bFUJtEyqJeBea4=
-github.com/dolthub/eventkit v0.0.0-20260611184414-99f5693e696a/go.mod h1:eHUkm69YMO2/v7bzwwYCEkd+3Xu7+KUpP7jFWAbpDlM=
 github.com/dolthub/eventsapi_schema v0.0.0-20260310172945-37a9265ade69 h1:JShhbqMw26nKx3pqqu/cFxOpzBkN+4elVhzuUfgDw2k=
 github.com/dolthub/eventsapi_schema v0.0.0-20260310172945-37a9265ade69/go.mod h1:SSLraQS/jGLYFgff3vuZ+JbVUct6vyEeMzjLBqWqoyM=
 github.com/dolthub/flatbuffers/v23 v23.3.3-dh.2 h1:u3PMzfF8RkKd3lB9pZ2bfn0qEG+1Gms9599cr0REMww=

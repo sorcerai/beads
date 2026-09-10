@@ -458,20 +458,11 @@ func primeScenarioNoMemoriesMemoriesOnlyWins(t *testing.T, binPath, workDir stri
 
 // TestPrime_NoTelemetryInIsolatedHome is the regression guard for wy-12x1p:
 // a `bd` subprocess launched by this suite must not write a telemetry queue
-// into its isolated HOME. That queue is the visible half of the real problem —
-// the other half is the DETACHED `bd send-metrics` child metrics.CloseAndFlush
-// spawns alongside it, which outlives its parent and keeps mutating
-// $HOME/.beads/eventsData while Go's t.TempDir cleanup is trying to delete the
-// tree. The result was an intermittent, assertion-free
-// "TempDir RemoveAll cleanup: ... directory not empty" that reddened the whole
-// cmd/bd package (the TestPrime_HookJSON_* tests were the observed victims).
-//
-// The fix is the metrics opt-out set process-wide in testMainInner; this test
-// pins it from the outside, because the failure it prevents is load-dependent
-// and would otherwise creep back unnoticed. The assertion is deterministic:
-// metrics.Init creates the eventsData dir eagerly (and synchronously, in the
-// parent) whenever metrics are enabled, so its absence proves the flusher was
-// never armed.
+// into its isolated HOME. Telemetry has since been removed from bd entirely,
+// so this test now pins that property from the outside: the assertion is
+// deterministic, and any future reintroduction of telemetry would trip it
+// before the old load-dependent "TempDir RemoveAll cleanup: ... directory
+// not empty" flake could come back.
 func primeScenarioNoTelemetryInIsolatedHome(t *testing.T, binPath, workDir string) {
 	home := t.TempDir()
 
@@ -502,8 +493,7 @@ func primeScenarioNoTelemetryInIsolatedHome(t *testing.T, binPath, workDir strin
 			names = append(names, e.Name())
 		}
 		t.Fatalf("telemetry queue %s exists after a suite-launched bd run (stat err: %v, entries: %v); "+
-			"metrics are enabled for this subprocess, so a detached `bd send-metrics` child is racing t.TempDir cleanup — "+
-			"see the metrics opt-out in testMainInner (wy-12x1p)", eventsData, err, names)
+			"telemetry was removed from bd, so nothing should write here", eventsData, err, names)
 	}
 }
 

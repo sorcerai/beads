@@ -15,7 +15,6 @@ import (
 	"github.com/steveyegge/beads/cmd/bd/doctor"
 	"github.com/steveyegge/beads/internal/beads"
 	"github.com/steveyegge/beads/internal/git"
-	"github.com/steveyegge/beads/internal/metrics"
 )
 
 // CheckResult represents the result of a single preflight check.
@@ -70,12 +69,6 @@ func init() {
 }
 
 func runPreflight(cmd *cobra.Command, args []string) error {
-	evt := metrics.NewCommandEvent("preflight")
-	defer func() {
-		if c := metrics.Global(); c != nil {
-			c.CloseEventAndAdd(evt)
-		}
-	}()
 
 	check, _ := cmd.Flags().GetBool("check")
 	fix, _ := cmd.Flags().GetBool("fix")

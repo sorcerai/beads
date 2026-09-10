@@ -28,7 +28,6 @@ import (
 	"github.com/steveyegge/beads/internal/debug"
 	"github.com/steveyegge/beads/internal/doltserver"
 	"github.com/steveyegge/beads/internal/hooks"
-	"github.com/steveyegge/beads/internal/metrics"
 	"github.com/steveyegge/beads/internal/molecules"
 	"github.com/steveyegge/beads/internal/remotecache"
 	"github.com/steveyegge/beads/internal/routing"
@@ -39,11 +38,8 @@ import (
 	"github.com/steveyegge/beads/internal/storage/embeddeddolt"
 	"github.com/steveyegge/beads/internal/storage/schema"
 	"github.com/steveyegge/beads/internal/storage/uow"
-	"github.com/steveyegge/beads/internal/telemetry"
 	"github.com/steveyegge/beads/internal/ui"
 	"github.com/steveyegge/beads/internal/utils"
-	"go.opentelemetry.io/otel/attribute"
-	oteltrace "go.opentelemetry.io/otel/trace"
 )
 
 var (
@@ -122,10 +118,6 @@ var (
 	// commandTipIDsShown tracks which tip IDs were shown in this command (deduped).
 	// This is used for tip-commit message formatting.
 	commandTipIDsShown map[string]struct{}
-
-	// commandSpan is the root OTel span for the current command execution.
-	// All storage and AI spans are nested as children of this span.
-	commandSpan oteltrace.Span
 )
 
 // skipStoreAnnotation, when set to "1" on a command (or any of its ancestors),
@@ -854,11 +846,6 @@ func guardLegacyNoStoreCommand(cmd *cobra.Command, beadsDir string) error {
 	if cmd == schemaCmd && cmd.Parent() != nil && cmd.Parent().Parent() == nil {
 		return nil
 	}
-	for current := cmd; current != nil; current = current.Parent() {
-		if current == metricsCmd {
-			return nil
-		}
-	}
 	switch cmd.Name() {
 	case "__complete", "__completeNoDesc", "bash", "completion", "fish", "help", "powershell", "zsh":
 		return nil
@@ -907,38 +894,6 @@ var rootCmd = &cobra.Command{
 		// backfilled. A bare assignment leaves those commands reading a nil
 		// per-command context and losing Ctrl-C entirely.
 		setRootContext(setupGracefulShutdown())
-
-		// Initialize OTel. Telemetry is opt-in — initTelemetry is a noop
-		// unless BD_OTEL_ENABLED=true or a legacy BD_OTEL_* selector is set.
-		// Must run before any DB access so SQL spans nest under the command
-		// span.
-		initTelemetry(rootCtx, Version)
-
-		// Materialize the user-level metrics config only when metrics are
-		// actually enabled. When metrics are disabled (BD_DISABLE_METRICS or a
-		// user-global metrics.disabled), there is nothing to bootstrap. The
-		// send-metrics flusher is exempt so it never recurses into bootstrap.
-		// This mirrors the resolveMetricsEnabled() gate on the first-run notice
-		// below. (~/.config/bd/ lives outside the repo, so this write is not a
-		// stealth/per-repository trace; stealth init is handled by suppressing
-		// the first-run notice, not by skipping this user-global bootstrap.)
-		if cmd.Name() != metrics.SendMetricsSubcommand && resolveMetricsEnabled() {
-			if err := metrics.EnsureUserConfigDefaults(); err != nil {
-				debug.Logf("warning: ensure user config defaults failed: %v", err)
-			}
-		}
-
-		if _, err := metrics.Init(Version, resolveMetricsEnabled(), resolveMetricsEndpoint()); err != nil {
-			debug.Logf("warning: metrics init failed: %v", err)
-		}
-
-		if cmd.Name() == metrics.SendMetricsSubcommand {
-			return nil
-		}
-
-		// Start root span for this command. rootCtx now carries the span, so
-		// all downstream DB and AI calls become child spans automatically.
-		rootCtx, commandSpan = startCommandSpan(rootCtx, cmd.Name(), Version, os.Args[1:], secretFlagTokens(cmd))
 
 		// Apply verbosity flags early (before any output)
 		debug.SetVerbose(verboseFlag)
@@ -1071,13 +1026,11 @@ var rootCmd = &cobra.Command{
 			"human",
 			"init",
 			"merge",
-			"metrics", // config-only: status/on/off/example never touch the DB
 			"onboard",
 			"powershell",
 			"prime",
 			"quickstart",
 			"serve-board",
-			metrics.SendMetricsSubcommand,
 			"setup",
 			"version",
 			"where",
@@ -1145,13 +1098,6 @@ var rootCmd = &cobra.Command{
 		if commandOptsOutOfStore(cmd) {
 			skipsStoreInit = true
 		}
-
-		// One-time friendly heads-up about anonymous usage metrics. Placed after
-		// the config-derived json/quiet rebind and command classification above so
-		// it can read the real output mode and command identity — that is how it
-		// stays suppressed in JSON/hook/protocol/quiet/stealth contexts and never
-		// corrupts machine-readable output. No-op after the first run.
-		maybeShowMetricsFirstRunNotice(cmd)
 
 		// Commands that skip store initialization still need early config/env
 		// setup before they inspect server mode or per-project Dolt settings.
@@ -1368,10 +1314,6 @@ var rootCmd = &cobra.Command{
 
 		// Set actor for audit trail
 		actor = getActorWithGit()
-		// Attach actor to the command span now that we have it.
-		if commandSpan != nil {
-			commandSpan.SetAttributes(attribute.String("bd.actor", actor))
-		}
 
 		// Check if this is a read-only command (GH#804) or an explicitly
 		// non-mutating preview. Both must open the store read-only: otherwise
@@ -1894,15 +1836,6 @@ var rootCmd = &cobra.Command{
 			}
 		}
 
-		// End the command span and flush OTel data before process exit.
-		if commandSpan != nil {
-			commandSpan.End()
-			commandSpan = nil
-		}
-		shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 5*time.Second)
-		telemetry.Shutdown(shutdownCtx)
-		shutdownCancel()
-
 		if profileFile != nil {
 			pprof.StopCPUProfile()
 			_ = profileFile.Close() // Best effort cleanup
@@ -2163,11 +2096,6 @@ func main() {
 	// the PostRunE call on the clean path makes this one free.
 	waitForCommandHooks()
 
-	// Finalize queued metrics and detach the uploader. Shared with the os.Exit
-	// guards (CheckReadonly and the pre-run gates) so every exit path flushes the
-	// same way instead of only the clean RunE/ExecuteC return.
-	metrics.CloseAndFlush()
-
 	if err != nil {
 		if code, ok := exitCodeFromError(err); ok {
 			os.Exit(code)
@@ -2179,37 +2107,6 @@ func main() {
 	}
 }
 
-func resolveMetricsEnabled() bool {
-	if v, ok := os.LookupEnv(metrics.EnvDisableMetrics); ok {
-		return !envTruthyValue(v)
-	}
-	// DO_NOT_TRACK is a disable-only alias: a truthy value opts out, but a
-	// falsey or empty value (DO_NOT_TRACK=0/false/"") must fall through to the
-	// user's saved preference instead of forcing metrics back on over a saved
-	// `bd metrics off`. Only BD_DISABLE_METRICS (checked first) is a
-	// bidirectional override.
-	if v, ok := os.LookupEnv(metrics.EnvDoNotTrack); ok && envTruthyValue(v) {
-		return false
-	}
-	// Consent is the user's own global choice: resolve it from the user-global
-	// config only, never merged project/BEADS_DIR config. Otherwise a
-	// repository's .beads/config.yaml (highest viper precedence) could re-enable
-	// metrics for a user who ran `bd metrics off`.
-	return !config.MetricsDisabledByUserConfig()
-}
-
-func resolveMetricsEndpoint() string {
-	if v := os.Getenv(metrics.EnvEndpoint); v != "" {
-		return v
-	}
-	// Like enablement, the endpoint is resolved from env + user-global config
-	// only so a repository can never redirect where a user's metrics are sent.
-	if ep := config.UserMetricsEndpoint(); ep != "" {
-		return ep
-	}
-	return metrics.DefaultEndpoint
-}
-
 func envTruthyValue(v string) bool {
 	if v == "" {
 		return false
@@ -2219,163 +2116,4 @@ func envTruthyValue(v string) bool {
 		return false
 	}
 	return true
-}
-
-// secretFlagNames are long flag names whose entire value is an opaque credential
-// that must never reach the bd.args telemetry span. The flag's value is redacted
-// wholesale. Only federation add-peer's --password currently qualifies. Its shorthand (-p) is
-// resolved per command via secretFlagTokens so the same letter bound to
-// --priority/--prefix/--parallel on other commands is never redacted.
-var secretFlagNames = map[string]bool{"password": true}
-
-// secretFlagTokens returns the concrete --long and -short flag tokens that carry a
-// secret value for cmd. Resolving against the running command is what makes the
-// redaction "by flag identity": -p is treated as secret only on the command that
-// actually binds it to a secret flag (federation add-peer), not on the many
-// commands that bind -p to a non-secret option.
-func secretFlagTokens(cmd *cobra.Command) map[string]bool {
-	tokens := make(map[string]bool)
-	if cmd == nil {
-		return tokens
-	}
-	for name := range secretFlagNames {
-		f := cmd.Flags().Lookup(name)
-		if f == nil {
-			continue
-		}
-		tokens["--"+f.Name] = true
-		if f.Shorthand != "" {
-			tokens["-"+f.Shorthand] = true
-		}
-	}
-	return tokens
-}
-
-// scrubArgsForTelemetry joins argv for the bd.args span attribute with any
-// credential-bearing values redacted. A secretFlags token's value is redacted
-// wholesale across the `--password <v>`,
-// `--password=<v>`, `-p <v>`, `-p=<v>`, and `-p<v>` spellings pflag accepts. Every
-// other arg gets a conservative DSN/userinfo scrub as defense in depth so a
-// positional connection string cannot leak a password.
-func scrubArgsForTelemetry(argv []string, secretFlags map[string]bool) string {
-	parts := make([]string, len(argv))
-	redactNext := false
-	for i, a := range argv {
-		if redactNext {
-			parts[i] = "xxxxx"
-			redactNext = false
-			continue
-		}
-		if name, value, ok := strings.Cut(a, "="); ok {
-			if secretFlags[name] {
-				// --password=<secret> / -p=<secret> — redact the whole value.
-				parts[i] = name + "=xxxxx"
-				continue
-			}
-			if strings.HasPrefix(name, "-") {
-				scrubbed := scrubUserinfoPassword(scrubPotentialDSNPasswords(value))
-				if scrubbed != value {
-					// Preserve an arbitrary flag name while parsing its equals-value as
-					// a possible DSN. Passing the whole token to url.Parse would treat
-					// the flag prefix as the URL scheme and miss query credentials.
-					parts[i] = name + "=" + scrubbed
-					continue
-				}
-			}
-		}
-		if i > 0 {
-			if secretFlags[argv[i-1]] {
-				// <secret> following a bare --password / -p token.
-				parts[i] = "xxxxx"
-				continue
-			}
-		}
-		if short, ok := secretShorthandPrefix(a, secretFlags); ok {
-			// -p<secret> — pflag's concatenated shorthand spelling.
-			parts[i] = short + "xxxxx"
-			continue
-		}
-		if secretShorthandTakesSeparateValue(a, secretFlags) {
-			// -qp <secret> — a boolean shorthand cluster ending in the
-			// value-taking secret shorthand, with its value in the next token.
-			parts[i] = a
-			redactNext = true
-			continue
-		}
-		parts[i] = scrubUserinfoPassword(scrubPotentialDSNPasswords(a))
-	}
-	return strings.Join(parts, " ")
-}
-
-// secretShorthandPrefix reports whether a is pflag's concatenated secret-shorthand
-// spelling, returning the "-x...-p" prefix to preserve. Long flags cannot concatenate
-// a value, so only -X<value> shorthands are matched.
-//
-// pflag also accepts a CLUSTER of boolean shorthands ending in a value-taking
-// shorthand: given boolean flags -q/-v and value flag -p, "-qpSECRET" parses as -q
-// followed by -p SECRET, and "-vpSECRET" parses as -v followed by -p SECRET — but the
-// raw token still reaches telemetry as one string. Walk the leading run of letters in
-// a; the first letter whose "-x" token is a registered secret shorthand ends the
-// cluster, and everything after it is that flag's value, regardless of how many
-// boolean shorthands preceded it. This mirrors pflag's own grammar (a cluster is zero
-// or more boolean shorthands followed by one value-taking shorthand) without needing
-// the running command's flag set here: it is conservative in the safe direction,
-// since treating a longer prefix as consumed by the secret shorthand only ever
-// over-redacts, never under-redacts.
-func secretShorthandPrefix(a string, secretFlags map[string]bool) (string, bool) {
-	if len(a) < 3 || a[0] != '-' || a[1] == '-' {
-		return "", false
-	}
-	for i := 1; i < len(a); i++ {
-		c := a[i]
-		if !((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z')) {
-			return "", false
-		}
-		if secretFlags["-"+string(c)] {
-			if i+1 >= len(a) {
-				return "", false // no value follows; not the concatenated spelling
-			}
-			return a[:i+1], true
-		}
-	}
-	return "", false
-}
-
-// secretShorthandTakesSeparateValue recognizes a boolean-shorthand cluster that
-// ends in a registered secret shorthand with no attached value. For example,
-// pflag parses "-qp secret" as -q followed by -p=secret.
-func secretShorthandTakesSeparateValue(a string, secretFlags map[string]bool) bool {
-	if len(a) < 3 || a[0] != '-' || a[1] == '-' {
-		return false
-	}
-	for i := 1; i < len(a); i++ {
-		c := a[i]
-		if !((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z')) {
-			return false
-		}
-		if secretFlags["-"+string(c)] {
-			return i == len(a)-1
-		}
-	}
-	return false
-}
-
-// scrubUserinfoPassword redacts the password in a URL/DSN userinfo section
-// (postgres://user:PASS@host or user:PASS@tcp(...)); args without a user:pass@
-// userinfo pass through unchanged, so ordinary text is never mangled.
-func scrubUserinfoPassword(a string) string {
-	at := strings.LastIndexByte(a, '@')
-	if at < 0 {
-		return a
-	}
-	head := a[:at]
-	start := 0
-	if s := strings.LastIndex(head, "//"); s >= 0 {
-		start = s + 2 // userinfo begins after the scheme's "//"
-	}
-	colon := strings.IndexByte(head[start:], ':')
-	if colon < 0 {
-		return a // no "user:pass" userinfo, nothing to redact
-	}
-	return head[:start+colon+1] + "xxxxx" + a[at:]
 }

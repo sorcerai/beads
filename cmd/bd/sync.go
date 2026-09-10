@@ -16,7 +16,6 @@ import (
 	"github.com/steveyegge/beads/internal/beads"
 	"github.com/steveyegge/beads/internal/config"
 	"github.com/steveyegge/beads/internal/debug"
-	"github.com/steveyegge/beads/internal/metrics"
 	"github.com/steveyegge/beads/internal/storage"
 	"github.com/steveyegge/beads/internal/storage/issueops"
 	"github.com/steveyegge/beads/internal/storage/versioncontrolops"
@@ -734,13 +733,6 @@ func runSyncCommand(cmd *cobra.Command, _ []string) error {
 		return HandleErrorRespectJSON("sync is not supported in proxied-server mode")
 	}
 	CheckReadonly("sync")
-
-	evt := metrics.NewCommandEvent("sync")
-	defer func() {
-		if c := metrics.Global(); c != nil {
-			c.CloseEventAndAdd(evt)
-		}
-	}()
 
 	if isDoltLocalOnly() {
 		if jsonOutput {

@@ -9,7 +9,6 @@ import (
 	"github.com/spf13/cobra"
 	"github.com/steveyegge/beads/internal/beads"
 	"github.com/steveyegge/beads/internal/configfile"
-	"github.com/steveyegge/beads/internal/metrics"
 	"github.com/steveyegge/beads/internal/storage"
 	"github.com/steveyegge/beads/internal/ui"
 )
@@ -35,12 +34,6 @@ To initialize and restore in one step, use: bd init && bd backup restore`,
 		if usesProxiedServer() {
 			return HandleErrorRespectJSON("backup restore is not supported in proxied-server mode")
 		}
-		evt := metrics.NewCommandEvent("backup-restore")
-		defer func() {
-			if c := metrics.Global(); c != nil {
-				c.CloseEventAndAdd(evt)
-			}
-		}()
 
 		ctx := rootCtx
 

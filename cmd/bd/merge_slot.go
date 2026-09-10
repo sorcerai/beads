@@ -6,7 +6,6 @@ import (
 	"os"
 
 	"github.com/spf13/cobra"
-	"github.com/steveyegge/beads/internal/metrics"
 	"github.com/steveyegge/beads/internal/storage"
 	"github.com/steveyegge/beads/internal/ui"
 )
@@ -119,13 +118,6 @@ func runMergeSlotCreate(cmd *cobra.Command, args []string) error {
 	}
 	CheckReadonly("merge-slot create")
 
-	evt := metrics.NewCommandEvent("merge-slot-create")
-	defer func() {
-		if c := metrics.Global(); c != nil {
-			c.CloseEventAndAdd(evt)
-		}
-	}()
-
 	issue, err := store.MergeSlotCreate(rootCtx, actor)
 	if err != nil {
 		return HandleErrorRespectJSON("%v", err)
@@ -151,12 +143,6 @@ func runMergeSlotCheck(cmd *cobra.Command, args []string) error {
 	if usesProxiedServer() {
 		return HandleErrorRespectJSON("merge-slot check is not supported in proxied-server mode")
 	}
-	evt := metrics.NewCommandEvent("merge-slot-check")
-	defer func() {
-		if c := metrics.Global(); c != nil {
-			c.CloseEventAndAdd(evt)
-		}
-	}()
 
 	status, err := store.MergeSlotCheck(rootCtx)
 	if err != nil {
@@ -212,13 +198,6 @@ func runMergeSlotAcquire(cmd *cobra.Command, args []string) error {
 		return HandleErrorRespectJSON("merge-slot acquire is not supported in proxied-server mode")
 	}
 	CheckReadonly("merge-slot acquire")
-
-	evt := metrics.NewCommandEvent("merge-slot-acquire")
-	defer func() {
-		if c := metrics.Global(); c != nil {
-			c.CloseEventAndAdd(evt)
-		}
-	}()
 
 	holder := mergeSlotHolder
 	if holder == "" {
@@ -297,13 +276,6 @@ func runMergeSlotRelease(cmd *cobra.Command, args []string) error {
 		return HandleErrorRespectJSON("merge-slot release is not supported in proxied-server mode")
 	}
 	CheckReadonly("merge-slot release")
-
-	evt := metrics.NewCommandEvent("merge-slot-release")
-	defer func() {
-		if c := metrics.Global(); c != nil {
-			c.CloseEventAndAdd(evt)
-		}
-	}()
 
 	if err := store.MergeSlotRelease(rootCtx, mergeSlotHolder, actor); err != nil {
 		return HandleErrorRespectJSON("%v", err)

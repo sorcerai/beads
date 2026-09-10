@@ -6,18 +6,11 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/steveyegge/beads/internal/metrics"
 	"github.com/steveyegge/beads/internal/storage"
 	"github.com/steveyegge/beads/internal/storage/versioncontrolops"
 )
 
 func runCompactProxiedServer(ctx context.Context) error {
-	evt := metrics.NewCommandEvent("compact")
-	defer func() {
-		if c := metrics.Global(); c != nil {
-			c.CloseEventAndAdd(evt)
-		}
-	}()
 
 	if !compactDoltDryRun {
 		CheckReadonly("compact")
